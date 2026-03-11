@@ -1,0 +1,43 @@
+{
+  "name": "xqoder",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "XQoder monorepo for a terminal-native AI coding assistant",
+  "packageManager": "pnpm@10.30.0",
+  "pnpm": {
+    "overrides": {
+      "esbuild": ">=0.25.0"
+    },
+    "onlyBuiltDependencies": [
+      "cpu-features",
+      "electron",
+      "esbuild",
+      "protobufjs",
+      "ssh2"
+    ]
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "bin": {
+    "xqoder": "./scripts/xqoder.mjs"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "clean": "node ./scripts/clean.mjs",
+    "dev": "pnpm --filter @xqoder/cli dev",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r lint",
+    "format:check": "node -e \"process.exit(0)\"",
+    "test": "pnpm -r test",
+    "test:e2e": "pnpm --filter @xqoder/cli test:e2e",
+    "test:e2e:real": "pnpm --filter @xqoder/cli test:e2e:real",
+    "version:sync": "node ./scripts/sync-versions.mjs",
+    "release:check": "pnpm version:sync && pnpm build && pnpm test && pnpm lint",
+    "verify:day30": "node scripts/verify-day30-gates.mjs",
+    "xqoder": "node --max-old-space-size=4096 ./scripts/xqoder.mjs",
+    "doctor": "pnpm xqoder -- config doctor"
+  }
+}

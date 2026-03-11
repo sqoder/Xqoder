@@ -1,0 +1,10 @@
+{
+  "name": "next-missing-env-fixture",
+  "private": true,
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "next": "^15.0.0"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "syntax-error-fixture",
+  "private": true,
+  "scripts": {
+    "dev": "node server.js",
+    "build": "node build.js"
+  }
+}

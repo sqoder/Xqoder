@@ -1,0 +1,46 @@
+{
+    "name": "@xqoder/cli",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "description": "XQoder CLI - terminal interface",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "bin": {
+        "xqoder": "./dist/index.js"
+    },
+    "scripts": {
+        "build": "tsc",
+        "dev": "tsc --watch",
+        "clean": "rm -rf dist",
+        "test": "vitest run --exclude '**/tui.permission.e2e.test.ts'",
+        "test:e2e": "vitest run src/commands/fix.integration.test.ts src/commands/fix.real-llm.e2e.test.ts src/commands/tui.smoke.e2e.test.ts src/commands/tui.permission.e2e.test.ts",
+        "test:e2e:real": "vitest run src/commands/fix.real-llm.e2e.test.ts",
+        "lint": "tsc --noEmit"
+    },
+    "dependencies": {
+        "clipboardy": "^4.0.0",
+        "@xqoder/agent": "workspace:*",
+        "@xqoder/core-runtime": "workspace:*",
+        "@xqoder/plugin-sdk": "workspace:*",
+        "@xqoder/protocol": "workspace:*",
+        "@xqoder/deploy": "workspace:*",
+        "@xqoder/runtime": "workspace:*",
+        "@xqoder/storage-sqlite": "workspace:*",
+        "@xqoder/shared": "workspace:*",
+        "@xqoder/workflow": "workspace:*",
+        "chalk": "^5.3.0",
+        "commander": "^12.0.0",
+        "ink": "^6.8.0",
+        "ink-text-input": "^6.0.0",
+        "ora": "^8.0.0",
+        "react": "^19.2.4",
+        "string-width": "4.2.3"
+    },
+    "devDependencies": {
+        "@types/node": "^22.19.15",
+        "@types/react": "^19.2.2",
+        "typescript": "^5.4.0",
+        "vitest": "^2.0.0"
+    }
+}

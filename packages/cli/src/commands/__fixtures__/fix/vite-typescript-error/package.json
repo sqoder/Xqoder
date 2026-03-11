@@ -1,0 +1,10 @@
+{
+  "name": "vite-typescript-error-fixture",
+  "private": true,
+  "scripts": {
+    "dev": "node verify-types.js"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}
