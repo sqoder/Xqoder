@@ -27,9 +27,9 @@ import { TuiAgentService } from './agent-service.js';
 import {
     buildCliArgs,
     formatCliInvocation,
+    getSlashCommands,
     getTuiHelpLines,
     parseTuiCommand,
-    SLASH_COMMANDS,
     type TuiExecutableCommand,
     type TuiSettings,
 } from './commands.js';
@@ -69,7 +69,10 @@ import {
     SessionSelectorDialog,
     InitDialog,
     ContextCompletionDialog,
+    QuestionDialog,
     type ContextItem,
+    type QuestionAnswer,
+    type QuestionRequest,
     type PermissionRequest,
 } from './dialog.js';
 import { FilePicker } from './file-picker.js';
@@ -123,6 +126,7 @@ export function XQoderTui({ initialSettings, onRequestExit }: XQoderTuiProps): R
     const [mouseMode, setMouseMode] = useState<TuiMouseMode>('app');
     const [mouseScrollStep] = useState<number>(() => configManager.getTuiSettings().scrollStep ?? 3);
     const [permissionRequest, setPermissionRequest] = useState<PermissionRequest | null>(null);
+    const [questionRequest, setQuestionRequest] = useState<QuestionRequest | null>(null);
     const [activeCommand, setActiveCommand] = useState<string>();
     const [showThinking, setShowThinking] = useState(false);
     const [expandedToolIds, setExpandedToolIds] = useState<string[]>([]);
@@ -201,6 +205,10 @@ export function XQoderTui({ initialSettings, onRequestExit }: XQoderTuiProps): R
     const pendingPermissionApproval = useRef<{
         toolName: string;
         resolve: (approved: boolean) => void;
+    } | null>(null);
+    const pendingQuestionAnswer = useRef<{
+        requestId: string;
+        resolve: (answer: QuestionAnswer) => void;
     } | null>(null);
     const allowAllPermissions = useRef(false);
 
@@ -327,6 +335,27 @@ export function XQoderTui({ initialSettings, onRequestExit }: XQoderTuiProps): R
         });
     }
 
+    function requestQuestionDialog(request: QuestionRequest): Promise<QuestionAnswer> {
+        return new Promise<QuestionAnswer>((resolve) => {
+            if (pendingQuestionAnswer.current) {
+                pendingQuestionAnswer.current.resolve({
+                    requestId: pendingQuestionAnswer.current.requestId,
+                    selected: [],
+                });
+                pendingQuestionAnswer.current = null;
+            }
+
+            pendingQuestionAnswer.current = {
+                requestId: request.requestId,
+                resolve,
+            };
+
+            setQuestionRequest(request);
+            openDialog('question');
+            setInfoMessage('Question requires input');
+        });
+    }
+
     useEffect(() => {
         if (process.env.XQODER_TUI_TEST_PERMISSION_DIALOG !== '1') {
             return;
@@ -352,6 +381,13 @@ export function XQoderTui({ initialSettings, onRequestExit }: XQoderTuiProps): R
             if (pendingPermissionApproval.current) {
                 pendingPermissionApproval.current.resolve(false);
                 pendingPermissionApproval.current = null;
+            }
+            if (pendingQuestionAnswer.current) {
+                pendingQuestionAnswer.current.resolve({
+                    requestId: pendingQuestionAnswer.current.requestId,
+                    selected: [],
+                });
+                pendingQuestionAnswer.current = null;
             }
             runningCommandRef.current?.kill();
             agentService.dispose();
@@ -566,6 +602,12 @@ export function XQoderTui({ initialSettings, onRequestExit }: XQoderTuiProps): R
         // 有 dialog 打开时，不处理全局快捷键（各 dialog 自己处理）
         if (anyDialogOpen) return;
 
+        // Ctrl+H — 帮助（OpenCode 同款，与 Ctrl+? 等价）
+        if (input === 'h' && key.ctrl) {
+            openDialog('help');
+            return;
+        }
+
         // Ctrl+] (ASCII 0x1D) — 打开 session 选择面板
         if (input === '\u001d') {
             openDialog('session');
@@ -580,6 +622,7 @@ export function XQoderTui({ initialSettings, onRequestExit }: XQoderTuiProps): R
                 case 'help': openDialog('help'); return;
                 case 'theme': openDialog('theme'); return;
                 case 'session': openDialog('session'); return;
+                case 'newSession': createSession(); return;
                 case 'model': openDialog('model'); return;
                 case 'commandPalette': openDialog('commandPalette'); return;
                 case 'filePicker': openDialog('filePicker'); return;
@@ -649,7 +692,7 @@ export function XQoderTui({ initialSettings, onRequestExit }: XQoderTuiProps): R
 
         switch (command.type) {
             case 'help': {
-                const helpLines = getTuiHelpLines();
+                const helpLines = getTuiHelpLines(settings);
                 addMessage({ type: 'system', content: helpLines.join('\n') });
                 return;
             }
@@ -945,6 +988,21 @@ export function XQoderTui({ initialSettings, onRequestExit }: XQoderTuiProps): R
                         openDialog('permission');
                         setInfoMessage(`Permission required: ${request.toolName}`);
                     });
+                },
+                onQuestion: async (request) => {
+                    const answer = await requestQuestionDialog({
+                        requestId: request.requestId,
+                        question: request.question,
+                        header: request.header,
+                        options: request.options,
+                        multiple: request.multiple,
+                        allowCustom: request.allowCustom,
+                    });
+                    return {
+                        requestId: answer.requestId,
+                        selected: answer.selected,
+                        ...(answer.customText ? { customText: answer.customText } : {}),
+                    };
                 },
             },
         ).then((result) => {
@@ -1748,6 +1806,7 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules) or Copilot rules (
         { id: 'help', label: 'Show Help', shortcut: 'Ctrl+?', action: () => openDialog('help') },
         { id: 'theme', label: 'Switch Theme', shortcut: 'Ctrl+T', action: () => openDialog('theme') },
         { id: 'session', label: 'Switch Session', shortcut: 'Ctrl+S', action: () => openDialog('session') },
+        { id: 'newSession', label: 'New Session', shortcut: 'Ctrl+N', action: () => createSession() },
         { id: 'model', label: 'Select Model', shortcut: 'Ctrl+O', action: () => openDialog('model') },
         { id: 'file-picker', label: 'Pick File', shortcut: 'Ctrl+F', action: () => openDialog('filePicker') },
         { id: 'logs', label: 'Toggle Logs Page', shortcut: 'Ctrl+L', action: toggleLogsPage },
@@ -1789,7 +1848,7 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules) or Copilot rules (
                     agent={settings.agent}
                     usage={activeUsage}
                     cwd={settings.dir}
-                    slashCommands={SLASH_COMMANDS}
+                    slashCommands={getSlashCommands(settings)}
                     infoMessage={infoMessage}
                     mouseMode={mouseMode}
                     mouseScrollStep={mouseScrollStep}
@@ -1917,6 +1976,30 @@ If there are Cursor rules (in .cursor/rules/ or .cursorrules) or Copilot rules (
                         onDeny={() => {
                             pendingPermissionApproval.current?.resolve(false);
                             pendingPermissionApproval.current = null;
+                            closeAllDialogs();
+                        }}
+                    />
+                </DialogOverlay>
+            )}
+
+            {activeOverlay === 'question' && questionRequest && (
+                <DialogOverlay appWidth={dims.width} appHeight={dims.height} dialogWidth={72}>
+                    <QuestionDialog
+                        request={questionRequest}
+                        width={72}
+                        onSubmit={(answer) => {
+                            pendingQuestionAnswer.current?.resolve(answer);
+                            pendingQuestionAnswer.current = null;
+                            setQuestionRequest(null);
+                            closeAllDialogs();
+                        }}
+                        onCancel={() => {
+                            pendingQuestionAnswer.current?.resolve({
+                                requestId: questionRequest.requestId,
+                                selected: questionRequest.options.length > 0 ? [questionRequest.options[0]!.label] : [],
+                            });
+                            pendingQuestionAnswer.current = null;
+                            setQuestionRequest(null);
                             closeAllDialogs();
                         }}
                     />

@@ -322,13 +322,18 @@ export function createConfigDoctorReport(
     });
 
     for (const server of enabledMcpServers) {
-        const commandAvailable = commandExists(server.command, hasExecutable);
+        const command = server.command?.trim();
+        const commandAvailable = command
+            ? commandExists(command, hasExecutable)
+            : server.transport === 'http' || server.transport === 'sse';
         checks.push({
             name: `MCP ${server.name}`,
             status: commandAvailable ? 'ok' : 'warn',
             message: commandAvailable
-                ? `命令可用: ${server.command}`
-                : `命令不可用: ${server.command}`,
+                ? command
+                    ? `命令可用: ${command}`
+                    : `远程传输可用: ${server.transport ?? 'stdio'} ${server.url ?? '-'}`
+                : `命令不可用: ${command ?? '-'}`,
         });
     }
 

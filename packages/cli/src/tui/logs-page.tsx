@@ -6,7 +6,7 @@
 import React, { useState, useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
 import chalk from 'chalk';
-import { getTheme, createThemedStyles } from './theme.js';
+import { getTheme, createThemedStyles, themeColor } from './theme.js';
 import { ICONS } from './icons.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'success';
@@ -90,7 +90,7 @@ export function LogsPage({ logs, width, height, isActive = true, onClose }: Logs
     const levelColors: Record<LogLevel, string> = {
         debug: theme.textMuted,
         info: theme.primary,
-        warn: '#e5c07b',
+        warn: theme.warning,
         error: theme.error,
         success: theme.success,
     };
@@ -99,14 +99,14 @@ export function LogsPage({ logs, width, height, isActive = true, onClose }: Logs
         <Box flexDirection="column" width={width} height={height}>
             <Box paddingX={1} justifyContent="space-between">
                 <Text>
-                    {styles.accent('Logs')} <Text color={theme.textMuted}>({filtered.length}/{logs.length})</Text>
+                    {styles.accent('Logs')} <Text color={themeColor(theme, theme.textMuted)}>({filtered.length}/{logs.length})</Text>
                 </Text>
-                <Text color={theme.textMuted}>
-                    Filter: {filterLevel === 'all' ? chalk.hex(theme.primary)('[A]ll') : '[A]ll'}{' '}
-                    {filterLevel === 'debug' ? chalk.hex(theme.primary)('[D]ebug') : '[D]ebug'}{' '}
-                    {filterLevel === 'info' ? chalk.hex(theme.primary)('[I]nfo') : '[I]nfo'}{' '}
-                    {filterLevel === 'warn' ? chalk.hex(theme.primary)('[W]arn') : '[W]arn'}{' '}
-                    {filterLevel === 'error' ? chalk.hex(theme.primary)('[E]rror') : '[E]rror'}
+                <Text color={themeColor(theme, theme.textMuted)}>
+                    Filter: {filterLevel === 'all' ? styles.primary('[A]ll') : '[A]ll'}{' '}
+                    {filterLevel === 'debug' ? styles.primary('[D]ebug') : '[D]ebug'}{' '}
+                    {filterLevel === 'info' ? styles.primary('[I]nfo') : '[I]nfo'}{' '}
+                    {filterLevel === 'warn' ? styles.primary('[W]arn') : '[W]arn'}{' '}
+                    {filterLevel === 'error' ? styles.primary('[E]rror') : '[E]rror'}
                 </Text>
             </Box>
             <Box flexDirection="column" paddingX={1}>
@@ -123,36 +123,36 @@ export function LogsPage({ logs, width, height, isActive = true, onClose }: Logs
                         <Box key={entry.id}>
                             <Text>
                                 {isSel ? styles.accent('▸ ') : '  '}
-                                <Text color={theme.textMuted}>{timeStr}</Text>
+                                <Text color={themeColor(theme, theme.textMuted)}>{timeStr}</Text>
                                 {' '}
-                                <Text color={color}>{levelIcon}</Text>
+                                <Text color={themeColor(theme, color)}>{levelIcon}</Text>
                                 {' '}
-                                {entry.source ? <Text color={theme.textMuted}>[{entry.source}] </Text> : null}
-                                <Text color={isSel ? theme.textEmphasized : theme.text}>{msg}</Text>
+                                {entry.source ? <Text color={themeColor(theme, theme.textMuted)}>[{entry.source}] </Text> : null}
+                                <Text color={themeColor(theme, isSel ? theme.textEmphasized : theme.text)}>{msg}</Text>
                             </Text>
                         </Box>
                     );
                 })}
             </Box>
             {showDetails && selected && (
-                <Box flexDirection="column" paddingX={1} marginTop={1} borderStyle="single" borderColor={theme.borderFocused}>
-                    <Text color={theme.textEmphasized} bold>Details</Text>
-                    <Text color={theme.textMuted}>Time: {selected.timestamp.toISOString()}</Text>
-                    <Text color={theme.textMuted}>Level: <Text color={levelColors[selected.level]}>{selected.level}</Text></Text>
-                    {selected.source && <Text color={theme.textMuted}>Source: {selected.source}</Text>}
-                    <Text color={theme.text} wrap="wrap">{selected.message}</Text>
+                <Box flexDirection="column" paddingX={1} marginTop={1} borderStyle="single" borderColor={themeColor(theme, theme.borderFocused)}>
+                    <Text color={themeColor(theme, theme.textEmphasized)} bold>Details</Text>
+                    <Text color={themeColor(theme, theme.textMuted)}>Time: {selected.timestamp.toISOString()}</Text>
+                    <Text color={themeColor(theme, theme.textMuted)}>Level: <Text color={themeColor(theme, levelColors[selected.level])}>{selected.level}</Text></Text>
+                    {selected.source && <Text color={themeColor(theme, theme.textMuted)}>Source: {selected.source}</Text>}
+                    <Text color={themeColor(theme, theme.text)} wrap="wrap">{selected.message}</Text>
                     {selected.attributes && Object.keys(selected.attributes).length > 0 && (
                         <Box flexDirection="column" marginTop={1}>
-                            <Text color={theme.textMuted}>Attributes:</Text>
+                            <Text color={themeColor(theme, theme.textMuted)}>Attributes:</Text>
                             {Object.entries(selected.attributes).map(([k, v]) => (
-                                <Text key={k} color={theme.textMuted}>  {k}: {JSON.stringify(v)}</Text>
+                                <Text key={k} color={themeColor(theme, theme.textMuted)}>  {k}: {JSON.stringify(v)}</Text>
                             ))}
                         </Box>
                     )}
                 </Box>
             )}
             <Box paddingX={1} marginTop={1}>
-                <Text color={theme.textMuted}>↑↓ select  Enter details  d/i/w/e/a filter  Esc close</Text>
+                <Text color={themeColor(theme, theme.textMuted)}>↑↓ select  Enter details  d/i/w/e/a filter  Esc close</Text>
             </Box>
         </Box>
     );

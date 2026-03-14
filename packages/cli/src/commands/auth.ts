@@ -1,10 +1,14 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { Command } from 'commander';
 import {
     ConfigManager,
     configManager,
+    getXQoderPaths,
     getDefaultModelForProvider,
     isLLMProviderName,
     logger,
+    resolveConfigWithEnvOverrides,
     resolveAgentLLMConfig,
     SUPPORTED_LLM_PROVIDERS,
     type LLMProviderName,
@@ -19,6 +23,7 @@ interface AuthLoginOptions {
     apiKey: string;
     baseUrl?: string;
     defaultModel?: string;
+    persistPlain?: boolean;
 }
 
 interface AuthCommandDependencies {
@@ -37,9 +42,12 @@ interface AuthProviderSummary {
 export function runListAuthCommand(
     options: AuthListOptions,
     dependencies: AuthCommandDependencies = {},
-    manager: Pick<ConfigManager, 'load'> = configManager,
+    manager: Pick<ConfigManager, 'load'> & { getConfigPath?: () => string } = configManager,
 ): AuthProviderSummary[] {
-    const config = manager.load({ mode: 'single' });
+    const loaded = manager.load({ mode: 'single' });
+    const { config } = resolveConfigWithEnvOverrides(loaded, process.env, {
+        credentialDir: resolveCredentialDir(manager),
+    });
     const currentProvider = resolveAgentLLMConfig(config).provider;
     const providerNames = options.all
         ? SUPPORTED_LLM_PROVIDERS
@@ -82,17 +90,21 @@ export function runListAuthCommand(
 export function runAuthLoginCommand(
     provider: string,
     options: AuthLoginOptions,
-    manager: Pick<ConfigManager, 'load' | 'update' | 'save'> = configManager,
+    manager: Pick<ConfigManager, 'load' | 'update' | 'save'> & { getConfigPath?: () => string } = configManager,
 ): void {
     const parsedProvider = parseProviderOrThrow(provider);
     const current = manager.load({ mode: 'single' });
+    const shouldPersistPlain = options.persistPlain === true;
+    const storedApiKey = shouldPersistPlain
+        ? options.apiKey
+        : persistProviderCredential(parsedProvider, options.apiKey, manager);
 
     manager.update({
         providers: {
             ...(current.providers ?? {}),
             [parsedProvider]: {
                 ...(current.providers?.[parsedProvider] ?? {}),
-                apiKey: options.apiKey,
+                apiKey: storedApiKey,
                 ...(options.baseUrl !== undefined ? { baseUrl: options.baseUrl } : {}),
                 ...(options.defaultModel !== undefined ? { defaultModel: options.defaultModel } : {}),
                 disabled: false,
@@ -101,12 +113,16 @@ export function runAuthLoginCommand(
     });
     manager.save();
 
-    logger.success(`已登录 provider: ${parsedProvider}`);
+    if (shouldPersistPlain) {
+        logger.warn(`已登录 provider: ${parsedProvider}（明文写入配置）`);
+    } else {
+        logger.success(`已登录 provider: ${parsedProvider}（凭据已保存到本地安全文件）`);
+    }
 }
 
 export function runAuthLogoutCommand(
     provider: string,
-    manager: Pick<ConfigManager, 'load' | 'update' | 'save'> = configManager,
+    manager: Pick<ConfigManager, 'load' | 'update' | 'save'> & { getConfigPath?: () => string } = configManager,
 ): void {
     const parsedProvider = parseProviderOrThrow(provider);
     const current = manager.load({ mode: 'single' });
@@ -115,13 +131,15 @@ export function runAuthLogoutCommand(
         throw new Error(`未找到 provider 配置: ${parsedProvider}`);
     }
 
+    removeProviderCredential(parsedProvider, manager);
+
     manager.update({
         providers: {
             ...(current.providers ?? {}),
-            [parsedProvider]: {
-                ...(current.providers?.[parsedProvider] ?? {}),
-                apiKey: '',
-            },
+                [parsedProvider]: {
+                    ...(current.providers?.[parsedProvider] ?? {}),
+                    apiKey: '',
+                },
         },
     });
     manager.save();
@@ -141,6 +159,7 @@ export function createAuthCommand(
         .description('写入一个 provider 的 API 凭据')
         .argument('<provider>', 'provider 名称')
         .requiredOption('--api-key <key>', 'API Key')
+        .option('--persist-plain', '将 API Key 明文写入配置（不推荐）', false)
         .option('--base-url <url>', '自定义 Base URL')
         .option('--default-model <model>', '同时更新 provider 默认模型')
         .action((provider: string, options: AuthLoginOptions) => {
@@ -195,4 +214,49 @@ function parseProviderOrThrow(value: string): LLMProviderName {
 
 function writeOutput(output: string, dependencies: AuthCommandDependencies): void {
     (dependencies.writeOutput ?? console.log)(output);
+}
+
+function persistProviderCredential(
+    provider: LLMProviderName,
+    apiKey: string,
+    manager: { getConfigPath?: () => string },
+): string {
+    const credentialFile = getProviderCredentialFilePath(provider, manager);
+    const dir = path.dirname(credentialFile);
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(credentialFile, apiKey, 'utf-8');
+    try {
+        fs.chmodSync(credentialFile, 0o600);
+    } catch {
+        // ignore chmod errors on unsupported environments
+    }
+    return '';
+}
+
+function removeProviderCredential(provider: LLMProviderName, manager: { getConfigPath?: () => string }): void {
+    const credentialFile = getProviderCredentialFilePath(provider, manager);
+    if (!fs.existsSync(credentialFile)) {
+        return;
+    }
+    try {
+        fs.unlinkSync(credentialFile);
+    } catch {
+        // ignore credential cleanup errors
+    }
+}
+
+function getProviderCredentialFilePath(provider: LLMProviderName, manager: { getConfigPath?: () => string }): string {
+    const configuredPath = manager.getConfigPath?.();
+    if (configuredPath) {
+        return path.join(path.dirname(configuredPath), 'credentials', `${provider}.key`);
+    }
+    const paths = getXQoderPaths();
+    return path.join(path.dirname(paths.configFile), 'credentials', `${provider}.key`);
+}
+
+function resolveCredentialDir(manager: { getConfigPath?: () => string }): string | undefined {
+    const configuredPath = manager.getConfigPath?.();
+    return configuredPath ? path.dirname(configuredPath) : undefined;
 }

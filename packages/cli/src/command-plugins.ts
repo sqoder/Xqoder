@@ -27,7 +27,6 @@ import { testCommand } from './commands/test.js';
 import { tuiCommand } from './commands/tui.js';
 import { attachCommand } from './commands/attach.js';
 import { serveCommand } from './commands/serve.js';
-import { webCommand } from './commands/web.js';
 import { acpCommand } from './commands/acp.js';
 import { githubCommandExport } from './commands/github.js';
 import { pluginsCommand } from './commands/plugins.js';
@@ -39,6 +38,17 @@ export interface CommanderCommandRegistration extends CommandRegistration {
     createCommand: () => Command;
     hiddenFromRoot?: boolean;
 }
+
+const BUILT_IN_PLUGIN_DEFAULTS = {
+    'cli-core-shell': true,
+    'cli-workflows': false,
+    'cli-integrations': false,
+    'cli-remote': true,
+    'cli-extras': false,
+    'cli-system': false,
+} as const;
+
+type BuiltInPluginName = keyof typeof BUILT_IN_PLUGIN_DEFAULTS;
 
 export interface CommandPluginFactoryOptions {
     chatCommand?: Command;
@@ -92,7 +102,7 @@ function createBuiltInCommandPlugins(options: CommandPluginFactoryOptions = {}):
                 name: 'cli-core-shell',
                 version: '0.1.0',
                 capabilities: ['commands'],
-                enabledByDefault: true,
+                enabledByDefault: BUILT_IN_PLUGIN_DEFAULTS['cli-core-shell'],
                 compatibility: { product: 'xqoder', versionRange: '^0.1.0' },
             },
             setup(api) {
@@ -101,7 +111,6 @@ function createBuiltInCommandPlugins(options: CommandPluginFactoryOptions = {}):
                     authCommand,
                     modelsCommand,
                     agentCommand,
-                    attachCommand,
                     sessionCommand,
                     statsCommand,
                     exportCommand,
@@ -117,7 +126,7 @@ function createBuiltInCommandPlugins(options: CommandPluginFactoryOptions = {}):
                 name: 'cli-workflows',
                 version: '0.1.0',
                 capabilities: ['commands'],
-                enabledByDefault: true,
+                enabledByDefault: BUILT_IN_PLUGIN_DEFAULTS['cli-workflows'],
                 compatibility: { product: 'xqoder', versionRange: '^0.1.0' },
             },
             setup(api) {
@@ -130,11 +139,37 @@ function createBuiltInCommandPlugins(options: CommandPluginFactoryOptions = {}):
                 name: 'cli-integrations',
                 version: '0.1.0',
                 capabilities: ['commands'],
-                enabledByDefault: true,
+                enabledByDefault: BUILT_IN_PLUGIN_DEFAULTS['cli-integrations'],
                 compatibility: { product: 'xqoder', versionRange: '^0.1.0' },
             },
             setup(api) {
-                [explainCommand, lspCommand, mcpCommand, rollbacksCommand, serveCommand, webCommand, acpCommand, githubCommandExport]
+                [lspCommand, mcpCommand, rollbacksCommand]
+                    .forEach((command) => api.registerCommand(defineCommanderCommand(command)));
+            },
+        }),
+        definePlugin({
+            manifest: {
+                name: 'cli-remote',
+                version: '0.1.0',
+                capabilities: ['commands'],
+                enabledByDefault: BUILT_IN_PLUGIN_DEFAULTS['cli-remote'],
+                compatibility: { product: 'xqoder', versionRange: '^0.1.0' },
+            },
+            setup(api) {
+                [serveCommand, attachCommand, acpCommand]
+                    .forEach((command) => api.registerCommand(defineCommanderCommand(command)));
+            },
+        }),
+        definePlugin({
+            manifest: {
+                name: 'cli-extras',
+                version: '0.1.0',
+                capabilities: ['commands'],
+                enabledByDefault: BUILT_IN_PLUGIN_DEFAULTS['cli-extras'],
+                compatibility: { product: 'xqoder', versionRange: '^0.1.0' },
+            },
+            setup(api) {
+                [explainCommand, githubCommandExport]
                     .forEach((command) => api.registerCommand(defineCommanderCommand(command)));
             },
         }),
@@ -143,7 +178,7 @@ function createBuiltInCommandPlugins(options: CommandPluginFactoryOptions = {}):
                 name: 'cli-system',
                 version: '0.1.0',
                 capabilities: ['commands'],
-                enabledByDefault: true,
+                enabledByDefault: BUILT_IN_PLUGIN_DEFAULTS['cli-system'],
                 compatibility: { product: 'xqoder', versionRange: '^0.1.0' },
             },
             setup(api) {
@@ -172,6 +207,39 @@ function isCompatibleVersion(range: string | undefined, version: string): boolea
     }
 
     return range === version;
+}
+
+export function resolveEnabledPluginNames(
+    pluginConfig?: { enabled?: string[]; disabled?: string[] },
+): Set<string> {
+    const enabled = new Set(pluginConfig?.enabled ?? []);
+    const disabled = new Set(pluginConfig?.disabled ?? []);
+    const resolved = new Set<string>();
+
+    const applyDefault = (name: BuiltInPluginName): void => {
+        if (disabled.has(name)) {
+            return;
+        }
+        if (enabled.size > 0) {
+            if (enabled.has(name)) {
+                resolved.add(name);
+            }
+            return;
+        }
+        if (BUILT_IN_PLUGIN_DEFAULTS[name]) {
+            resolved.add(name);
+        }
+    };
+
+    (Object.keys(BUILT_IN_PLUGIN_DEFAULTS) as BuiltInPluginName[]).forEach(applyDefault);
+
+    for (const name of enabled) {
+        if (!disabled.has(name)) {
+            resolved.add(name);
+        }
+    }
+
+    return resolved;
 }
 
 function shouldEnablePlugin(plugin: Plugin, options: CommandPluginDiscoveryOptions): boolean {

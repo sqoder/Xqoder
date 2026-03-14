@@ -373,33 +373,26 @@ export function parseSessionExportDocument(value: unknown): SessionExportDocumen
         throw new Error('导入文件不是合法的 JSON 对象');
     }
 
-    if (value['schemaVersion'] !== 1) {
-        throw new Error('仅支持 schemaVersion=1 的 session 导出文件');
+    if (value['schemaVersion'] === 1) {
+        if (!isObject(value['summary']) || !isObject(value['snapshot'])) {
+            throw new Error('导出文件缺少 summary 或 snapshot');
+        }
+        return normalizeSessionExportDocument(value);
     }
 
-    if (!isObject(value['summary']) || !isObject(value['snapshot'])) {
-        throw new Error('导出文件缺少 summary 或 snapshot');
+    const normalizedFromCompatibleShape = normalizeCompatibleSessionExportDocument(value);
+    if (normalizedFromCompatibleShape) {
+        return normalizedFromCompatibleShape;
     }
 
-    const summary = value['summary'];
-    const snapshot = value['snapshot'];
-    if (typeof summary['id'] !== 'string'
-        || typeof summary['projectRoot'] !== 'string'
-        || typeof summary['cwd'] !== 'string'
-        || typeof summary['model'] !== 'string'
-        || typeof summary['title'] !== 'string'
-        || typeof snapshot['id'] !== 'string'
-        || !Array.isArray(snapshot['messages'])) {
-        throw new Error('导出文件字段不完整');
-    }
-
-    return value as unknown as SessionExportDocument;
+    throw new Error('仅支持 schemaVersion=1 或兼容的 session 导出文件');
 }
 
 export function createImportedSession(
     document: SessionExportDocument,
     sessionId: string,
 ): AgentSession {
+    const metadata = document.snapshot.metadata;
     return new AgentSession({
         id: sessionId,
         createdAt: new Date(document.snapshot.createdAt),
@@ -407,17 +400,17 @@ export function createImportedSession(
         messages: document.snapshot.messages,
         usage: document.snapshot.usage,
         metadata: {
-            ...(document.snapshot.metadata.compactSummary
-                ? { compactSummary: document.snapshot.metadata.compactSummary }
+            ...(metadata.compactSummary
+                ? { compactSummary: metadata.compactSummary }
                 : {}),
-            compactions: document.snapshot.metadata.compactions.map((entry) => ({
+            compactions: (metadata.compactions ?? []).map((entry) => ({
                 id: entry.id,
                 createdAt: new Date(entry.createdAt),
                 messageCountBefore: entry.messageCountBefore,
                 messageCountAfter: entry.messageCountAfter,
                 summary: entry.summary,
             })),
-            toolHistory: document.snapshot.metadata.toolHistory.map((entry) => ({
+            toolHistory: (metadata.toolHistory ?? []).map((entry) => ({
                 id: entry.id,
                 name: entry.name,
                 args: entry.args,
@@ -427,7 +420,7 @@ export function createImportedSession(
                 startedAt: new Date(entry.startedAt),
                 completedAt: new Date(entry.completedAt),
             })),
-            commandHistory: document.snapshot.metadata.commandHistory.map((entry) => ({
+            commandHistory: (metadata.commandHistory ?? []).map((entry) => ({
                 id: entry.id,
                 command: entry.command,
                 cwd: entry.cwd,
@@ -437,7 +430,7 @@ export function createImportedSession(
                 startedAt: new Date(entry.startedAt),
                 completedAt: new Date(entry.completedAt),
             })),
-            fileChanges: document.snapshot.metadata.fileChanges.map((entry) => ({
+            fileChanges: (metadata.fileChanges ?? []).map((entry) => ({
                 id: entry.id,
                 path: entry.path,
                 changeType: entry.changeType,
@@ -450,6 +443,167 @@ export function createImportedSession(
             })),
         },
     });
+}
+
+function normalizeSessionExportDocument(value: Record<string, unknown>): SessionExportDocument {
+    const summary = asObject(value['summary']);
+    const snapshot = asObject(value['snapshot']);
+    if (!summary || !snapshot) {
+        throw new Error('导出文件缺少 summary 或 snapshot');
+    }
+
+    const sessionId = readString(snapshot['id'])
+        ?? readString(summary['id'])
+        ?? 'session_imported';
+    const createdAt = readIsoString(snapshot['createdAt'])
+        ?? readIsoString(summary['createdAt'])
+        ?? new Date(0).toISOString();
+    const updatedAt = readIsoString(summary['updatedAt']) ?? createdAt;
+    const projectRoot = readString(summary['projectRoot']) ?? '.';
+    const cwd = readString(summary['cwd']) ?? projectRoot;
+    const model = readString(summary['model']) ?? 'unknown-model';
+    const title = readString(summary['title']) ?? sessionId;
+    const messages = readMessages(snapshot['messages']);
+    if (!messages) {
+        throw new Error('导出文件字段不完整');
+    }
+
+    const maxMessages = readNumber(snapshot['maxMessages'])
+        ?? readNumber(summary['maxMessages'])
+        ?? 100;
+    const usage = normalizeUsage(snapshot['usage'] ?? summary['usage']);
+    const metadata = normalizeSnapshotMetadata(snapshot['metadata']);
+
+    return {
+        schemaVersion: 1,
+        exportedAt: readIsoString(value['exportedAt']) ?? updatedAt,
+        source: {
+            product: 'xqoder',
+            version: readString(asObject(value['source'])?.['version']) ?? 'unknown',
+        },
+        summary: {
+            id: sessionId,
+            projectRoot,
+            cwd,
+            model,
+            title,
+            createdAt,
+            updatedAt,
+            maxMessages,
+            messageCount: readNumber(summary['messageCount']) ?? messages.length,
+            usage,
+            ...(readString(summary['lastUserMessage']) ? { lastUserMessage: readString(summary['lastUserMessage']) } : {}),
+            compactionCount: readNumber(summary['compactionCount']) ?? metadata.compactions.length,
+            commandCount: readNumber(summary['commandCount']) ?? metadata.commandHistory.length,
+            fileChangeCount: readNumber(summary['fileChangeCount']) ?? metadata.fileChanges.length,
+        },
+        snapshot: {
+            id: sessionId,
+            createdAt,
+            maxMessages,
+            messages,
+            usage,
+            metadata,
+        },
+    };
+}
+
+function normalizeCompatibleSessionExportDocument(value: Record<string, unknown>): SessionExportDocument | undefined {
+    const snapshotCandidate = asObject(value['snapshot'])
+        ?? asObject(value['session'])
+        ?? value;
+    const messages = readMessages(snapshotCandidate['messages']);
+    if (!messages) {
+        return undefined;
+    }
+
+    const summaryCandidate = asObject(value['summary']) ?? asObject(value['session']) ?? value;
+    const inferred = normalizeSessionExportDocument({
+        schemaVersion: 1,
+        exportedAt: value['exportedAt'] ?? value['updatedAt'] ?? new Date().toISOString(),
+        source: {
+            product: 'xqoder',
+            version: readString(asObject(value['source'])?.['version']) ?? readString(value['version']) ?? 'compatible-import',
+        },
+        summary: {
+            id: summaryCandidate['id'] ?? value['sessionId'] ?? snapshotCandidate['id'] ?? 'session_imported',
+            projectRoot: summaryCandidate['projectRoot'] ?? summaryCandidate['project_path'] ?? value['projectRoot'] ?? '.',
+            cwd: summaryCandidate['cwd'] ?? value['cwd'] ?? summaryCandidate['projectRoot'] ?? '.',
+            model: summaryCandidate['model'] ?? value['model'] ?? 'unknown-model',
+            title: summaryCandidate['title'] ?? value['title'] ?? value['name'] ?? 'Imported Session',
+            createdAt: summaryCandidate['createdAt'] ?? snapshotCandidate['createdAt'] ?? value['createdAt'],
+            updatedAt: summaryCandidate['updatedAt'] ?? value['updatedAt'] ?? value['exportedAt'],
+            maxMessages: summaryCandidate['maxMessages'] ?? snapshotCandidate['maxMessages'] ?? 100,
+            messageCount: summaryCandidate['messageCount'] ?? messages.length,
+            usage: summaryCandidate['usage'] ?? snapshotCandidate['usage'],
+            compactionCount: summaryCandidate['compactionCount'] ?? 0,
+            commandCount: summaryCandidate['commandCount'] ?? 0,
+            fileChangeCount: summaryCandidate['fileChangeCount'] ?? 0,
+        },
+        snapshot: {
+            id: snapshotCandidate['id'] ?? summaryCandidate['id'] ?? value['sessionId'] ?? 'session_imported',
+            createdAt: snapshotCandidate['createdAt'] ?? summaryCandidate['createdAt'] ?? value['createdAt'],
+            maxMessages: snapshotCandidate['maxMessages'] ?? summaryCandidate['maxMessages'] ?? 100,
+            messages,
+            usage: snapshotCandidate['usage'] ?? summaryCandidate['usage'],
+            metadata: snapshotCandidate['metadata'],
+        },
+    });
+
+    return inferred;
+}
+
+function normalizeUsage(value: unknown): { promptTokens: number; completionTokens: number; totalTokens: number } {
+    const usage = asObject(value);
+    return {
+        promptTokens: readNumber(usage?.['promptTokens']) ?? 0,
+        completionTokens: readNumber(usage?.['completionTokens']) ?? 0,
+        totalTokens: readNumber(usage?.['totalTokens']) ?? 0,
+    };
+}
+
+function normalizeSnapshotMetadata(value: unknown): SerializedSessionSnapshot['metadata'] {
+    const metadata = asObject(value);
+    return {
+        ...(readString(metadata?.['compactSummary']) ? { compactSummary: readString(metadata?.['compactSummary']) } : {}),
+        compactions: readArray(metadata?.['compactions']),
+        toolHistory: readArray(metadata?.['toolHistory']),
+        commandHistory: readArray(metadata?.['commandHistory']),
+        fileChanges: readArray(metadata?.['fileChanges']),
+    } as SerializedSessionSnapshot['metadata'];
+}
+
+function asObject(value: unknown): Record<string, unknown> | undefined {
+    return isObject(value) ? value : undefined;
+}
+
+function readString(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim().length > 0
+        ? value
+        : undefined;
+}
+
+function readNumber(value: unknown): number | undefined {
+    return typeof value === 'number' && Number.isFinite(value)
+        ? value
+        : undefined;
+}
+
+function readIsoString(value: unknown): string | undefined {
+    const asString = readString(value);
+    if (!asString) {
+        return undefined;
+    }
+    const date = new Date(asString);
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+function readArray(value: unknown): unknown[] {
+    return Array.isArray(value) ? value : [];
+}
+
+function readMessages(value: unknown): LLMMessage[] | undefined {
+    return Array.isArray(value) ? value as LLMMessage[] : undefined;
 }
 
 export class FileSessionShareStore implements SessionShareStore {

@@ -7,7 +7,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import type { DOMElement } from 'ink';
 import { Box, Text, useCursor, useInput } from 'ink';
 import chalk from 'chalk';
-import { getTheme } from './theme.js';
+import { getTheme, themeColor, createThemedStyles } from './theme.js';
 import { buildWrappedEditorLayout, getAbsolutePosition, PROMPT_TEXT } from './editor-layout.js';
 import {
     clampOffset,
@@ -297,7 +297,7 @@ export function TextAreaInput({
         if (showPlaceholder) {
             body = (
                 <Box ref={cursorRowRef}>
-                    <Text>{prompt}{chalk.hex(theme.textMuted)(placeholder)}</Text>
+                    <Text>{prompt}{createThemedStyles(theme).muted(placeholder)}</Text>
                 </Box>
             );
         } else if (value.length === 0) {
@@ -313,7 +313,7 @@ export function TextAreaInput({
                         key={`${row.lineIndex}-${row.startIndex}`}
                         ref={rowIndex === cursorVisibleRowIndex ? cursorRowRef : undefined}
                     >
-                        <Text color={theme.textMuted}>{row.prefix}</Text>
+                        <Text color={themeColor(theme, theme.textMuted)}>{row.prefix}</Text>
                         <Text>{row.text}</Text>
                     </Box>
                 );
@@ -322,7 +322,7 @@ export function TextAreaInput({
     } catch {
         body = (
             <Box ref={cursorRowRef}>
-                <Text>{prompt}{value || chalk.hex(theme.textMuted)(placeholder)}</Text>
+                <Text>{prompt}{value || createThemedStyles(theme).muted(placeholder)}</Text>
             </Box>
         );
     }

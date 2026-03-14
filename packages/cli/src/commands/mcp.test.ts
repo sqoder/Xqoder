@@ -60,6 +60,7 @@ describe('mcp command', () => {
         expect(manager.load().mcp?.servers).toEqual([
             {
                 name: 'filesystem',
+                transport: 'stdio',
                 command: 'node',
                 args: ['server.mjs'],
                 env: {
@@ -135,6 +136,7 @@ describe('mcp command', () => {
                     name: 'filesystem',
                     enabled: true,
                     status: 'ok',
+                    transport: 'stdio',
                     command: 'node',
                     args: ['server.mjs'],
                     protocolVersion: '2025-11-25',
@@ -175,7 +177,7 @@ describe('mcp command', () => {
             ]),
         }, manager);
 
-        expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('filesystem OK tools=2'));
+        expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('filesystem OK transport=stdio tools=2'));
         expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('read_file, write_file'));
         expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('prompts=review_project'));
         expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('resources=docs://readme'));

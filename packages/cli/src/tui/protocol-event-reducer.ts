@@ -174,6 +174,23 @@ export function reduceProtocolEvent(
             };
         }
 
+        case 'question.requested': {
+            const title = event.header ? `${event.header}: ` : '';
+            return {
+                ...state,
+                status: 'running',
+                infoMessage: `${title}${event.question}`.slice(0, 80),
+            };
+        }
+
+        case 'question.resolved': {
+            const selected = event.selected.length > 0 ? event.selected.join(', ') : 'none';
+            return {
+                ...state,
+                infoMessage: `Question resolved: ${selected}`,
+            };
+        }
+
         case 'status.changed': {
             return {
                 ...state,

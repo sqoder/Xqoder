@@ -24,6 +24,7 @@ import {
     SQLiteSessionStore,
     type AgentSessionStore,
 } from '@xqoder/storage-sqlite';
+import type { MessageAttachment } from '@xqoder/shared';
 import {
     XQoderAgent,
     buildAgentConfigFromXQoderConfig,
@@ -38,6 +39,8 @@ export interface ChatRunOptions {
     session?: string;
     newSession?: boolean;
     format?: OutputFormat;
+    /** 附件（如 run --file 传入），与 OpenCode 行为对齐 */
+    attachments?: MessageAttachment[];
 }
 
 export interface ChatServiceDependencies {
@@ -88,7 +91,41 @@ export function buildChatSystemPrompt(sandbox: SandboxSettings): string {
 - 如果用户要求生成整个项目、修复、运行、测试、部署，你可以先给出简短判断；当前终端也提供 /build /fix /run /test /deploy 这些稳定工作流命令
 - 如果用户明确要求操作项目目录外的路径（如桌面），不要直接拒绝，也不要改成“项目内替代方案”；应直接按目标路径尝试并触发权限审批，让用户选择是否放行
 - 如果用户表达“可操作整台电脑/给全部权限”，优先触发审批并等待用户决定
-- 回复保持简洁，优先中文`;
+- 回复保持简洁，优先中文
+
+回答格式（非常重要，尽量遵守）：
+每次回答编码相关问题时，请使用以下 6 个区块的结构化输出，区块标题使用英文，内容可以用中文：
+
+--------------------------------------------------
+USER_PROMPT
+简要重述或引用用户的问题，帮助快速回顾上下文。
+
+--------------------------------------------------
+PLAN
+用编号列出你打算执行的步骤，例如：
+1. 定位相关文件和函数
+2. 阅读现有实现，确认问题
+3. 修改或新增代码
+4. 运行相关测试并总结结果
+
+--------------------------------------------------
+EXECUTION_LOG
+在这里记录你实际执行过的动作（查了什么文件、跑了什么命令），用简短条目，不要粘贴大段代码。
+
+--------------------------------------------------
+RESULT
+用 1–3 行总结这次操作的关键结果，例如是否修好了问题、发现了什么风险或结论。
+
+--------------------------------------------------
+FILE_CHANGES
+当你建议具体改动时，按文件给出 Git 风格的 \\\`diff\\\` 代码块（“FILE: 路径” + \`\`\`diff 块）。
+如果本次不涉及修改代码，请在这一节明确写出“本次无实际代码改动，仅给出设计/说明。”。
+
+--------------------------------------------------
+NEXT_STEPS
+给出用户后续可以执行的 1–3 个建议步骤（例如跑测试、检查某个文件、补充信息等）。
+
+在终端宽度受限时，你可以适当精简文字，但仍应保留上述 6 个区块的标题顺序。`;
 }
 
 function createDefaultSessionStore(): AgentSessionStore | undefined {
@@ -119,6 +156,68 @@ function resolveChatSession(
         return explicitSession;
     }
     return sessionStore.findLatestSession(options.projectRoot) ?? undefined;
+}
+
+/** 无头运行单轮对话并返回结果（供 serve API 使用） */
+export async function runChatHeadless(
+    prompt: string,
+    options: ChatRunOptions,
+    dependencies: ChatServiceDependencies = {},
+): Promise<{ response: string; sessionId: string }> {
+    const resolvedDir = path.resolve(options.dir);
+    const loadedConfig = dependencies.configManager?.load({ cwd: resolvedDir }) ?? configManager.load({ cwd: resolvedDir });
+    const { config: effectiveConfig } = resolveConfigWithEnvOverrides(loadedConfig);
+
+    const sandbox = effectiveConfig.sandbox ?? { mode: 'project', allowedPaths: [] };
+    const sessionStore = dependencies.sessionStore ?? createDefaultSessionStore();
+    if (!sessionStore) {
+        throw new Error('Session 存储不可用');
+    }
+
+    const session = resolveChatSession(sessionStore, {
+        projectRoot: resolvedDir,
+        sessionId: options.session,
+        newSession: options.newSession ?? false,
+    });
+    const agentConfig = buildAgentConfigFromXQoderConfig(effectiveConfig, {
+        agentName: options.agent,
+        cwd: resolvedDir,
+        projectRoot: resolvedDir,
+        modelOverride: options.model,
+        promptAppendix: buildChatSystemPrompt(sandbox),
+        session,
+    });
+
+    if (!agentConfig.llmConfig.apiKey.trim()) {
+        throw new Error('LLM API Key 未配置');
+    }
+
+    const factoryConfig = {
+        ...agentConfig,
+        cwd: resolvedDir,
+        projectRoot: resolvedDir,
+        systemPrompt: agentConfig.systemPrompt ?? '',
+        sandboxMode: agentConfig.sandboxMode ?? sandbox.mode,
+        allowedPaths: agentConfig.allowedPaths ?? sandbox.allowedPaths,
+        shell: agentConfig.shell,
+    };
+    const agent = dependencies.agentFactory?.(factoryConfig) ?? new XQoderAgent(agentConfig);
+
+    let fullResponse = '';
+    try {
+        await agent.run(prompt, {
+            onToken: (token: string) => { fullResponse += token; },
+        }, options.attachments ?? []);
+        const summary = sessionStore.saveSession({
+            session: agent.getSession(),
+            projectRoot: resolvedDir,
+            cwd: resolvedDir,
+            model: agentConfig.llmConfig.model,
+        });
+        return { response: fullResponse, sessionId: summary.id };
+    } finally {
+        await agent.dispose?.();
+    }
 }
 
 export async function runChat(
@@ -175,7 +274,7 @@ export async function runChat(
             ? { ...callbacksFactory(), onToken: (token: string) => { fullResponse += token; } }
             : callbacksFactory();
 
-        await agent.run(prompt, callbacks);
+        await agent.run(prompt, callbacks, options.attachments ?? []);
         sessionStore?.saveSession({
             session: agent.getSession(),
             projectRoot: resolvedDir,
