@@ -188,7 +188,11 @@ interface ResolvedSymbolMatch extends ProjectSymbolMatch {
 interface OpenApiDocument {
     openapi: string;
     info: { title: string; version: string };
-    servers: Array<{ url: string }>;
+    servers: Array<{
+        url: string;
+        description?: string;
+        variables?: Record<string, { default: string; description?: string }>;
+    }>;
     security?: Array<Record<string, string[]>>;
     tags?: Array<{ name: string; description?: string }>;
     paths: Record<string, unknown>;
@@ -300,7 +304,26 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             title: 'XQoder Server API',
             version: getXQoderVersion(),
         },
-        servers: [{ url: `http://${hostname}:${port}` }],
+        servers: [
+            {
+                url: `http://${hostname}:${port}`,
+                description: 'Current serve runtime endpoint',
+            },
+            {
+                url: 'http://{host}:{port}',
+                description: 'Parameterized deployment endpoint',
+                variables: {
+                    host: {
+                        default: hostname,
+                        description: 'Serve hostname',
+                    },
+                    port: {
+                        default: String(port),
+                        description: 'Serve port',
+                    },
+                },
+            },
+        ],
         security: [{ basicAuth: [] }],
         tags: [
             { name: 'system', description: 'Server health and project metadata' },
