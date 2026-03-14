@@ -11,7 +11,6 @@
     },
     "onlyBuiltDependencies": [
       "cpu-features",
-      "electron",
       "esbuild",
       "protobufjs",
       "ssh2"
@@ -25,17 +24,22 @@
     "xqoder": "./scripts/xqoder.mjs"
   },
   "scripts": {
-    "build": "pnpm -r build",
+    "build": "pnpm --filter '@xqoder/cli...' run build",
     "clean": "node ./scripts/clean.mjs",
     "dev": "pnpm --filter @xqoder/cli dev",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r lint",
     "format:check": "node -e \"process.exit(0)\"",
     "test": "pnpm -r test",
+    "parity:test": "pnpm --filter @xqoder/agent parity:test && pnpm --filter @xqoder/cli parity:test",
     "test:e2e": "pnpm --filter @xqoder/cli test:e2e",
     "test:e2e:real": "pnpm --filter @xqoder/cli test:e2e:real",
     "version:sync": "node ./scripts/sync-versions.mjs",
     "release:check": "pnpm version:sync && pnpm build && pnpm test && pnpm lint",
+    "release:prepare:rc": "node scripts/release/prepare-channel.mjs --channel rc",
+    "release:prepare:beta": "node scripts/release/prepare-channel.mjs --channel beta",
+    "release:prepare:stable": "node scripts/release/prepare-channel.mjs --channel stable",
+    "release:rollout:check": "node scripts/release/evaluate-rollout.mjs",
     "verify:day30": "node scripts/verify-day30-gates.mjs",
     "xqoder": "node --max-old-space-size=4096 ./scripts/xqoder.mjs",
     "doctor": "pnpm xqoder -- config doctor"
