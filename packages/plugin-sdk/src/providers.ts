@@ -9,6 +9,7 @@ export interface RuntimeDescriptor {
   permissionPolicy: PermissionPolicy;
   emit?(event: AppEvent): void | Promise<void>;
   requestToolApproval?(request: ToolApprovalPrompt): Promise<'allow' | 'deny'> | 'allow' | 'deny';
+  requestQuestion?(request: QuestionPrompt): Promise<QuestionAnswer> | QuestionAnswer;
 }
 
 export interface ToolApprovalPrompt {
@@ -18,6 +19,26 @@ export interface ToolApprovalPrompt {
   reason?: string;
   preview?: string;
   risk?: 'low' | 'medium' | 'high';
+}
+
+export interface QuestionOption {
+  label: string;
+  description?: string;
+}
+
+export interface QuestionPrompt {
+  requestId: string;
+  question: string;
+  header?: string;
+  options: QuestionOption[];
+  multiple?: boolean;
+  allowCustom?: boolean;
+}
+
+export interface QuestionAnswer {
+  requestId: string;
+  selected: string[];
+  customText?: string;
 }
 
 export interface ToolDefinition {
