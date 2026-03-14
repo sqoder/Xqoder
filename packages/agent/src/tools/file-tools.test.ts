@@ -1,11 +1,17 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FileRollbackStore } from './rollback-store.js';
 import { PreviewDiffTool, ReadFileTool, SearchCodeTool, WriteFileTool } from './file-tools.js';
 
 const tempDirs: string[] = [];
+
+function hasRipgrep(): boolean {
+    const probe = spawnSync('rg', ['--version'], { encoding: 'utf-8' });
+    return !probe.error && probe.status === 0;
+}
 
 function createToolContext(): {
     projectRoot: string;
@@ -62,6 +68,10 @@ describe('file tools sandbox', () => {
     });
 
     it('searches code inside the project root with rg', async () => {
+        if (!hasRipgrep()) {
+            return;
+        }
+
         const context = createToolContext();
         fs.writeFileSync(path.join(context.projectRoot, 'index.js'), "console.log('hello sandbox');\n");
 

@@ -230,6 +230,7 @@ describe('ConfigManager', () => {
         expect(reloaded.mcp?.servers).toEqual([
             {
                 name: 'filesystem',
+                transport: 'stdio',
                 command: 'node',
                 args: ['server.js', '--project'],
                 env: {
