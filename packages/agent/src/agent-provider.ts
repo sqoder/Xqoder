@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import type { AgentProvider, AgentTask, RuntimeDescriptor, ToolApprovalPrompt } from '@xqoder/plugin-sdk';
+import type { AgentProvider, AgentTask, QuestionAnswer, QuestionPrompt, RuntimeDescriptor, ToolApprovalPrompt } from '@xqoder/plugin-sdk';
 import type { AppEvent, CoreMessage, JsonValue, MessageAttachment as ProtocolAttachment } from '@xqoder/protocol';
 import type { LLMMessage, MessageAttachment as SharedAttachment } from '@xqoder/shared';
 import { AgentSession } from './session/session.js';
@@ -237,6 +237,54 @@ async function resolveApprovalDecision(
     return decision === 'allow';
 }
 
+async function resolveQuestionDecision(
+    request: QuestionPrompt,
+    runtime: RuntimeDescriptor,
+    events: AsyncEventQueue<AppEvent>,
+): Promise<QuestionAnswer> {
+    events.push({
+        ...createEventBase('question.requested', runtime),
+        type: 'question.requested',
+        requestId: request.requestId,
+        question: request.question,
+        ...(request.header ? { header: request.header } : {}),
+        options: request.options,
+        ...(request.multiple ? { multiple: true } : {}),
+        ...(request.allowCustom ? { allowCustom: true } : {}),
+    });
+
+    if (runtime.requestQuestion) {
+        const answer = await runtime.requestQuestion(request);
+        const normalized = {
+            requestId: request.requestId,
+            selected: answer.selected ?? [],
+            ...(answer.customText ? { customText: answer.customText } : {}),
+        } satisfies QuestionAnswer;
+        events.push({
+            ...createEventBase('question.resolved', runtime),
+            type: 'question.resolved',
+            requestId: request.requestId,
+            selected: normalized.selected,
+            ...(normalized.customText ? { customText: normalized.customText } : {}),
+            answerSource: 'ui',
+        });
+        return normalized;
+    }
+
+    const fallback: QuestionAnswer = {
+        requestId: request.requestId,
+        selected: request.options.length > 0 ? [request.options[0]!.label] : [],
+    };
+    events.push({
+        ...createEventBase('question.resolved', runtime),
+        type: 'question.resolved',
+        requestId: request.requestId,
+        selected: fallback.selected,
+        answerSource: 'fallback',
+    });
+    return fallback;
+}
+
 export class XQoderAgentProvider implements AgentProvider {
   readonly name: string;
   private readonly createAgent: (config: AgentConfig) => AgentLike;
@@ -377,6 +425,7 @@ export class XQoderAgentProvider implements AgentProvider {
             });
           },
           onToolApproval: async (request) => resolveApprovalDecision(request, runtime, events),
+          onQuestion: async (request) => resolveQuestionDecision(request, runtime, events),
           onComplete: (message) => {
             completedAssistantMessage = message;
           },

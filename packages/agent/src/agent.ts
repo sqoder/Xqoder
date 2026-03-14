@@ -12,6 +12,9 @@ import type {
     ToolCall,
     SandboxMode,
     ShellConfig,
+    PermissionSettings,
+    AgentPermissionMode,
+    CompactionConfig,
 } from '@xqoder/shared';
 import { AgentError, logger as defaultLogger, Logger, calculateCost, getContextWindow } from '@xqoder/shared';
 import { getXQoderPaths } from '@xqoder/shared';
@@ -32,18 +35,55 @@ import { LocalProvider } from './llm/local.js';
 import { XAIProvider } from './llm/xai.js';
 import { ExternalLanguageServerManager } from './lsp.js';
 import { McpServerManager } from './mcp.js';
-import { ToolRegistry, type ToolApprovalRequest, type ToolContext } from './tools/tool.js';
+import { ToolRegistry, type QuestionAnswer, type QuestionPrompt, type ToolApprovalRequest, type ToolContext } from './tools/tool.js';
 import { ListFilesTool, GlobFilesTool, GrepContentTool } from './tools/discovery-tools.js';
 import { ReadFileTool, WriteFileTool, PreviewDiffTool, SearchCodeTool } from './tools/file-tools.js';
 import { SourcegraphTool } from './tools/sourcegraph-tool.js';
 import { RunCommandTool, InstallPackageTool } from './tools/command-tool.js';
+import { QuestionTool, SkillTool, TodoReadTool, TodoWriteTool } from './tools/interaction-tools.js';
 import { createDefaultLspTools } from './tools/lsp-tools.js';
 import { ApplyPatchTool, RestoreRollbackPointTool } from './tools/patch-tool.js';
-import { FetchUrlTool } from './tools/fetch-tool.js';
+import { FetchUrlTool, WebSearchTool } from './tools/fetch-tool.js';
 import { DiagnosticsTool } from './tools/diagnostics-tool.js';
 import { DelegateTaskTool } from './tools/agent-tool.js';
 import { FileRollbackStore, type RollbackStore } from './tools/rollback-store.js';
 import { AgentSession } from './session/session.js';
+
+/** OpenCode 风格：工具名 → 权限键（用于 permissions.tools 查找） */
+const TOOL_TO_PERMISSION_KEY: Record<string, string> = {
+    read_file: 'read',
+    write_file: 'edit',
+    preview_diff: 'edit',
+    apply_patch: 'edit',
+    restore_rollback_point: 'edit',
+    run_command: 'bash',
+    install_package: 'bash',
+    grep_content: 'grep',
+    search_code: 'grep',
+    glob_files: 'glob',
+    list_files: 'list',
+    fetch_url: 'webfetch',
+    websearch: 'websearch',
+    delegate_task: 'task',
+    diagnostics: 'read',
+    sourcegraph: 'read',
+    skill: 'skill',
+    todowrite: 'todowrite',
+    todoread: 'todoread',
+    question: 'question',
+};
+const LSP_TOOL_PREFIX = 'lsp_';
+function getPermissionKeyForTool(toolName: string): string {
+    if (toolName.startsWith(LSP_TOOL_PREFIX)) return 'lsp';
+    return TOOL_TO_PERMISSION_KEY[toolName] ?? toolName;
+}
+
+function resolveToolPermission(toolName: string, permissions: PermissionSettings | undefined): AgentPermissionMode {
+    if (!permissions) return 'ask';
+    const key = getPermissionKeyForTool(toolName);
+    const mode = permissions.tools?.[key] ?? permissions.defaultMode ?? 'ask';
+    return mode === 'allow' || mode === 'ask' || mode === 'deny' ? mode : 'ask';
+}
 
 /** Agent 配置 */
 export interface AgentConfig {
@@ -61,6 +101,10 @@ export interface AgentConfig {
     sessionTitle?: string;
     autoApproveTools?: boolean;
     rollbackStore?: RollbackStore;
+    /** OpenCode 风格：按权限键 allow/ask/deny，在工具执行前短路 */
+    permissions?: PermissionSettings;
+    /** 会话压缩配置 */
+    compaction?: CompactionConfig;
 }
 
 /** Agent 运行回调 */
@@ -73,6 +117,8 @@ export interface AgentCallbacks extends StreamCallbacks {
     onToolStream?: (name: string, chunk: string, stream: 'stdout' | 'stderr') => void;
     /** 工具执行前审批 */
     onToolApproval?: (request: ToolApprovalRequest) => Promise<boolean> | boolean;
+    /** 结构化提问 */
+    onQuestion?: (prompt: QuestionPrompt) => Promise<QuestionAnswer> | QuestionAnswer;
     /** 迭代计数 */
     onIteration?: (count: number) => void;
 }
@@ -89,6 +135,9 @@ export const DEFAULT_SYSTEM_PROMPT = `你是 XQoder，一个 AI 编程助手。�
 - 调用外部 MCP 工具
 - 读取 MCP resources 和 prompts
 - 委派研究任务给子 agent（delegate_task），让它们帮你探索代码库
+- 加载技能文档（skill）
+- 记录/读取任务清单（todowrite / todoread）
+- 发起结构化提问（question）
 
 请根据用户的需求，使用工具来完成编程任务。每次操作后请验证结果。
 如果遇到错误，请分析原因并尝试修复。
@@ -158,6 +207,8 @@ export class XQoderAgent {
     private readonly mcpToolNames = new Set<string>();
     private readonly llmConfig: LLMProviderConfig;
     private readonly autoApproveTools: boolean;
+    private readonly permissions?: PermissionSettings;
+    private readonly compaction?: CompactionConfig;
     private activeAbort?: AbortController;
 
     constructor(config: AgentConfig) {
@@ -178,6 +229,8 @@ export class XQoderAgent {
 
         this.maxIterations = config.maxIterations ?? 20;
         this.autoApproveTools = config.autoApproveTools ?? false;
+        this.permissions = config.permissions;
+        this.compaction = config.compaction;
         const projectRoot = path.resolve(config.projectRoot ?? config.cwd ?? process.cwd());
         this.rollbackStore = config.rollbackStore ?? new FileRollbackStore(getXQoderPaths().rollbackDir);
         this.toolContext = {
@@ -273,7 +326,7 @@ export class XQoderAgent {
 
             // Auto-compact: if context usage ≥ 85%, trigger summarization (like Open Code / Claude Code)
             const ctxWindow = getContextWindow(this.llmConfig.model);
-            if (ctxWindow && response.usage.promptTokens >= ctxWindow * 0.85) {
+            if (this.compaction?.auto !== false && ctxWindow && response.usage.promptTokens >= ctxWindow * 0.85) {
                 this.logger.warn(`Context usage at ${Math.round(response.usage.promptTokens / ctxWindow * 100)}%, triggering auto-compact`);
                 try {
                     const messages = this.session.getMessages().filter(m => m.role !== 'system');
@@ -321,6 +374,44 @@ export class XQoderAgent {
                 this.logger.warn(`工具 ${tc.name} 参数解析失败: ${tc.arguments?.slice(0, 100)}`);
             }
             this.logger.info(`调用工具: ${tc.name}`);
+
+            const perm = resolveToolPermission(tc.name, this.permissions);
+            if (perm === 'deny') {
+                const result = {
+                    toolCallId: tc.id,
+                    success: false,
+                    output: '',
+                    error: `工具 "${tc.name}" 已被权限配置拒绝 (permission: deny)`,
+                };
+                try { callbacks?.onToolStart?.(tc.name, args); } catch { /* noop */ }
+                try { callbacks?.onToolEnd?.(tc.name, result.output, false); } catch { /* noop */ }
+                this.session.recordToolExecution({
+                    id: tc.id,
+                    name: tc.name,
+                    args,
+                    success: false,
+                    output: result.output,
+                    error: result.error,
+                    startedAt: new Date(),
+                    completedAt: new Date(),
+                });
+                this.session.addToolResult(tc.id, `错误: ${result.error}`);
+                continue;
+            }
+
+            const requestToolApproval =
+                perm === 'allow' || this.autoApproveTools
+                    ? async () => true
+                    : callbacks?.onToolApproval
+                        ? (request: ToolApprovalRequest) => Promise.resolve(callbacks.onToolApproval?.(request) ?? false)
+                        : async () => false;
+            const requestQuestion = callbacks?.onQuestion
+                ? (prompt: QuestionPrompt) => Promise.resolve(callbacks.onQuestion?.(prompt) ?? {
+                    requestId: prompt.requestId,
+                    selected: [],
+                })
+                : undefined;
+
             try { callbacks?.onToolStart?.(tc.name, args); } catch { /* UI callback must not crash agent */ }
             const startedAt = new Date();
 
@@ -330,11 +421,8 @@ export class XQoderAgent {
                 {
                     ...this.toolContext,
                     sessionId: this.session.id,
-                    requestToolApproval: callbacks?.onToolApproval
-                        ? (request) => Promise.resolve(callbacks.onToolApproval?.(request) ?? false)
-                        : this.autoApproveTools
-                            ? async () => true
-                        : undefined,
+                    requestToolApproval,
+                    requestQuestion,
                     onToolStream: callbacks?.onToolStream
                         ? (event) => callbacks.onToolStream?.(tc.name, event.chunk, event.stream)
                         : undefined,
@@ -392,6 +480,11 @@ export class XQoderAgent {
         this.toolRegistry.register(new ApplyPatchTool());
         this.toolRegistry.register(new RestoreRollbackPointTool());
         this.toolRegistry.register(new FetchUrlTool());
+        this.toolRegistry.register(new WebSearchTool());
+        this.toolRegistry.register(new SkillTool());
+        this.toolRegistry.register(new TodoWriteTool());
+        this.toolRegistry.register(new TodoReadTool());
+        this.toolRegistry.register(new QuestionTool());
         this.toolRegistry.register(new DiagnosticsTool());
         this.toolRegistry.register(new DelegateTaskTool(this.llmConfig, this.toolRegistry));
     }

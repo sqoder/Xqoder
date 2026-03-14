@@ -23,6 +23,26 @@ export interface ToolStreamEvent {
     stream: 'stdout' | 'stderr';
 }
 
+export interface QuestionOption {
+    label: string;
+    description?: string;
+}
+
+export interface QuestionPrompt {
+    requestId: string;
+    question: string;
+    header?: string;
+    options: QuestionOption[];
+    multiple?: boolean;
+    allowCustom?: boolean;
+}
+
+export interface QuestionAnswer {
+    requestId: string;
+    selected: string[];
+    customText?: string;
+}
+
 /** 工具执行上下文 */
 export interface ToolContext {
     /** 当前工作目录 */
@@ -43,6 +63,8 @@ export interface ToolContext {
     requestToolApproval?: (request: ToolApprovalRequest) => Promise<boolean>;
     /** 流式工具输出 */
     onToolStream?: (event: ToolStreamEvent) => void;
+    /** 结构化提问交互 */
+    requestQuestion?: (prompt: QuestionPrompt) => Promise<QuestionAnswer>;
     /** 回滚点存储 */
     rollbackStore?: RollbackStore;
 }

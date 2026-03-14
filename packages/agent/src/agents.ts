@@ -210,6 +210,8 @@ export function buildAgentConfigFromXQoderConfig(
         session: options.session,
         sessionTitle: options.sessionTitle,
         autoApproveTools: options.autoApproveTools,
+        permissions: config.permissions,
+        compaction: config.compaction,
     };
 }
 
