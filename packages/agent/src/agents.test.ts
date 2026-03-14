@@ -50,6 +50,10 @@ function createConfig(): XQoderConfig {
             path: '/bin/zsh',
             args: ['-l'],
         },
+        compaction: {
+            auto: true,
+            prune: false,
+        },
         mcp: { servers: [] },
         lsp: { servers: [] },
         debug: false,
@@ -114,6 +118,11 @@ describe('agent catalog', () => {
         expect(config.shell).toEqual({
             path: '/bin/zsh',
             args: ['-l'],
+        });
+        expect(config.compaction).toEqual({
+            auto: true,
+            prune: false,
+            reserved: undefined,
         });
         expect(config.systemPrompt).toContain('Summarize the recent session before compacting.');
         expect(config.llmConfig.model).toBe('gpt-4.1-mini');
