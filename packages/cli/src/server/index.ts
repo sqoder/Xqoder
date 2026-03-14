@@ -190,6 +190,7 @@ interface OpenApiDocument {
     info: { title: string; version: string };
     servers: Array<{ url: string }>;
     security?: Array<Record<string, string[]>>;
+    tags?: Array<{ name: string; description?: string }>;
     paths: Record<string, unknown>;
     components?: Record<string, unknown>;
 }
@@ -301,6 +302,14 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
         },
         servers: [{ url: `http://${hostname}:${port}` }],
         security: [{ basicAuth: [] }],
+        tags: [
+            { name: 'system', description: 'Server health and project metadata' },
+            { name: 'search', description: 'File and symbol search APIs' },
+            { name: 'session', description: 'Session lifecycle and messaging APIs' },
+            { name: 'stream', description: 'Streaming and interaction control APIs' },
+            { name: 'share', description: 'Session share artifact APIs' },
+            { name: 'docs', description: 'API documentation endpoints' },
+        ],
         components: {
             securitySchemes: {
                 basicAuth: {
@@ -702,6 +711,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/global/health': {
                 get: {
                     operationId: 'getGlobalHealth',
+                    tags: ['system'],
                     summary: 'Health check',
                     responses: {
                         200: {
@@ -719,6 +729,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/project': {
                 get: {
                     operationId: 'getProject',
+                    tags: ['system'],
                     summary: 'Project metadata',
                     responses: {
                         200: {
@@ -736,6 +747,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/config': {
                 get: {
                     operationId: 'getConfig',
+                    tags: ['system'],
                     summary: 'Resolved config snapshot',
                     responses: {
                         200: {
@@ -753,6 +765,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/provider': {
                 get: {
                     operationId: 'getProvider',
+                    tags: ['system'],
                     summary: 'Provider readiness state',
                     responses: {
                         200: {
@@ -770,9 +783,17 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/event': {
                 get: {
                     operationId: 'getEventStream',
+                    tags: ['stream'],
                     summary: 'Server-sent AppEvent stream',
                     responses: {
-                        200: { description: 'SSE stream' },
+                        200: {
+                            description: 'SSE stream',
+                            content: {
+                                'text/event-stream': {
+                                    schema: { type: 'string' },
+                                },
+                            },
+                        },
                         401: { $ref: '#/components/responses/UnauthorizedError' },
                     },
                 },
@@ -780,6 +801,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/find': {
                 get: {
                     operationId: 'getFindMatches',
+                    tags: ['search'],
                     summary: 'Search text in project files',
                     parameters: [
                         { name: 'query', in: 'query', required: true, schema: { type: 'string' } },
@@ -803,6 +825,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/find/file': {
                 get: {
                     operationId: 'getFindFiles',
+                    tags: ['search'],
                     summary: 'Search files by path text',
                     parameters: [
                         { name: 'query', in: 'query', required: true, schema: { type: 'string' } },
@@ -825,6 +848,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/find/symbol': {
                 get: {
                     operationId: 'getFindSymbols',
+                    tags: ['search'],
                     summary: 'Search symbols by name/kind',
                     parameters: [
                         { name: 'query', in: 'query', required: true, schema: { type: 'string' } },
@@ -849,6 +873,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/file': {
                 get: {
                     operationId: 'getFile',
+                    tags: ['search'],
                     summary: 'Read a project file',
                     parameters: [
                         { name: 'path', in: 'query', required: true, schema: { type: 'string' } },
@@ -884,6 +909,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/share/{id}': {
                 get: {
                     operationId: 'getShareById',
+                    tags: ['share'],
                     summary: 'Read shared session artifact by id',
                     parameters: [
                         { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
@@ -919,6 +945,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/session': {
                 get: {
                     operationId: 'listSessions',
+                    tags: ['session'],
                     summary: 'List sessions',
                     parameters: [
                         { name: 'projectRoot', in: 'query', required: false, schema: { type: 'string' } },
@@ -939,6 +966,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                 },
                 post: {
                     operationId: 'createSession',
+                    tags: ['session'],
                     summary: 'Create session',
                     requestBody: {
                         required: false,
@@ -979,6 +1007,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/session/{id}': {
                 get: {
                     operationId: 'getSessionById',
+                    tags: ['session'],
                     summary: 'Get session summary',
                     parameters: [
                         { name: 'id', in: 'path', required: true, schema: { type: 'string', minLength: 1 } },
@@ -1001,6 +1030,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/session/{id}/messages': {
                 get: {
                     operationId: 'getSessionMessages',
+                    tags: ['session'],
                     summary: 'Get session transcript',
                     parameters: [
                         { name: 'id', in: 'path', required: true, schema: { type: 'string', minLength: 1 } },
@@ -1023,6 +1053,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/session/{id}/message': {
                 post: {
                     operationId: 'postSessionMessage',
+                    tags: ['session'],
                     summary: 'Send one message',
                     parameters: [
                         { name: 'id', in: 'path', required: true, schema: { type: 'string', minLength: 1 } },
@@ -1075,6 +1106,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/session/{id}/message/stream': {
                 post: {
                     operationId: 'postSessionMessageStream',
+                    tags: ['session', 'stream'],
                     summary: 'Send message with NDJSON stream',
                     parameters: [
                         { name: 'id', in: 'path', required: true, schema: { type: 'string', minLength: 1 } },
@@ -1122,6 +1154,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/session/{id}/question/{requestId}/resolve': {
                 post: {
                     operationId: 'resolveSessionQuestion',
+                    tags: ['stream'],
                     summary: 'Resolve pending question',
                     parameters: [
                         { name: 'id', in: 'path', required: true, schema: { type: 'string', minLength: 1 } },
@@ -1170,6 +1203,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/session/{id}/stream/{streamId}/cancel': {
                 post: {
                     operationId: 'cancelSessionStream',
+                    tags: ['stream'],
                     summary: 'Cancel running stream',
                     parameters: [
                         { name: 'id', in: 'path', required: true, schema: { type: 'string', minLength: 1 } },
@@ -1192,10 +1226,19 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/doc': {
                 get: {
                     operationId: 'getDoc',
+                    tags: ['docs'],
                     summary: 'API documentation (HTML or OpenAPI JSON)',
                     responses: {
                         200: {
                             description: 'API documentation in HTML or OpenAPI JSON',
+                            content: {
+                                'text/html': {
+                                    schema: { type: 'string' },
+                                },
+                                'application/json': {
+                                    schema: { type: 'object' },
+                                },
+                            },
                         },
                         401: { $ref: '#/components/responses/UnauthorizedError' },
                     },
@@ -1204,6 +1247,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             '/doc.openapi.json': {
                 get: {
                     operationId: 'getOpenApiDocument',
+                    tags: ['docs'],
                     summary: 'OpenAPI JSON document',
                     responses: {
                         200: {
