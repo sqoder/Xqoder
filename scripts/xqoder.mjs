@@ -10,7 +10,25 @@ process.stdin.on('error', () => {});
 process.stdout.on('error', () => {});
 process.stderr.on('error', () => {});
 
+// 加载 .env（先当前目录，再脚本所在仓库根目录），不覆盖已有环境变量
+function loadEnvFile(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return;
+    const content = fs.readFileSync(filePath, 'utf8');
+    for (const line of content.split('\n')) {
+      const m = line.match(/^([^#=]+)=(.*)$/);
+      if (!m) continue;
+      const key = m[1].trim();
+      if (process.env[key] !== undefined) continue; // 不覆盖
+      let val = m[2].trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) val = val.slice(1, -1);
+      process.env[key] = val;
+    }
+  } catch { /* ignore */ }
+}
+loadEnvFile(path.resolve(process.cwd(), '.env'));
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+loadEnvFile(path.resolve(scriptDir, '..', '.env'));
 const cliEntrypoint = process.env.XQODER_CLI_ENTRYPOINT
   ? path.resolve(process.env.XQODER_CLI_ENTRYPOINT)
   : path.resolve(scriptDir, '../packages/cli/dist/index.js');
