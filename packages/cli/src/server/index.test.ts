@@ -384,6 +384,11 @@ describe('serve message stream api', () => {
         expect(openApiRes.status).toBe(200);
         const openApi = await openApiRes.json() as {
             openapi: string;
+            servers?: Array<{
+                url: string;
+                description?: string;
+                variables?: Record<string, { default: string }>;
+            }>;
             security?: Array<Record<string, string[]>>;
             tags?: Array<{ name: string }>;
             paths: Record<string, unknown>;
@@ -394,6 +399,10 @@ describe('serve message stream api', () => {
             };
         };
         expect(openApi.openapi).toBe('3.1.0');
+        expect(openApi.servers?.[0]?.description).toBe('Current serve runtime endpoint');
+        expect(openApi.servers?.[1]?.url).toBe('http://{host}:{port}');
+        expect(openApi.servers?.[1]?.variables?.host?.default).toBe('127.0.0.1');
+        expect(openApi.servers?.[1]?.variables?.port?.default).toBe('4096');
         expect(openApi.paths['/find/symbol']).toBeTruthy();
         expect(openApi.components?.schemas?.['SymbolMatch']).toBeTruthy();
         expect(openApi.components?.schemas?.['SymbolSearchResponse']).toBeTruthy();
