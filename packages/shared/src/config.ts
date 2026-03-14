@@ -63,7 +63,7 @@ function createDefaultConfig(env: NodeJS.ProcessEnv = process.env): XQoderConfig
     const shellPath = env['SHELL']?.trim() || '/bin/bash';
 
     return {
-        theme: 'xqoder',
+        theme: 'default',
         tui: {
             mouseMode: 'terminal',
             scrollStep: 3,
@@ -116,6 +116,31 @@ function createDefaultConfig(env: NodeJS.ProcessEnv = process.env): XQoderConfig
             allowIncompatible: false,
         },
     };
+}
+
+function getProviderCredentialFilePaths(provider: string, credentialDir?: string): string[] {
+    const baseDir = credentialDir ?? path.dirname(CONFIG_FILE);
+    const primaryPath = path.join(baseDir, 'credentials', `${provider}.key`);
+    const legacyPath = path.join(getXQoderPaths().dataDir, 'credentials', `${provider}.key`);
+    return Array.from(new Set([primaryPath, legacyPath]));
+}
+
+function loadProviderCredentialFromFile(provider: string, credentialDir?: string): string | undefined {
+    const credentialFiles = getProviderCredentialFilePaths(provider, credentialDir);
+    for (const credentialFile of credentialFiles) {
+        try {
+            if (!fs.existsSync(credentialFile)) {
+                continue;
+            }
+            const key = fs.readFileSync(credentialFile, 'utf-8').trim();
+            if (key.length > 0) {
+                return key;
+            }
+        } catch {
+            // try next credential location
+        }
+    }
+    return undefined;
 }
 
 export interface ResolvedConfigResult {
@@ -272,7 +297,7 @@ export class ConfigManager {
 
     /** 获取主题设置 */
     getThemeSetting(): string {
-        return this.config.theme ?? 'xqoder';
+        return this.config.theme ?? 'default';
     }
 
     /** 设置主题并持久化 */
@@ -436,6 +461,23 @@ export function loadTuiConfig(options?: {
     }
 }
 
+/** 写入 tui.json（合并现有配置），用于 Theme 等持久化 */
+export function writeTuiConfig(updates: Partial<TuiConfig>, options?: { path?: string; homeDir?: string }): void {
+    const homeDir = options?.homeDir ?? os.homedir();
+    const paths = getXQoderPaths(homeDir);
+    const tuiPath = options?.path ?? process.env['XQODER_TUI_CONFIG'] ?? paths.tuiConfigFile;
+    const existing = loadTuiConfig({ path: tuiPath, homeDir });
+    const merged: TuiConfig = {
+        ...existing,
+        ...updates,
+    };
+    const dir = path.dirname(tuiPath);
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(tuiPath, JSON.stringify(merged, null, 2), 'utf-8');
+}
+
 function stripJsonComments(raw: string): string {
     return raw.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '').trim();
 }
@@ -571,6 +613,7 @@ export function resolveAgentLLMConfig(
 export function resolveConfigWithEnvOverrides(
     baseConfig: XQoderConfig,
     env: NodeJS.ProcessEnv = process.env,
+    options: { credentialDir?: string } = {},
 ): ResolvedConfigResult {
     const appliedEnvVars: string[] = [];
     const llmOverrides: Partial<LLMProviderConfig> = {};
@@ -618,6 +661,20 @@ export function resolveConfigWithEnvOverrides(
         appliedEnvVars.push('XQODER_DEBUG');
     }
 
+    const xqoderAutoCompact = parseBooleanEnv(env['XQODER_AUTO_COMPACT']);
+    if (xqoderAutoCompact !== undefined) {
+        appliedEnvVars.push('XQODER_AUTO_COMPACT');
+    }
+    const opencodeDisableAutoCompact = parseBooleanEnv(env['OPENCODE_DISABLE_AUTOCOMPACT']);
+    if (opencodeDisableAutoCompact !== undefined) {
+        appliedEnvVars.push('OPENCODE_DISABLE_AUTOCOMPACT');
+    }
+    const compactionAutoOverride = xqoderAutoCompact ?? (
+        opencodeDisableAutoCompact !== undefined
+            ? !opencodeDisableAutoCompact
+            : undefined
+    );
+
     const vercelScope = env['XQODER_VERCEL_SCOPE'];
     if (vercelScope) {
         appliedEnvVars.push('XQODER_VERCEL_SCOPE');
@@ -662,6 +719,26 @@ export function resolveConfigWithEnvOverrides(
         ...(baseConfig.providers ?? {}),
     };
 
+    for (const providerName of new Set<LLMProviderName>([
+        ...SUPPORTED_LLM_PROVIDERS,
+        ...Object.keys(nextProviders) as LLMProviderName[],
+    ])) {
+        const existing = nextProviders[providerName];
+        const hasInlineKey = Boolean(existing?.apiKey?.trim());
+        if (hasInlineKey) {
+            continue;
+        }
+        const credential = loadProviderCredentialFromFile(providerName, options.credentialDir);
+        if (!credential) {
+            continue;
+        }
+        nextProviders[providerName] = normalizeProviderSettings(providerName, {
+            ...(existing ?? {}),
+            apiKey: credential,
+        });
+        appliedEnvVars.push(`CREDENTIAL_FILE:${providerName}`);
+    }
+
     if (provider || env['XQODER_LLM_API_KEY'] || env['XQODER_LLM_BASE_URL'] || env['XQODER_LLM_MODEL']) {
         nextProviders[credentialProvider] = normalizeProviderSettings(
             credentialProvider,
@@ -696,6 +773,14 @@ export function resolveConfigWithEnvOverrides(
                 ...(sandboxMode ? { mode: sandboxMode } : {}),
                 ...(allowedPaths.length > 0 ? { allowedPaths } : {}),
             }),
+            ...(compactionAutoOverride !== undefined
+                ? {
+                    compaction: {
+                        ...(baseConfig.compaction ?? {}),
+                        auto: compactionAutoOverride,
+                    },
+                }
+                : {}),
         }),
         appliedEnvVars,
     };
@@ -774,13 +859,24 @@ function normalizeMCPServerConfig(server: MCPServerConfig): MCPServerConfig {
     const normalizedArgs = (server.args ?? [])
         .map((value) => value.trim())
         .filter(Boolean);
+    const normalizedHeaders = Object.fromEntries(
+        Object.entries(server.headers ?? {})
+            .map(([key, value]) => [key.trim(), value])
+            .filter(([key, value]) => key.length > 0 && typeof value === 'string'),
+    );
+    const transport = server.transport === 'http' || server.transport === 'sse'
+        ? server.transport
+        : 'stdio';
 
     return {
         name: server.name?.trim() || '',
-        command: server.command?.trim() || '',
+        transport,
+        ...(server.command?.trim() ? { command: server.command.trim() } : {}),
         args: normalizedArgs,
         env: normalizedEnv,
         cwd: server.cwd?.trim() || undefined,
+        ...(server.url?.trim() ? { url: server.url.trim() } : {}),
+        ...(Object.keys(normalizedHeaders).length > 0 ? { headers: normalizedHeaders } : {}),
         enabled: server.enabled ?? true,
         timeoutMs: normalizeTimeout(server.timeoutMs),
     };
