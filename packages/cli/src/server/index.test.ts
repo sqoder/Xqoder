@@ -430,12 +430,17 @@ describe('serve message stream api', () => {
         expect(streamPath.post?.responses?.['503']).toBeTruthy();
 
         const findPath = openApi.paths['/find'] as {
-            get?: { operationId?: string; tags?: string[]; responses?: Record<string, { $ref?: string }> };
+            get?: {
+                operationId?: string;
+                tags?: string[];
+                responses?: Record<string, { $ref?: string; content?: Record<string, { examples?: Record<string, unknown> }> }>;
+            };
         };
         expect(findPath.get?.operationId).toBe('getFindMatches');
         expect(findPath.get?.tags).toEqual(expect.arrayContaining(['search']));
         expect(findPath.get?.responses?.['401']?.$ref).toBe('#/components/responses/UnauthorizedError');
         expect(findPath.get?.responses?.['400']?.$ref).toBe('#/components/responses/BadRequestError');
+        expect(findPath.get?.responses?.['200']?.content?.['application/json']?.examples?.['textMatches']).toBeTruthy();
 
         const filePath = openApi.paths['/file'] as {
             get?: { operationId?: string; responses?: Record<string, { $ref?: string }> };
@@ -455,19 +460,23 @@ describe('serve message stream api', () => {
             post?: {
                 operationId?: string;
                 requestBody?: { content?: { 'application/json'?: { examples?: Record<string, unknown> } } };
+                responses?: Record<string, { content?: Record<string, { examples?: Record<string, unknown> }> }>;
             };
         };
         expect(sessionCreatePath.post?.operationId).toBe('createSession');
         expect(sessionCreatePath.post?.requestBody?.content?.['application/json']?.examples?.['minimal']).toBeTruthy();
+        expect(sessionCreatePath.post?.responses?.['200']?.content?.['application/json']?.examples?.['created']).toBeTruthy();
 
         const sessionMessagePostPath = openApi.paths['/session/{id}/message'] as {
             post?: {
                 operationId?: string;
                 requestBody?: { content?: { 'application/json'?: { examples?: Record<string, unknown> } } };
+                responses?: Record<string, { content?: Record<string, { examples?: Record<string, unknown> }> }>;
             };
         };
         expect(sessionMessagePostPath.post?.operationId).toBe('postSessionMessage');
         expect(sessionMessagePostPath.post?.requestBody?.content?.['application/json']?.examples?.['textOnly']).toBeTruthy();
+        expect(sessionMessagePostPath.post?.responses?.['200']?.content?.['application/json']?.examples?.['reply']).toBeTruthy();
 
         const docPath = openApi.paths['/doc'] as {
             get?: {

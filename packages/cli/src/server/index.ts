@@ -719,6 +719,14 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                             content: {
                                 'application/json': {
                                     schema: { $ref: '#/components/schemas/HealthResponse' },
+                                    examples: {
+                                        healthy: {
+                                            value: {
+                                                healthy: true,
+                                                version: '0.2.0',
+                                            },
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -737,6 +745,15 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                             content: {
                                 'application/json': {
                                     schema: { $ref: '#/components/schemas/ProjectResponse' },
+                                    examples: {
+                                        projectMeta: {
+                                            value: {
+                                                projectRoot: '/workspace/demo',
+                                                cwd: '/workspace/demo',
+                                                platform: 'darwin',
+                                            },
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -755,6 +772,18 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                             content: {
                                 'application/json': {
                                     schema: { $ref: '#/components/schemas/ConfigResponse' },
+                                    examples: {
+                                        resolvedConfig: {
+                                            value: {
+                                                config: {
+                                                    provider: 'openai',
+                                                    model: 'gpt-4.1-mini',
+                                                    apiKey: '***REDACTED***',
+                                                },
+                                                appliedEnvVars: ['OPENAI_API_KEY'],
+                                            },
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -773,6 +802,23 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                             content: {
                                 'application/json': {
                                     schema: { $ref: '#/components/schemas/ProviderResponse' },
+                                    examples: {
+                                        providers: {
+                                            value: {
+                                                current: 'openai',
+                                                providers: [
+                                                    {
+                                                        name: 'openai',
+                                                        current: true,
+                                                        authenticated: true,
+                                                        disabled: false,
+                                                        defaultModel: 'gpt-4.1-mini',
+                                                        baseUrl: 'https://api.openai.com/v1',
+                                                    },
+                                                ],
+                                            },
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -814,6 +860,21 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                             content: {
                                 'application/json': {
                                     schema: { $ref: '#/components/schemas/FindResponse' },
+                                    examples: {
+                                        textMatches: {
+                                            value: {
+                                                query: 'createServer',
+                                                regex: false,
+                                                matches: [
+                                                    {
+                                                        path: 'packages/cli/src/server/index.ts',
+                                                        line: 1254,
+                                                        text: 'export function createServer(options: ServerOptions = {}): http.Server {',
+                                                    },
+                                                ],
+                                            },
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -837,6 +898,14 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                             content: {
                                 'application/json': {
                                     schema: { $ref: '#/components/schemas/FindFileResponse' },
+                                    examples: {
+                                        fileMatches: {
+                                            value: {
+                                                query: 'server/index',
+                                                files: ['packages/cli/src/server/index.ts'],
+                                            },
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -862,6 +931,32 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                             content: {
                                 'application/json': {
                                     schema: { $ref: '#/components/schemas/SymbolSearchResponse' },
+                                    examples: {
+                                        symbols: {
+                                            value: {
+                                                query: 'createServer',
+                                                strategy: {
+                                                    lspAttempted: true,
+                                                    lspSucceeded: true,
+                                                    fallbackScan: false,
+                                                },
+                                                pagination: {
+                                                    cursor: '0',
+                                                    total: 1,
+                                                },
+                                                symbols: [
+                                                    {
+                                                        name: 'createServer',
+                                                        kind: 'function',
+                                                        path: 'packages/cli/src/server/index.ts',
+                                                        line: 1254,
+                                                        text: 'export function createServer(...)',
+                                                        source: 'lsp',
+                                                    },
+                                                ],
+                                            },
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -884,6 +979,14 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                             content: {
                                 'application/json': {
                                     schema: { $ref: '#/components/schemas/FileResponse' },
+                                    examples: {
+                                        fileContent: {
+                                            value: {
+                                                path: 'README.md',
+                                                content: '# XQoder\n',
+                                            },
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -957,6 +1060,22 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                             content: {
                                 'application/json': {
                                     schema: { $ref: '#/components/schemas/SessionListResponse' },
+                                    examples: {
+                                        list: {
+                                            value: [
+                                                {
+                                                    id: 'session_123',
+                                                    projectRoot: '/workspace/demo',
+                                                    cwd: '/workspace/demo',
+                                                    model: 'openai/gpt-4o',
+                                                    title: 'Debug checkout flow',
+                                                    createdAt: '2026-03-14T08:00:00.000Z',
+                                                    updatedAt: '2026-03-14T08:05:00.000Z',
+                                                    messageCount: 4,
+                                                },
+                                            ],
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -995,6 +1114,20 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                             content: {
                                 'application/json': {
                                     schema: { $ref: '#/components/schemas/SessionSummary' },
+                                    examples: {
+                                        created: {
+                                            value: {
+                                                id: 'session_123',
+                                                projectRoot: '/workspace/demo',
+                                                cwd: '/workspace/demo',
+                                                model: 'openai/gpt-4o',
+                                                title: 'New Session',
+                                                createdAt: '2026-03-14T08:00:00.000Z',
+                                                updatedAt: '2026-03-14T08:00:00.000Z',
+                                                messageCount: 0,
+                                            },
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -1018,6 +1151,20 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                             content: {
                                 'application/json': {
                                     schema: { $ref: '#/components/schemas/SessionSummary' },
+                                    examples: {
+                                        summary: {
+                                            value: {
+                                                id: 'session_123',
+                                                projectRoot: '/workspace/demo',
+                                                cwd: '/workspace/demo',
+                                                model: 'openai/gpt-4o',
+                                                title: 'Debug checkout flow',
+                                                createdAt: '2026-03-14T08:00:00.000Z',
+                                                updatedAt: '2026-03-14T08:05:00.000Z',
+                                                messageCount: 4,
+                                            },
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -1092,6 +1239,14 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                             content: {
                                 'application/json': {
                                     schema: { $ref: '#/components/schemas/SessionMessageResponse' },
+                                    examples: {
+                                        reply: {
+                                            value: {
+                                                response: 'I analyzed the repo structure and key modules.',
+                                                sessionId: 'session_123',
+                                            },
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -1190,6 +1345,14 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                             content: {
                                 'application/json': {
                                     schema: { $ref: '#/components/schemas/SessionQuestionResolveResponse' },
+                                    examples: {
+                                        resolved: {
+                                            value: {
+                                                ok: true,
+                                                requestId: 'req_123',
+                                            },
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -1215,6 +1378,14 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                             content: {
                                 'application/json': {
                                     schema: { $ref: '#/components/schemas/StreamCancelResponse' },
+                                    examples: {
+                                        cancelled: {
+                                            value: {
+                                                ok: true,
+                                                streamId: 'stream_123',
+                                            },
+                                        },
+                                    },
                                 },
                             },
                         },
