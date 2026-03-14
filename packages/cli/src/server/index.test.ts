@@ -385,6 +385,7 @@ describe('serve message stream api', () => {
         const openApi = await openApiRes.json() as {
             openapi: string;
             security?: Array<Record<string, string[]>>;
+            tags?: Array<{ name: string }>;
             paths: Record<string, unknown>;
             components?: {
                 schemas?: Record<string, unknown>;
@@ -406,6 +407,8 @@ describe('serve message stream api', () => {
         expect(openApi.components?.responses?.['ServiceUnavailableError']).toBeTruthy();
         expect(openApi.components?.responses?.['UnauthorizedError']).toBeTruthy();
         expect(openApi.security).toEqual(expect.arrayContaining([{ basicAuth: [] }]));
+        expect(openApi.tags?.some((tag) => tag.name === 'docs')).toBe(true);
+        expect(openApi.tags?.some((tag) => tag.name === 'session')).toBe(true);
 
         const sessionMessagePath = openApi.paths['/session/{id}/message'] as {
             post?: { responses?: Record<string, unknown> };
@@ -427,9 +430,10 @@ describe('serve message stream api', () => {
         expect(streamPath.post?.responses?.['503']).toBeTruthy();
 
         const findPath = openApi.paths['/find'] as {
-            get?: { operationId?: string; responses?: Record<string, { $ref?: string }> };
+            get?: { operationId?: string; tags?: string[]; responses?: Record<string, { $ref?: string }> };
         };
         expect(findPath.get?.operationId).toBe('getFindMatches');
+        expect(findPath.get?.tags).toEqual(expect.arrayContaining(['search']));
         expect(findPath.get?.responses?.['401']?.$ref).toBe('#/components/responses/UnauthorizedError');
         expect(findPath.get?.responses?.['400']?.$ref).toBe('#/components/responses/BadRequestError');
 
@@ -465,12 +469,27 @@ describe('serve message stream api', () => {
         expect(sessionMessagePostPath.post?.operationId).toBe('postSessionMessage');
         expect(sessionMessagePostPath.post?.requestBody?.content?.['application/json']?.examples?.['textOnly']).toBeTruthy();
 
-        const docPath = openApi.paths['/doc'] as { get?: { operationId?: string } };
+        const docPath = openApi.paths['/doc'] as {
+            get?: {
+                operationId?: string;
+                tags?: string[];
+                responses?: Record<string, { content?: Record<string, unknown> }>;
+            };
+        };
         expect(docPath.get?.operationId).toBe('getDoc');
+        expect(docPath.get?.tags).toEqual(expect.arrayContaining(['docs']));
+        expect(docPath.get?.responses?.['200']?.content?.['text/html']).toBeTruthy();
+        expect(docPath.get?.responses?.['200']?.content?.['application/json']).toBeTruthy();
         const docOpenApiPath = openApi.paths['/doc.openapi.json'] as {
             get?: { responses?: Record<string, { $ref?: string }> };
         };
         expect(docOpenApiPath.get?.responses?.['401']?.$ref).toBe('#/components/responses/UnauthorizedError');
+
+        const eventPath = openApi.paths['/event'] as {
+            get?: { tags?: string[]; responses?: Record<string, { content?: Record<string, unknown> }> };
+        };
+        expect(eventPath.get?.tags).toEqual(expect.arrayContaining(['stream']));
+        expect(eventPath.get?.responses?.['200']?.content?.['text/event-stream']).toBeTruthy();
 
         const docJsonByAcceptRes = await fetch(`${baseUrl}/doc`, {
             headers: { Accept: 'application/json' },
