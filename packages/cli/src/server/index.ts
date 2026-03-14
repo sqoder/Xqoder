@@ -189,6 +189,7 @@ interface OpenApiDocument {
     openapi: string;
     info: { title: string; version: string };
     servers: Array<{ url: string }>;
+    security?: Array<Record<string, string[]>>;
     paths: Record<string, unknown>;
     components?: Record<string, unknown>;
 }
@@ -299,6 +300,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
             version: getXQoderVersion(),
         },
         servers: [{ url: `http://${hostname}:${port}` }],
+        security: [{ basicAuth: [] }],
         components: {
             securitySchemes: {
                 basicAuth: {
@@ -388,6 +390,20 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 runtimeMissing: {
                                     summary: 'Message runtime unavailable',
                                     value: { error: 'Server not configured for messages' },
+                                },
+                            },
+                        },
+                    },
+                },
+                UnauthorizedError: {
+                    description: 'Missing or invalid Basic auth credentials',
+                    content: {
+                        'application/json': {
+                            schema: { $ref: '#/components/schemas/ErrorResponse' },
+                            examples: {
+                                unauthorized: {
+                                    summary: 'Unauthorized request',
+                                    value: { error: 'Unauthorized' },
                                 },
                             },
                         },
@@ -696,6 +712,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 },
                             },
                         },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
                     },
                 },
             },
@@ -712,6 +729,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 },
                             },
                         },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
                     },
                 },
             },
@@ -728,6 +746,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 },
                             },
                         },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
                     },
                 },
             },
@@ -744,6 +763,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 },
                             },
                         },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
                     },
                 },
             },
@@ -751,7 +771,10 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                 get: {
                     operationId: 'getEventStream',
                     summary: 'Server-sent AppEvent stream',
-                    responses: { 200: { description: 'SSE stream' } },
+                    responses: {
+                        200: { description: 'SSE stream' },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
+                    },
                 },
             },
             '/find': {
@@ -772,6 +795,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 },
                             },
                         },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
                         400: { $ref: '#/components/responses/BadRequestError' },
                     },
                 },
@@ -793,6 +817,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 },
                             },
                         },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
                         400: { $ref: '#/components/responses/BadRequestError' },
                     },
                 },
@@ -816,6 +841,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 },
                             },
                         },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
                         400: { $ref: '#/components/responses/BadRequestError' },
                     },
                 },
@@ -836,6 +862,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 },
                             },
                         },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
                         400: { $ref: '#/components/responses/BadRequestError' },
                         403: {
                             description: 'Path escapes project root',
@@ -883,6 +910,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 },
                             },
                         },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
                         404: { $ref: '#/components/responses/NotFoundError' },
                         503: { $ref: '#/components/responses/ServiceUnavailableError' },
                     },
@@ -905,6 +933,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 },
                             },
                         },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
                         503: { $ref: '#/components/responses/ServiceUnavailableError' },
                     },
                 },
@@ -941,6 +970,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 },
                             },
                         },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
                         400: { $ref: '#/components/responses/BadRequestError' },
                         503: { $ref: '#/components/responses/ServiceUnavailableError' },
                     },
@@ -962,6 +992,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 },
                             },
                         },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
                         404: { $ref: '#/components/responses/NotFoundError' },
                         503: { $ref: '#/components/responses/ServiceUnavailableError' },
                     },
@@ -983,6 +1014,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 },
                             },
                         },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
                         404: { $ref: '#/components/responses/NotFoundError' },
                         503: { $ref: '#/components/responses/ServiceUnavailableError' },
                     },
@@ -1032,6 +1064,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 },
                             },
                         },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
                         400: { $ref: '#/components/responses/BadRequestError' },
                         404: { $ref: '#/components/responses/NotFoundError' },
                         500: { $ref: '#/components/responses/InternalServerError' },
@@ -1079,6 +1112,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 },
                             },
                         },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
                         400: { $ref: '#/components/responses/BadRequestError' },
                         404: { $ref: '#/components/responses/NotFoundError' },
                         503: { $ref: '#/components/responses/ServiceUnavailableError' },
@@ -1126,6 +1160,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 },
                             },
                         },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
                         400: { $ref: '#/components/responses/BadRequestError' },
                         404: { $ref: '#/components/responses/NotFoundError' },
                         409: { $ref: '#/components/responses/ConflictError' },
@@ -1149,6 +1184,7 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                                 },
                             },
                         },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
                         404: { $ref: '#/components/responses/NotFoundError' },
                     },
                 },
@@ -1157,12 +1193,29 @@ function createOpenApiDocument(hostname: string, port: number): OpenApiDocument 
                 get: {
                     operationId: 'getDoc',
                     summary: 'API documentation (HTML or OpenAPI JSON)',
+                    responses: {
+                        200: {
+                            description: 'API documentation in HTML or OpenAPI JSON',
+                        },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
+                    },
                 },
             },
             '/doc.openapi.json': {
                 get: {
                     operationId: 'getOpenApiDocument',
                     summary: 'OpenAPI JSON document',
+                    responses: {
+                        200: {
+                            description: 'OpenAPI JSON document',
+                            content: {
+                                'application/json': {
+                                    schema: { type: 'object' },
+                                },
+                            },
+                        },
+                        401: { $ref: '#/components/responses/UnauthorizedError' },
+                    },
                 },
             },
         },

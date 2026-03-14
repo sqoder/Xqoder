@@ -384,6 +384,7 @@ describe('serve message stream api', () => {
         expect(openApiRes.status).toBe(200);
         const openApi = await openApiRes.json() as {
             openapi: string;
+            security?: Array<Record<string, string[]>>;
             paths: Record<string, unknown>;
             components?: {
                 schemas?: Record<string, unknown>;
@@ -403,6 +404,8 @@ describe('serve message stream api', () => {
         expect(openApi.components?.responses?.['BadRequestError']).toBeTruthy();
         expect(openApi.components?.responses?.['NotFoundError']).toBeTruthy();
         expect(openApi.components?.responses?.['ServiceUnavailableError']).toBeTruthy();
+        expect(openApi.components?.responses?.['UnauthorizedError']).toBeTruthy();
+        expect(openApi.security).toEqual(expect.arrayContaining([{ basicAuth: [] }]));
 
         const sessionMessagePath = openApi.paths['/session/{id}/message'] as {
             post?: { responses?: Record<string, unknown> };
@@ -427,6 +430,7 @@ describe('serve message stream api', () => {
             get?: { operationId?: string; responses?: Record<string, { $ref?: string }> };
         };
         expect(findPath.get?.operationId).toBe('getFindMatches');
+        expect(findPath.get?.responses?.['401']?.$ref).toBe('#/components/responses/UnauthorizedError');
         expect(findPath.get?.responses?.['400']?.$ref).toBe('#/components/responses/BadRequestError');
 
         const filePath = openApi.paths['/file'] as {
@@ -463,6 +467,10 @@ describe('serve message stream api', () => {
 
         const docPath = openApi.paths['/doc'] as { get?: { operationId?: string } };
         expect(docPath.get?.operationId).toBe('getDoc');
+        const docOpenApiPath = openApi.paths['/doc.openapi.json'] as {
+            get?: { responses?: Record<string, { $ref?: string }> };
+        };
+        expect(docOpenApiPath.get?.responses?.['401']?.$ref).toBe('#/components/responses/UnauthorizedError');
 
         const docJsonByAcceptRes = await fetch(`${baseUrl}/doc`, {
             headers: { Accept: 'application/json' },
