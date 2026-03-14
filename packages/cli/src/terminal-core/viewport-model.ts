@@ -21,6 +21,8 @@ export interface ViewportModel {
     topLine: number;
     autoFollow: boolean;
     selection: ViewportSelection | null;
+    /** 光标/鼠标所在的 transcript 行号，用于「拖到哪段复制哪段」 */
+    focusLine: number | null;
 }
 
 export function createViewportModel(): ViewportModel {
@@ -28,6 +30,7 @@ export function createViewportModel(): ViewportModel {
         topLine: 0,
         autoFollow: true,
         selection: null,
+        focusLine: null,
     };
 }
 
@@ -104,6 +107,18 @@ export function moveViewportModelToBottom(model: ViewportModel, lineCount: numbe
     };
 }
 
+/** 设置绝对滚动位置（用于导航条拖动快速定位） */
+export function setViewportTopLine(model: ViewportModel, topLine: number, lineCount: number, height: number): ViewportModel {
+    const maxTopLine = getViewportMaxTopLine(lineCount, height);
+    const clamped = Math.max(0, Math.min(maxTopLine, topLine));
+    return {
+        ...model,
+        autoFollow: clamped >= maxTopLine,
+        topLine: clamped,
+        selection: null,
+    };
+}
+
 export function normalizeViewportSelection(start: ViewportPoint, end: ViewportPoint): ViewportSelection {
     if (start.line < end.line) {
         return { start, end };
@@ -114,7 +129,7 @@ export function normalizeViewportSelection(start: ViewportPoint, end: ViewportPo
     return start.column <= end.column ? { start, end } : { start: end, end: start };
 }
 
-function displayColumnToIndex(text: string, column: number): number {
+export function displayColumnToIndex(text: string, column: number): number {
     let width = 0;
     let index = 0;
     for (const char of text) {
@@ -146,6 +161,38 @@ export function buildViewportSelectedText(lines: string[], selection: ViewportSe
     return chunks.join('\n');
 }
 
+/**
+ * 滚动状态（与「导航条 / 历史位置条」文档一致）
+ * contentHeight=总行数, viewportHeight=可见行数, scrollTop=当前滚动偏移(行)
+ */
+export interface ScrollState {
+    contentHeight: number;
+    viewportHeight: number;
+    scrollTop: number;
+}
+
+const MIN_THUMB_ROWS = 3;
+
+/**
+ * 根据滚动状态计算轨道上滑块的 top 与 height（与文档公式一致）
+ * thumbHeight = max(minThumb, viewportHeight/contentHeight * trackHeight)
+ * thumbTop = scrollTop / (contentHeight - viewportHeight) * (trackHeight - thumbHeight)
+ */
+export function getScrollbarThumb(state: ScrollState, trackHeight: number): { top: number; height: number } {
+    const { contentHeight, viewportHeight, scrollTop } = state;
+    if (contentHeight <= viewportHeight) {
+        return { top: 0, height: trackHeight };
+    }
+    const height = Math.max(
+        MIN_THUMB_ROWS,
+        Math.floor((viewportHeight / contentHeight) * trackHeight),
+    );
+    const maxTop = Math.max(0, trackHeight - height);
+    const scrollRange = contentHeight - viewportHeight;
+    const top = scrollRange <= 0 ? 0 : Math.floor((scrollTop / scrollRange) * maxTop);
+    return { top: Math.min(top, maxTop), height };
+}
+
 export function buildScrollbarModel(lineCount: number, height: number, topLine: number): ScrollbarModel {
     const trackHeight = Math.max(1, height);
     const visibleCapacity = getViewportVisibleCapacity(height);
@@ -157,11 +204,12 @@ export function buildScrollbarModel(lineCount: number, height: number, topLine: 
             trackHeight,
         };
     }
-
-    const maxTopLine = getViewportMaxTopLine(lineCount, height);
-    const thumbHeight = Math.max(Math.min(3, trackHeight), Math.floor((visibleCapacity / lineCount) * trackHeight));
-    const maxThumbTop = Math.max(0, trackHeight - thumbHeight);
-    const thumbTop = maxTopLine === 0 ? 0 : Math.round((Math.max(0, Math.min(topLine, maxTopLine)) / maxTopLine) * maxThumbTop);
+    const state: ScrollState = {
+        contentHeight: lineCount,
+        viewportHeight: visibleCapacity,
+        scrollTop: Math.min(topLine, getViewportMaxTopLine(lineCount, height)),
+    };
+    const { top: thumbTop, height: thumbHeight } = getScrollbarThumb(state, trackHeight);
     return {
         visible: true,
         thumbTop,

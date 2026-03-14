@@ -138,11 +138,28 @@ interface McpManagerOptions {
     logger?: Logger;
 }
 
+interface McpClientAdapter {
+    readonly protocolVersion?: string;
+    readonly serverInfo?: McpServerInfo;
+    supportsPrompts(): boolean;
+    supportsResources(): boolean;
+    listTools(force?: boolean): Promise<McpToolDescriptor[]>;
+    listPrompts(force?: boolean): Promise<McpPromptDescriptor[]>;
+    getPrompt(name: string, args?: Record<string, string>): Promise<McpGetPromptResult>;
+    listResources(force?: boolean): Promise<McpResourceDescriptor[]>;
+    listResourceTemplates(force?: boolean): Promise<McpResourceTemplateDescriptor[]>;
+    readResource(uri: string): Promise<McpReadResourceResult>;
+    callTool(name: string, args: Record<string, unknown>): Promise<McpCallToolResult>;
+    close(): Promise<void>;
+}
+
 export interface McpServerInspection {
     name: string;
     enabled: boolean;
     status: 'ok' | 'error' | 'disabled';
+    transport: 'stdio' | 'http' | 'sse';
     command: string;
+    url?: string;
     args: string[];
     cwd?: string;
     protocolVersion?: string;
@@ -376,7 +393,11 @@ class McpStdioClient {
             return;
         }
 
-        this.child = spawn(this.config.command, this.config.args ?? [], {
+        if (!this.config.command?.trim()) {
+            throw new Error(`MCP server ${this.config.name} 缺少 stdio command`);
+        }
+
+        const child = spawn(this.config.command, this.config.args ?? [], {
             cwd: resolveServerCwd(this.config.cwd, this.options.projectRoot, this.options.cwd),
             env: {
                 ...process.env,
@@ -384,19 +405,20 @@ class McpStdioClient {
             },
             stdio: 'pipe',
         });
+        this.child = child;
 
-        this.child.stdout.setEncoding('utf-8');
-        this.child.stderr.setEncoding('utf-8');
-        this.child.stdout.on('data', (chunk: string) => {
+        child.stdout.setEncoding('utf-8');
+        child.stderr.setEncoding('utf-8');
+        child.stdout.on('data', (chunk: string) => {
             this.handleStdoutChunk(chunk);
         });
-        this.child.stderr.on('data', (chunk: string) => {
+        child.stderr.on('data', (chunk: string) => {
             this.handleStderrChunk(chunk);
         });
-        this.child.once('error', (error) => {
+        child.once('error', (error) => {
             this.rejectAllPending(new Error(`MCP 进程启动失败: ${error.message}`));
         });
-        this.child.once('exit', (code, signal) => {
+        child.once('exit', (code, signal) => {
             const reason = code !== null
                 ? `退出码 ${code}`
                 : `信号 ${signal ?? 'unknown'}`;
@@ -639,6 +661,231 @@ class McpStdioClient {
     }
 }
 
+class McpHttpClient implements McpClientAdapter {
+    private readonly logger: Logger;
+    private initialized = false;
+    private nextId = 1;
+    private protocolVersionValue?: string;
+    private serverInfoValue?: McpServerInfo;
+    private capabilitiesValue?: Record<string, unknown>;
+    private toolsCache?: McpToolDescriptor[];
+    private promptsCache?: McpPromptDescriptor[];
+    private resourcesCache?: McpResourceDescriptor[];
+    private resourceTemplatesCache?: McpResourceTemplateDescriptor[];
+
+    constructor(private readonly config: MCPServerConfig, options: Omit<McpManagerOptions, 'servers'>) {
+        this.logger = (options.logger ?? defaultLogger).child(`MCP:${config.name}`);
+    }
+
+    get protocolVersion(): string | undefined {
+        return this.protocolVersionValue;
+    }
+
+    get serverInfo(): McpServerInfo | undefined {
+        return this.serverInfoValue;
+    }
+
+    supportsPrompts(): boolean {
+        return hasCapability(this.capabilitiesValue, 'prompts');
+    }
+
+    supportsResources(): boolean {
+        return hasCapability(this.capabilitiesValue, 'resources');
+    }
+
+    async listTools(force = false): Promise<McpToolDescriptor[]> {
+        await this.ensureInitialized();
+        if (!force && this.toolsCache) {
+            return this.toolsCache;
+        }
+        const tools = await this.collectCursorPages<McpToolDescriptor, McpToolsListResult>('tools/list', 'tools');
+        this.toolsCache = tools;
+        return tools;
+    }
+
+    async listPrompts(force = false): Promise<McpPromptDescriptor[]> {
+        await this.ensureInitialized();
+        if (!this.supportsPrompts()) {
+            return [];
+        }
+        if (!force && this.promptsCache) {
+            return this.promptsCache;
+        }
+        const prompts = await this.collectCursorPages<McpPromptDescriptor, McpPromptsListResult>('prompts/list', 'prompts');
+        this.promptsCache = prompts;
+        return prompts;
+    }
+
+    async getPrompt(name: string, args: Record<string, string> = {}): Promise<McpGetPromptResult> {
+        await this.ensureInitialized();
+        const result = await this.sendRequest<McpGetPromptResult>('prompts/get', {
+            name,
+            arguments: args,
+        });
+        this.promptsCache = undefined;
+        return result;
+    }
+
+    async listResources(force = false): Promise<McpResourceDescriptor[]> {
+        await this.ensureInitialized();
+        if (!this.supportsResources()) {
+            return [];
+        }
+        if (!force && this.resourcesCache) {
+            return this.resourcesCache;
+        }
+        const resources = await this.collectCursorPages<McpResourceDescriptor, McpResourcesListResult>('resources/list', 'resources');
+        this.resourcesCache = resources;
+        return resources;
+    }
+
+    async listResourceTemplates(force = false): Promise<McpResourceTemplateDescriptor[]> {
+        await this.ensureInitialized();
+        if (!this.supportsResources()) {
+            return [];
+        }
+        if (!force && this.resourceTemplatesCache) {
+            return this.resourceTemplatesCache;
+        }
+        const templates = await this.collectCursorPages<McpResourceTemplateDescriptor, McpResourceTemplatesListResult>('resources/templates/list', 'resourceTemplates');
+        this.resourceTemplatesCache = templates;
+        return templates;
+    }
+
+    async readResource(uri: string): Promise<McpReadResourceResult> {
+        await this.ensureInitialized();
+        const result = await this.sendRequest<McpReadResourceResult>('resources/read', { uri });
+        this.resourcesCache = undefined;
+        this.resourceTemplatesCache = undefined;
+        return result;
+    }
+
+    async callTool(name: string, args: Record<string, unknown>): Promise<McpCallToolResult> {
+        await this.ensureInitialized();
+        const result = await this.sendRequest<McpCallToolResult>('tools/call', {
+            name,
+            arguments: args,
+        });
+        this.toolsCache = undefined;
+        return result;
+    }
+
+    async close(): Promise<void> {
+        this.initialized = false;
+        this.toolsCache = undefined;
+        this.promptsCache = undefined;
+        this.resourcesCache = undefined;
+        this.resourceTemplatesCache = undefined;
+    }
+
+    private async ensureInitialized(): Promise<void> {
+        if (this.initialized) {
+            return;
+        }
+
+        const result = await this.sendRequest<McpInitializeResult>('initialize', {
+            protocolVersion: MCP_REQUEST_PROTOCOL_VERSION,
+            capabilities: {
+                roots: {
+                    listChanged: false,
+                },
+            },
+            clientInfo: MCP_CLIENT_INFO,
+        });
+
+        if (!SUPPORTED_PROTOCOL_VERSIONS.has(result.protocolVersion)) {
+            throw new Error(`MCP 协议版本不受支持: ${result.protocolVersion}`);
+        }
+
+        this.protocolVersionValue = result.protocolVersion;
+        this.serverInfoValue = result.serverInfo;
+        this.capabilitiesValue = result.capabilities;
+        this.initialized = true;
+
+        try {
+            await this.sendNotification('notifications/initialized', {});
+        } catch (error) {
+            this.logger.debug(`MCP HTTP initialized notification failed: ${String(error)}`);
+        }
+    }
+
+    private async collectCursorPages<TItem, TResult extends { nextCursor?: string }>(
+        method: string,
+        key: keyof TResult,
+    ): Promise<TItem[]> {
+        const items: TItem[] = [];
+        let cursor: string | undefined;
+
+        do {
+            const result = await this.sendRequest<TResult>(method, cursor ? { cursor } : {});
+            const chunk = result[key];
+            if (Array.isArray(chunk)) {
+                items.push(...chunk as TItem[]);
+            }
+            cursor = result.nextCursor;
+        } while (cursor);
+
+        return items;
+    }
+
+    private async sendNotification(method: string, params: unknown): Promise<void> {
+        await this.sendRaw({
+            jsonrpc: '2.0',
+            method,
+            params,
+        });
+    }
+
+    private async sendRequest<T>(method: string, params: unknown): Promise<T> {
+        const id = this.nextId++;
+        const payload = {
+            jsonrpc: '2.0',
+            id,
+            method,
+            params,
+        };
+        const result = await this.sendRaw(payload);
+        if (result.error) {
+            throw new Error(result.error.message || `MCP request failed: ${method}`);
+        }
+        return result.result as T;
+    }
+
+    private async sendRaw(payload: Record<string, unknown>): Promise<JsonRpcResponse> {
+        const endpoint = this.config.url?.trim();
+        if (!endpoint) {
+            throw new Error(`MCP server ${this.config.name} missing url for ${this.config.transport ?? 'http'} transport`);
+        }
+        const timeoutMs = this.config.timeoutMs ?? 15_000;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+        try {
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    ...(this.config.headers ?? {}),
+                },
+                body: JSON.stringify(payload),
+                signal: controller.signal,
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const raw = await response.json();
+            if (!raw || typeof raw !== 'object') {
+                throw new Error('Invalid MCP HTTP response');
+            }
+            return raw as JsonRpcResponse;
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+}
+
 class McpRemoteTool implements ITool {
     readonly definition: ToolDefinition;
 
@@ -646,7 +893,7 @@ class McpRemoteTool implements ITool {
         private readonly aliasName: string,
         private readonly serverName: string,
         private readonly remoteTool: McpToolDescriptor,
-        private readonly client: McpStdioClient,
+        private readonly client: McpClientAdapter,
     ) {
         this.definition = {
             name: aliasName,
@@ -694,7 +941,7 @@ class McpListPromptsTool implements ITool {
     constructor(
         private readonly serverName: string,
         private readonly aliasName: string,
-        private readonly client: McpStdioClient,
+        private readonly client: McpClientAdapter,
     ) {
         this.definition = {
             name: aliasName,
@@ -728,7 +975,7 @@ class McpGetPromptTool implements ITool {
     constructor(
         private readonly serverName: string,
         private readonly aliasName: string,
-        private readonly client: McpStdioClient,
+        private readonly client: McpClientAdapter,
     ) {
         this.definition = {
             name: aliasName,
@@ -782,7 +1029,7 @@ class McpListResourcesTool implements ITool {
     constructor(
         private readonly serverName: string,
         private readonly aliasName: string,
-        private readonly client: McpStdioClient,
+        private readonly client: McpClientAdapter,
     ) {
         this.definition = {
             name: aliasName,
@@ -821,7 +1068,7 @@ class McpReadResourceTool implements ITool {
     constructor(
         private readonly serverName: string,
         private readonly aliasName: string,
-        private readonly client: McpStdioClient,
+        private readonly client: McpClientAdapter,
     ) {
         this.definition = {
             name: aliasName,
@@ -864,7 +1111,7 @@ class McpReadResourceTool implements ITool {
 }
 
 export class McpServerManager {
-    private readonly clients = new Map<string, McpStdioClient>();
+    private readonly clients = new Map<string, McpClientAdapter>();
     private readonly logger: Logger;
 
     constructor(private readonly options: McpManagerOptions) {
@@ -926,22 +1173,50 @@ export class McpServerManager {
         this.clients.clear();
     }
 
-    private getClient(server: MCPServerConfig): McpStdioClient {
+    private getClient(server: MCPServerConfig): McpClientAdapter {
         const existing = this.clients.get(server.name);
         if (existing) {
             return existing;
         }
 
-        const client = new McpStdioClient(server, {
-            cwd: this.options.cwd,
-            projectRoot: this.options.projectRoot,
-            sandboxMode: this.options.sandboxMode,
-            allowedPaths: this.options.allowedPaths,
-            logger: this.logger,
-        });
+        const client: McpClientAdapter = server.transport === 'http' || server.transport === 'sse'
+            ? new McpHttpClient(server, {
+                cwd: this.options.cwd,
+                projectRoot: this.options.projectRoot,
+                sandboxMode: this.options.sandboxMode,
+                allowedPaths: this.options.allowedPaths,
+                logger: this.logger,
+            })
+            : new McpStdioClient(server, {
+                cwd: this.options.cwd,
+                projectRoot: this.options.projectRoot,
+                sandboxMode: this.options.sandboxMode,
+                allowedPaths: this.options.allowedPaths,
+                logger: this.logger,
+            });
+
         this.clients.set(server.name, client);
         return client;
     }
+}
+
+function createStandaloneMcpClient(server: MCPServerConfig, options: McpManagerOptions): McpClientAdapter {
+    if (server.transport === 'http' || server.transport === 'sse') {
+        return new McpHttpClient(server, {
+            cwd: options.cwd,
+            projectRoot: options.projectRoot,
+            sandboxMode: options.sandboxMode,
+            allowedPaths: options.allowedPaths,
+            logger: options.logger,
+        });
+    }
+    return new McpStdioClient(server, {
+        cwd: options.cwd,
+        projectRoot: options.projectRoot,
+        sandboxMode: options.sandboxMode,
+        allowedPaths: options.allowedPaths,
+        logger: options.logger,
+    });
 }
 
 export async function inspectMcpServers(options: McpManagerOptions): Promise<McpServerInspection[]> {
@@ -953,7 +1228,9 @@ export async function inspectMcpServers(options: McpManagerOptions): Promise<Mcp
                 name: server.name,
                 enabled: false,
                 status: 'disabled',
-                command: server.command,
+                transport: server.transport ?? 'stdio',
+                command: server.command ?? '-',
+                ...(server.url ? { url: server.url } : {}),
                 args: server.args ?? [],
                 cwd: server.cwd,
                 toolCount: 0,
@@ -968,13 +1245,7 @@ export async function inspectMcpServers(options: McpManagerOptions): Promise<Mcp
             continue;
         }
 
-        const client = new McpStdioClient(server, {
-            cwd: options.cwd,
-            projectRoot: options.projectRoot,
-            sandboxMode: options.sandboxMode,
-            allowedPaths: options.allowedPaths,
-            logger: options.logger,
-        });
+        const client = createStandaloneMcpClient(server, options);
 
         try {
             const tools = await client.listTools();
@@ -987,7 +1258,9 @@ export async function inspectMcpServers(options: McpManagerOptions): Promise<Mcp
                 name: server.name,
                 enabled: true,
                 status: 'ok',
-                command: server.command,
+                transport: server.transport ?? 'stdio',
+                command: server.command ?? '-',
+                ...(server.url ? { url: server.url } : {}),
                 args: server.args ?? [],
                 cwd: server.cwd,
                 protocolVersion: client.protocolVersion,
@@ -1024,7 +1297,9 @@ export async function inspectMcpServers(options: McpManagerOptions): Promise<Mcp
                 name: server.name,
                 enabled: true,
                 status: 'error',
-                command: server.command,
+                transport: server.transport ?? 'stdio',
+                command: server.command ?? '-',
+                ...(server.url ? { url: server.url } : {}),
                 args: server.args ?? [],
                 cwd: server.cwd,
                 toolCount: 0,

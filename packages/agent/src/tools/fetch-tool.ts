@@ -167,6 +167,116 @@ export class FetchUrlTool implements ITool {
     }
 }
 
+/**
+ * WebSearchTool
+ * 使用 DuckDuckGo HTML 搜索页进行无 key 的轻量搜索。
+ */
+export class WebSearchTool implements ITool {
+    readonly definition: ToolDefinition = {
+        name: 'websearch',
+        description: [
+            '搜索互联网公开信息并返回结构化结果。',
+            '默认使用 DuckDuckGo HTML 搜索，无需 API Key。',
+            '参数支持 query 和 limit（默认 5，最大 10）。',
+        ].join('\n'),
+        parameters: [
+            { name: 'query', type: 'string', description: '搜索关键词', required: true },
+            { name: 'limit', type: 'number', description: '返回结果数量（1-10）', required: false, default: 5 },
+        ],
+    };
+
+    buildApprovalRequest(args: Record<string, unknown>): ToolApprovalRequest {
+        const query = String(args['query'] ?? '');
+        return {
+            toolCallId: String(args['toolCallId'] ?? ''),
+            toolName: this.definition.name,
+            summary: `Search web for: ${query}`,
+            reason: '网络搜索会请求外部搜索引擎',
+            risk: 'medium',
+        };
+    }
+
+    async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
+        const toolCallId = String(args['toolCallId'] ?? '');
+        const query = String(args['query'] ?? '').trim();
+        const limitRaw = Number(args['limit']);
+        const limit = Number.isFinite(limitRaw) ? Math.min(10, Math.max(1, Math.floor(limitRaw))) : 5;
+
+        if (!query) {
+            return {
+                toolCallId,
+                success: false,
+                output: '',
+                error: 'query 参数不能为空',
+            };
+        }
+
+        const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+
+        try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+            const response = await fetch(url, {
+                method: 'GET',
+                signal: controller.signal,
+                headers: {
+                    'User-Agent': 'xqoder/1.0',
+                    Accept: 'text/html,application/xhtml+xml',
+                },
+            });
+            clearTimeout(timer);
+
+            if (!response.ok) {
+                return {
+                    toolCallId,
+                    success: false,
+                    output: '',
+                    error: `搜索失败: HTTP ${response.status}`,
+                };
+            }
+
+            const html = await response.text();
+            const results = extractSearchResultsFromHtml(html, limit);
+            if (results.length === 0) {
+                return {
+                    toolCallId,
+                    success: true,
+                    output: `No search results found for: ${query}`,
+                    metadata: {
+                        query,
+                        provider: 'duckduckgo-html',
+                        resultCount: 0,
+                    },
+                };
+            }
+
+            const output = results
+                .map((item, index) => `${index + 1}. ${item.title}\n   URL: ${item.url}${item.snippet ? `\n   Snippet: ${item.snippet}` : ''}`)
+                .join('\n\n');
+
+            return {
+                toolCallId,
+                success: true,
+                output,
+                metadata: {
+                    query,
+                    provider: 'duckduckgo-html',
+                    resultCount: results.length,
+                    results,
+                },
+            };
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            return {
+                toolCallId,
+                success: false,
+                output: '',
+                error: `websearch 失败: ${message}`,
+            };
+        }
+    }
+}
+
 // ---- HTML 处理辅助函数 ----
 
 /**
@@ -252,4 +362,48 @@ function decodeHtmlEntities(text: string): string {
         .replace(/&#39;/g, "'")
         .replace(/&nbsp;/g, ' ')
         .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
+}
+
+function extractSearchResultsFromHtml(
+    html: string,
+    limit: number,
+): Array<{ title: string; url: string; snippet?: string }> {
+    const results: Array<{ title: string; url: string; snippet?: string }> = [];
+    const itemRegex = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>|<div[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/div>)?/gi;
+
+    let match: RegExpExecArray | null = itemRegex.exec(html);
+    while (match && results.length < limit) {
+        const rawUrl = decodeHtmlEntities(match[1] ?? '').trim();
+        const title = decodeHtmlEntities(stripHtml(match[2] ?? '')).trim();
+        const snippetRaw = match[3] ?? match[4] ?? '';
+        const snippet = decodeHtmlEntities(stripHtml(snippetRaw)).trim();
+
+        if (title && rawUrl) {
+            results.push({
+                title,
+                url: normalizeDuckDuckGoRedirect(rawUrl),
+                ...(snippet ? { snippet } : {}),
+            });
+        }
+
+        match = itemRegex.exec(html);
+    }
+
+    return results;
+}
+
+function stripHtml(value: string): string {
+    return value.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeDuckDuckGoRedirect(rawUrl: string): string {
+    try {
+        const parsed = new URL(rawUrl, 'https://duckduckgo.com');
+        if (parsed.pathname === '/l/' && parsed.searchParams.get('uddg')) {
+            return decodeURIComponent(parsed.searchParams.get('uddg') ?? rawUrl);
+        }
+        return parsed.toString();
+    } catch {
+        return rawUrl;
+    }
 }

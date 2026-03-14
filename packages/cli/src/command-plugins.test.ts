@@ -102,4 +102,51 @@ describe('command plugins', () => {
             expect.objectContaining({ name: 'future-plugin', status: 'incompatible', source: 'injected' }),
         ]));
     });
+
+    it('keeps workflow commands disabled by default while remote commands stay available', async () => {
+        const result = await discoverCommandRegistrationsWithReport({
+            productVersion: '0.1.0',
+            pluginConfig: { paths: [] },
+        });
+
+        const names = result.commands.map((registration) => registration.name);
+
+        expect(names).toContain('chat');
+        expect(names).not.toContain('build');
+        expect(names).not.toContain('lsp');
+        expect(names).not.toContain('rollbacks');
+        expect(names).toContain('serve');
+        expect(names).toContain('attach');
+        expect(names).toContain('acp');
+        expect(names).not.toContain('explain');
+        expect(names).not.toContain('github');
+        expect(result.report).toEqual(expect.arrayContaining([
+            expect.objectContaining({ name: 'cli-core-shell', status: 'loaded', source: 'built-in' }),
+            expect.objectContaining({ name: 'cli-workflows', status: 'disabled', source: 'built-in' }),
+            expect.objectContaining({ name: 'cli-integrations', status: 'disabled', source: 'built-in' }),
+            expect.objectContaining({ name: 'cli-remote', status: 'loaded', source: 'built-in' }),
+            expect.objectContaining({ name: 'cli-extras', status: 'disabled', source: 'built-in' }),
+        ]));
+    });
+
+    it('loads integration and remote commands when their plugins are explicitly enabled', async () => {
+        const result = await discoverCommandRegistrations({
+            productVersion: '0.1.0',
+            pluginConfig: {
+                enabled: ['cli-core-shell', 'cli-integrations', 'cli-remote', 'cli-extras'],
+                paths: [],
+            },
+        });
+
+        const names = result.map((registration) => registration.name);
+
+        expect(names).toContain('lsp');
+        expect(names).toContain('mcp');
+        expect(names).toContain('rollbacks');
+        expect(names).toContain('serve');
+        expect(names).toContain('attach');
+        expect(names).toContain('acp');
+        expect(names).toContain('explain');
+        expect(names).toContain('github');
+    });
 });

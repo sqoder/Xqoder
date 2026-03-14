@@ -18,6 +18,7 @@ export type KeybindAction =
     | 'help'
     | 'theme'
     | 'session'
+    | 'newSession'
     | 'model'
     | 'commandPalette'
     | 'filePicker'
@@ -37,6 +38,7 @@ const DEFAULT_KEYBINDS: Record<KeybindAction, string> = {
     help: 'ctrl+?',
     theme: 'ctrl+t',
     session: 'ctrl+s',
+    newSession: 'ctrl+n',
     model: 'ctrl+o',
     commandPalette: 'ctrl+k',
     filePicker: 'ctrl+f',

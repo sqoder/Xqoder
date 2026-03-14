@@ -11,6 +11,7 @@ export type OverlayType =
     | 'session'
     | 'model'
     | 'permission'
+    | 'question'
     | 'commandPalette'
     | 'filePicker'
     | 'init'

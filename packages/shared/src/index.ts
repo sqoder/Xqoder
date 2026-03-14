@@ -15,6 +15,7 @@ export {
     type ConfigSourceInfo,
     configManager,
     loadTuiConfig,
+    writeTuiConfig,
     normalizeXQoderConfig,
     resolveAgentLLMConfig,
     resolveConfigWithEnvOverrides,

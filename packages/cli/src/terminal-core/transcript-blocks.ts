@@ -46,9 +46,16 @@ function parseContentSegments(content: string): Array<{ type: 'text'; text: stri
     return segments;
 }
 
+export interface EntryLineRange {
+    entryId: string;
+    startLine: number;
+    endLine: number;
+}
+
 export interface RebuildTranscriptResult {
     lines: string[];
     codeBlocks: TranscriptCodeBlock[];
+    entryLineRanges: EntryLineRange[];
 }
 
 export function rebuildTranscriptWithCodeBlocks(
@@ -57,9 +64,11 @@ export function rebuildTranscriptWithCodeBlocks(
 ): RebuildTranscriptResult {
     const lines: string[] = [];
     const codeBlocks: TranscriptCodeBlock[] = [];
+    const entryLineRanges: EntryLineRange[] = [];
     const width = Math.max(10, contentWidth - 2);
 
     for (const entry of entries) {
+        const startLine = lines.length;
         const header = entry.role === 'user'
             ? 'You'
             : entry.role === 'assistant'
@@ -67,12 +76,19 @@ export function rebuildTranscriptWithCodeBlocks(
                 : entry.role === 'tool'
                     ? 'Tool'
                     : 'System';
+
+        let content = entry.content;
+        if (entry.role === 'tool' || entry.role === 'system') {
+            const lineCount = content.length > 0 ? content.split('\n').length : 0;
+            content = lineCount > 0 ? `(输出已折叠，共 ${lineCount} 行)` : '(无输出)';
+        }
+
         if (lines.length > 0) {
             lines.push('');
         }
         lines.push(header);
 
-        const segments = parseContentSegments(entry.content);
+        const segments = parseContentSegments(content);
         let blockIndex = 0;
 
         for (const seg of segments) {
@@ -107,7 +123,8 @@ export function rebuildTranscriptWithCodeBlocks(
         if (entry.attachments && entry.attachments.length > 0) {
             lines.push(`  ${entry.attachments.map((item) => `[${item}]`).join(' ')}`);
         }
+        entryLineRanges.push({ entryId: entry.id, startLine, endLine: lines.length - 1 });
     }
 
-    return { lines, codeBlocks };
+    return { lines, codeBlocks, entryLineRanges };
 }

@@ -112,4 +112,75 @@ describe('import command', () => {
         });
         expect(saveSession.mock.calls[0]?.[0].session.id).toBe('session_demo');
     });
+
+    it('imports a compatible export payload without schemaVersion and missing metadata arrays', async () => {
+        const dir = createTempDir();
+        const filePath = path.join(dir, 'compatible-session.json');
+        fs.writeFileSync(filePath, JSON.stringify({
+            sessionId: 'opencode_session_demo',
+            projectRoot: '/workspace/opencode-demo',
+            cwd: '/workspace/opencode-demo',
+            model: 'gpt-5',
+            title: 'compatible session import',
+            createdAt: '2026-03-08T01:00:00.000Z',
+            updatedAt: '2026-03-08T01:05:00.000Z',
+            messages: [
+                { role: 'system', content: 'system prompt' },
+                { role: 'user', content: 'hello from compatible export' },
+                { role: 'assistant', content: 'compatible reply' },
+            ],
+            usage: {
+                promptTokens: 12,
+                completionTokens: 8,
+                totalTokens: 20,
+            },
+            metadata: {
+                compactSummary: 'short summary',
+            },
+        }, null, 2), 'utf-8');
+
+        const saveSession = vi.fn().mockReturnValue({
+            id: 'opencode_session_demo',
+            projectRoot: '/workspace/imported-compatible',
+            cwd: '/workspace/imported-compatible',
+            model: 'gpt-5',
+            title: 'compatible session import',
+            createdAt: new Date('2026-03-08T01:00:00.000Z'),
+            updatedAt: new Date('2026-03-08T01:05:00.000Z'),
+            maxMessages: 100,
+            messageCount: 3,
+            usage: {
+                promptTokens: 12,
+                completionTokens: 8,
+                totalTokens: 20,
+            },
+            compactionCount: 0,
+            commandCount: 0,
+            fileChangeCount: 0,
+        });
+
+        await runImportCommand(filePath, {
+            dir: '/workspace/imported-compatible',
+        }, {
+            sessionStore: {
+                getSession: vi.fn().mockReturnValue(null),
+                saveSession,
+            },
+        });
+
+        expect(saveSession).toHaveBeenCalledTimes(1);
+        expect(saveSession.mock.calls[0]?.[0]).toMatchObject({
+            projectRoot: '/workspace/imported-compatible',
+            cwd: '/workspace/imported-compatible',
+            model: 'gpt-5',
+        });
+        expect(saveSession.mock.calls[0]?.[0].session.id).toBe('opencode_session_demo');
+
+        const snapshot = saveSession.mock.calls[0]?.[0].session.toSnapshot();
+        expect(snapshot.metadata.compactSummary).toBe('short summary');
+        expect(snapshot.metadata.compactions).toEqual([]);
+        expect(snapshot.metadata.commandHistory).toEqual([]);
+        expect(snapshot.metadata.toolHistory).toEqual([]);
+        expect(snapshot.metadata.fileChanges).toEqual([]);
+    });
 });

@@ -73,8 +73,9 @@ export {
     LspReferencesTool,
 } from './tools/lsp-tools.js';
 export { RunCommandTool, InstallPackageTool } from './tools/command-tool.js';
+export { SkillTool, TodoWriteTool, TodoReadTool, QuestionTool } from './tools/interaction-tools.js';
 export { ApplyPatchTool, RestoreRollbackPointTool } from './tools/patch-tool.js';
-export { FetchUrlTool } from './tools/fetch-tool.js';
+export { FetchUrlTool, WebSearchTool } from './tools/fetch-tool.js';
 export { DiagnosticsTool, type DiagnosticsProvider } from './tools/diagnostics-tool.js';
 export {
     FileRollbackStore,

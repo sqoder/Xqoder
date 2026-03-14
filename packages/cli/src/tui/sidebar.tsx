@@ -6,7 +6,7 @@
 import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import path from 'path';
-import { getTheme } from './theme.js';
+import { getTheme, themeColor } from './theme.js';
 import type { FileChange } from './layout.js';
 
 export interface ModifiedFileSummary {
@@ -121,17 +121,17 @@ export function Sidebar({
         >
             {/* Session Header */}
             <Box flexDirection="column">
-                <Text bold color={theme.primary}>Session</Text>
+                <Text bold color={themeColor(theme, theme.primary)}>Session</Text>
                 <Text>{truncateSidebarPath(sessionTitle ? sessionTitle : 'New Session', innerWidth)}</Text>
             </Box>
 
             <Box marginTop={1}>
-                <Text bold color={theme.primary}>Modified Files</Text>
+                <Text bold color={themeColor(theme, theme.primary)}>Modified Files</Text>
             </Box>
 
             {modFiles.length === 0 ? (
                 <Box>
-                    <Text color={theme.textMuted}>No modified files yet</Text>
+                    <Text color={themeColor(theme, theme.textMuted)}>No modified files yet</Text>
                 </Box>
             ) : (
                 <Box flexDirection="column" marginTop={0}>
@@ -142,7 +142,7 @@ export function Sidebar({
                         return (
                             <Box key={file.path} flexDirection="column" width={innerWidth}>
                                 <Text>{displayPath}</Text>
-                                <Text color={theme.textMuted}>
+                                <Text color={themeColor(theme, theme.textMuted)}>
                                     {file.additions > 0 ? `+${file.additions} ` : ''}
                                     {file.removals > 0 ? `-${file.removals} ` : ''}
                                     ({file.changeCount} change{file.changeCount === 1 ? '' : 's'})
@@ -152,7 +152,7 @@ export function Sidebar({
                     })}
                     {modFiles.length > maxVisibleFiles && (
                         <Box>
-                            <Text color={theme.textMuted}>... and {modFiles.length - maxVisibleFiles} more</Text>
+                            <Text color={themeColor(theme, theme.textMuted)}>... and {modFiles.length - maxVisibleFiles} more</Text>
                         </Box>
                     )}
                 </Box>

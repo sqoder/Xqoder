@@ -65,7 +65,7 @@ describe('program command parsing', () => {
             '记住标记 A-123',
         ]);
 
-        expect(run).toHaveBeenCalledWith('记住标记 A-123', expect.any(Object));
+        expect(run).toHaveBeenCalledWith('记住标记 A-123', expect.any(Object), expect.any(Array));
     });
 
     it('accepts a leading -- separator before the top-level command', async () => {
@@ -114,7 +114,7 @@ describe('program command parsing', () => {
             chatCommand: chat,
         });
 
-        expect(run).toHaveBeenCalledWith('记住标记 A-123', expect.any(Object));
+        expect(run).toHaveBeenCalledWith('记住标记 A-123', expect.any(Object), expect.any(Array));
     });
 
     it('routes tui --dir to the tui command', async () => {

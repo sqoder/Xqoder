@@ -10,7 +10,7 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
-    "test": "node -e \"process.exit(0)\"",
+    "test": "node -e \"process.exit(0)\" --",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

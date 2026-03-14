@@ -15,7 +15,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { getTheme } from './theme.js';
+import { getTheme, themeColor, createThemedStyles } from './theme.js';
 import type { SlashCommandDef } from './commands.js';
 import { formatAttachmentDisplayLabel } from './attachments.js';
 import { TextAreaInput } from './textarea-input.js';
@@ -592,7 +592,7 @@ export function Editor({
     return (
         <Box flexDirection="column" width={width}>
             {attachments.length > 0 && (
-                <Text>{chalk.hex(theme.textMuted)(buildAttachmentDisplayText(attachments, deleteMode))}</Text>
+                <Text>{createThemedStyles(theme).muted(buildAttachmentDisplayText(attachments, deleteMode))}</Text>
             )}
             <TextAreaInput
                 value={value}
@@ -621,6 +621,7 @@ interface CompletionDropdownProps {
 
 export function CompletionDropdown({ completion, width, slashCommands = [] }: CompletionDropdownProps): React.JSX.Element {
     const theme = getTheme();
+    const styles = createThemedStyles(theme);
     const pageSize = COMPLETION_DROPDOWN_PAGE_SIZE;
     const total = completion.completions.length;
     const selected = completion.selectedIndex;
@@ -637,7 +638,7 @@ export function CompletionDropdown({ completion, width, slashCommands = [] }: Co
         : '@ file  ↑↓/Ctrl+N,P select  Tab/Enter confirm';
 
     return (
-        <Box flexDirection="column" borderStyle="single" borderColor={theme.accent} width={width}>
+        <Box flexDirection="column" borderStyle="single" borderColor={themeColor(theme, theme.accent)} width={width}>
             <Box paddingX={1}>
                 <Text>{padded(headerHint)}</Text>
             </Box>
@@ -660,7 +661,7 @@ export function CompletionDropdown({ completion, width, slashCommands = [] }: Co
                 return (
                     <Box key={item} paddingX={1}>
                         <Text>
-                            {isSelected ? chalk.hex(theme.accent).bold(`${prefix} `) : '  '}
+                            {isSelected ? styles.accent(`${prefix} `) : '  '}
                             {isSelected
                                 ? chalk.inverse(rowText)
                                 : rowText}
