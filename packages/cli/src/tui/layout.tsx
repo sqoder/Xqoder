@@ -7,7 +7,7 @@ import React, { useState } from 'react';
 import { Box, Text } from 'ink';
 import chalk from 'chalk';
 import type { TuiMouseMode } from '@xqoder/shared';
-import { getTheme } from './theme.js';
+import { getTheme, themeColor } from './theme.js';
 import { MessageList, type ChatMessage } from './message.js';
 import {
     Editor,
@@ -119,7 +119,7 @@ export function SplitLayout({
                         width={leftWidth}
                         height={mainHeight}
                         borderStyle="single"
-                        borderColor={theme.borderNormal}
+                        borderColor={themeColor(theme, theme.borderNormal)}
                         flexDirection="column"
                     >
                         {leftPanel}
@@ -135,7 +135,7 @@ export function SplitLayout({
                     width={width}
                     height={effectiveBottomHeight}
                     borderStyle="single"
-                    borderColor={theme.borderNormal}
+                    borderColor={themeColor(theme, theme.borderNormal)}
                     flexDirection="column"
                 >
                     {bottomPanel}
@@ -330,17 +330,17 @@ function ToolDetailsPanel({ executions, width, height, selectedIndex, expandedTo
             width={width}
             height={height}
             borderStyle="single"
-            borderColor={theme.borderNormal}
+            borderColor={themeColor(theme, theme.borderNormal)}
         >
             <Box paddingX={1} justifyContent="space-between">
                 <Box>
-                    <Text bold color={theme.accent}>Tool Executions</Text>
-                    <Text color={theme.textMuted}> ({executions.length})</Text>
+                    <Text bold color={themeColor(theme, theme.accent)}>Tool Executions</Text>
+                    <Text color={themeColor(theme, theme.textMuted)}> ({executions.length})</Text>
                 </Box>
-                <Text color={isFocused ? theme.accent : theme.textMuted}>{isFocused ? 'focus:details' : 'panel:details'}</Text>
+                <Text color={themeColor(theme, isFocused ? theme.accent : theme.textMuted)}>{isFocused ? 'focus:details' : 'panel:details'}</Text>
             </Box>
             {visible.length === 0 ? (
-                <Box paddingX={1}><Text color={theme.textMuted}>No tool calls yet</Text></Box>
+                <Box paddingX={1}><Text color={themeColor(theme, theme.textMuted)}>No tool calls yet</Text></Box>
             ) : (
                 visible.map((exec, index) => {
                     const originalIndex = Math.max(0, executions.length - visible.length) + index;
@@ -348,6 +348,7 @@ function ToolDetailsPanel({ executions, width, height, selectedIndex, expandedTo
                     const isExpanded = expandedToolIds.includes(exec.id);
                     const icon = exec.endedAt == null ? '⏳' : exec.success ? '✓' : '✗';
                     const iconColor = exec.endedAt == null ? theme.warning : exec.success ? theme.success : theme.error;
+                    const iconColorOrUndef = themeColor(theme, iconColor);
                     const elapsed = exec.endedAt
                         ? `${((exec.endedAt.getTime() - exec.startedAt.getTime()) / 1000).toFixed(1)}s`
                         : '...';
@@ -359,15 +360,15 @@ function ToolDetailsPanel({ executions, width, height, selectedIndex, expandedTo
                         <Box key={exec.id} paddingX={1} flexDirection="column">
                             <Box flexDirection="row" justifyContent="space-between">
                                 <Box flexDirection="row">
-                                    <Text color={iconColor}>{isSelected ? '›' : icon} </Text>
-                                    <Text bold color={isSelected ? theme.accent : theme.text}>{exec.name}</Text>
-                                    <Text color={theme.textMuted}> {elapsed}</Text>
-                                    {argsStr && <Text color={theme.textMuted}> {argsStr}</Text>}
+                                    <Text color={iconColorOrUndef}>{isSelected ? '›' : icon} </Text>
+                                    <Text bold color={themeColor(theme, isSelected ? theme.accent : theme.text)}>{exec.name}</Text>
+                                    <Text color={themeColor(theme, theme.textMuted)}> {elapsed}</Text>
+                                    {argsStr && <Text color={themeColor(theme, theme.textMuted)}> {argsStr}</Text>}
                                 </Box>
-                                <Text color={theme.textMuted}>{isExpanded ? 'expanded' : 'collapsed'}</Text>
+                                <Text color={themeColor(theme, theme.textMuted)}>{isExpanded ? 'expanded' : 'collapsed'}</Text>
                             </Box>
                             {isExpanded && outputPreview && (
-                                <Text color={theme.textMuted}>output: {outputPreview}</Text>
+                                <Text color={themeColor(theme, theme.textMuted)}>output: {outputPreview}</Text>
                             )}
                         </Box>
                     );
@@ -393,18 +394,18 @@ export function TimelinePanel({ sections, entries, expandedIds, selectedIndex, w
     const visible = entries.slice(0, maxItems);
 
     return (
-        <Box flexDirection="column" width={width} height={height} borderStyle="single" borderColor={theme.borderNormal}>
+        <Box flexDirection="column" width={width} height={height} borderStyle="single" borderColor={themeColor(theme, theme.borderNormal)}>
             <Box paddingX={1} justifyContent="space-between">
-                <Text bold color={theme.accent}>Timeline</Text>
-                <Text color={isFocused ? theme.accent : theme.textMuted}>{entries.length === 0 ? 'empty' : `[${Math.min(selectedIndex + 1, entries.length)}/${entries.length}]`}</Text>
+                <Text bold color={themeColor(theme, theme.accent)}>Timeline</Text>
+                <Text color={themeColor(theme, isFocused ? theme.accent : theme.textMuted)}>{entries.length === 0 ? 'empty' : `[${Math.min(selectedIndex + 1, entries.length)}/${entries.length}]`}</Text>
             </Box>
             {visible.length === 0 ? (
-                <Box paddingX={1}><Text color={theme.textMuted}>No timeline events yet</Text></Box>
+                <Box paddingX={1}><Text color={themeColor(theme, theme.textMuted)}>No timeline events yet</Text></Box>
             ) : (
                 sections.map((section) => (
                     <Box key={section.title} flexDirection="column">
                         <Box paddingX={1}>
-                            <Text bold color={theme.textMuted}>{section.title}</Text>
+                            <Text bold color={themeColor(theme, theme.textMuted)}>{section.title}</Text>
                         </Box>
                         {section.entries.slice(0, maxItems).map((entry) => {
                             const index = entries.findIndex((candidate) => candidate.id === entry.id);
@@ -414,12 +415,12 @@ export function TimelinePanel({ sections, entries, expandedIds, selectedIndex, w
                             const kind = `[${entry.kind}]`;
                             return (
                                 <Box key={entry.id} paddingX={1} flexDirection="column">
-                                    <Text color={isSelected ? theme.accent : theme.text}>
+                                    <Text color={themeColor(theme, isSelected ? theme.accent : theme.text)}>
                                         {marker} {kind} {entry.title}
                                     </Text>
-                                    <Text color={theme.textMuted}>{entry.summary.slice(0, Math.max(20, width - 6))}</Text>
+                                    <Text color={themeColor(theme, theme.textMuted)}>{entry.summary.slice(0, Math.max(20, width - 6))}</Text>
                                     {isExpanded && entry.detail && (
-                                        <Text color={theme.textMuted}>{entry.detail.slice(0, Math.max(20, (width - 4) * 2))}</Text>
+                                        <Text color={themeColor(theme, theme.textMuted)}>{entry.detail.slice(0, Math.max(20, (width - 4) * 2))}</Text>
                                     )}
                                 </Box>
                             );
@@ -496,9 +497,9 @@ export function DiffPanel({ changes, width, height, selectedIndex, isFocused }: 
 
     if (changes.length === 0) {
         return (
-            <Box flexDirection="column" width={width} height={height} borderStyle="single" borderColor={theme.borderNormal}>
-                <Box paddingX={1}><Text bold color={theme.accent}>Diff Viewer</Text></Box>
-                <Box paddingX={1}><Text color={theme.textMuted}>No file changes yet</Text></Box>
+            <Box flexDirection="column" width={width} height={height} borderStyle="single" borderColor={themeColor(theme, theme.borderNormal)}>
+                <Box paddingX={1}><Text bold color={themeColor(theme, theme.accent)}>Diff Viewer</Text></Box>
+                <Box paddingX={1}><Text color={themeColor(theme, theme.textMuted)}>No file changes yet</Text></Box>
             </Box>
         );
     }
@@ -506,8 +507,8 @@ export function DiffPanel({ changes, width, height, selectedIndex, isFocused }: 
     const change = changes[Math.min(selectedIndex, changes.length - 1)];
     if (!change) {
         return (
-            <Box flexDirection="column" width={width} height={height} borderStyle="single" borderColor={theme.borderNormal}>
-                <Box paddingX={1}><Text color={theme.textMuted}>No changes</Text></Box>
+            <Box flexDirection="column" width={width} height={height} borderStyle="single" borderColor={themeColor(theme, theme.borderNormal)}>
+                <Box paddingX={1}><Text color={themeColor(theme, theme.textMuted)}>No changes</Text></Box>
             </Box>
         );
     }
@@ -517,14 +518,14 @@ export function DiffPanel({ changes, width, height, selectedIndex, isFocused }: 
     const visible = diffLines.slice(0, maxDiffLines);
 
     return (
-        <Box flexDirection="column" width={width} height={height} borderStyle="single" borderColor={theme.borderNormal}>
+        <Box flexDirection="column" width={width} height={height} borderStyle="single" borderColor={themeColor(theme, theme.borderNormal)}>
             <Box paddingX={1} justifyContent="space-between">
-                <Text bold color={theme.accent}>Diff: {change.filePath.split('/').pop()}</Text>
-                <Text color={isFocused ? theme.accent : theme.textMuted}>selected [{selectedIndex + 1}/{changes.length}]</Text>
+                <Text bold color={themeColor(theme, theme.accent)}>Diff: {change.filePath.split('/').pop()}</Text>
+                <Text color={themeColor(theme, isFocused ? theme.accent : theme.textMuted)}>selected [{selectedIndex + 1}/{changes.length}]</Text>
             </Box>
             <Box paddingX={1} justifyContent="space-between">
-                <Text color={theme.textMuted}>{change.filePath} ({change.toolName})</Text>
-                <Text color={theme.textMuted}>source: timeline ↔ diff</Text>
+                <Text color={themeColor(theme, theme.textMuted)}>{change.filePath} ({change.toolName})</Text>
+                <Text color={themeColor(theme, theme.textMuted)}>source: timeline ↔ diff</Text>
             </Box>
             {visible.map((line, i) => {
                 const color = line.type === 'add' ? theme.success
@@ -534,13 +535,13 @@ export function DiffPanel({ changes, width, height, selectedIndex, isFocused }: 
                 const displayText = `${prefix} ${line.text}`.slice(0, width - 4);
                 return (
                     <Box key={i} paddingX={1}>
-                        <Text color={color}>{displayText}</Text>
+                        <Text color={themeColor(theme, color)}>{displayText}</Text>
                     </Box>
                 );
             })}
             {diffLines.length > maxDiffLines && (
                 <Box paddingX={1}>
-                    <Text color={theme.textMuted}>... {diffLines.length - maxDiffLines} more lines</Text>
+                    <Text color={themeColor(theme, theme.textMuted)}>... {diffLines.length - maxDiffLines} more lines</Text>
                 </Box>
             )}
         </Box>
@@ -787,10 +788,10 @@ function WorkspaceSidebarPanel(props: {
         : 'cwd unavailable';
 
     return (
-        <Box flexDirection="column" width={props.width} height={props.height} borderStyle="single" borderColor={theme.borderDim}>
+        <Box flexDirection="column" width={props.width} height={props.height} borderStyle="single" borderColor={themeColor(theme, theme.borderDim)}>
             <Box flexDirection="column" paddingX={1}>
-                <Text bold color={theme.accent}>XQoder</Text>
-                <Text color={theme.textMuted}>{cwdLabel}</Text>
+                <Text bold color={themeColor(theme, theme.accent)}>XQoder</Text>
+                <Text color={themeColor(theme, theme.textMuted)}>{cwdLabel}</Text>
             </Box>
             <Sidebar
                 width={Math.max(8, props.width - 2)}
@@ -933,7 +934,7 @@ export function ChatPage({
                     )}
 
                     <Box width={metrics.mainColumnWidth} height={metrics.editorBoxHeight} flexDirection="column">
-                        <Text color={theme.borderDim}>{'─'.repeat(Math.max(1, metrics.mainColumnWidth))}</Text>
+                        <Text color={themeColor(theme, theme.borderDim)}>{'─'.repeat(Math.max(1, metrics.mainColumnWidth))}</Text>
                         <Box paddingLeft={1} height={metrics.editorBoxHeight - EDITOR_SEPARATOR_HEIGHT}>
                             <Editor
                                 value={editorValue}

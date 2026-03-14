@@ -8,6 +8,7 @@ export interface TuiSettings {
     agent: string;
     scope?: string;
     sandboxMode: SandboxMode;
+    enabledPlugins?: string[];
     /** 启动时恢复的 session ID（OpenCode -c/-s） */
     initialSessionId?: string;
     /** 启动时发送的 prompt（OpenCode --prompt） */
@@ -75,6 +76,24 @@ export type TuiCommand =
     | { type: 'connect' }
     | { type: 'error'; message: string };
 
+function isPluginEnabled(settings: TuiSettings, name: string): boolean {
+    if (!settings.enabledPlugins) {
+        return true;
+    }
+    return settings.enabledPlugins.includes(name);
+}
+
+function disabledPluginCommand(command: string, pluginName: string): TuiCommand {
+    return {
+        type: 'error',
+        message: `/${command} 属于扩展能力，默认关闭。请在配置 plugins.enabled 中启用 "${pluginName}"。`,
+    };
+}
+
+function disabledWorkflowCommand(command: string): TuiCommand {
+    return disabledPluginCommand(command, 'cli-workflows');
+}
+
 export function parseTuiCommand(input: string, settings: TuiSettings): TuiCommand {
     const trimmed = input.trim();
     if (!trimmed) {
@@ -117,10 +136,16 @@ export function parseTuiCommand(input: string, settings: TuiSettings): TuiComman
         case 'share':
             return parseShareCommand(value);
         case 'rollbacks':
+            if (!isPluginEnabled(settings, 'cli-integrations')) {
+                return disabledPluginCommand('rollbacks', 'cli-integrations');
+            }
             return { type: 'execute', command: 'rollbacks' };
         case 'doctor':
             return { type: 'execute', command: 'doctor' };
         case 'build':
+            if (!isPluginEnabled(settings, 'cli-workflows')) {
+                return disabledWorkflowCommand('build');
+            }
             return value
                 ? { type: 'execute', command: 'build', description: value }
                 : { type: 'error', message: 'Usage: /build <project request>' };
@@ -129,6 +154,9 @@ export function parseTuiCommand(input: string, settings: TuiSettings): TuiComman
         case 'start':
         case 'test':
         case 'deploy':
+            if (!isPluginEnabled(settings, 'cli-workflows')) {
+                return disabledWorkflowCommand(commandName);
+            }
             return { type: 'execute', command: commandName as TuiExecutableCommandName };
         case 'dir':
             return value
@@ -308,7 +336,7 @@ export interface SlashCommandDef {
     args?: string;      // 可选参数提示，如 "<模型名>"
 }
 
-export const SLASH_COMMANDS: SlashCommandDef[] = [
+const BASE_SLASH_COMMANDS: SlashCommandDef[] = [
     { name: 'theme',    description: 'Open theme selector' },
     { name: 'themes',   description: 'Same as /theme' },
     { name: 'models',   description: 'Open model selector', args: '[<model-name>]' },
@@ -348,8 +376,19 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
     { name: 'q',        description: 'Same as /exit' },
 ];
 
-export function getTuiHelpLines(): string[] {
-    return [
+export function getSlashCommands(settings?: Pick<TuiSettings, 'enabledPlugins'>): SlashCommandDef[] {
+    return BASE_SLASH_COMMANDS.filter((command) => {
+        if (command.name !== 'rollbacks') {
+            return true;
+        }
+        return settings?.enabledPlugins?.includes('cli-integrations') ?? false;
+    });
+}
+
+export const SLASH_COMMANDS = BASE_SLASH_COMMANDS;
+
+export function getTuiHelpLines(settings?: Pick<TuiSettings, 'enabledPlugins'>): string[] {
+    const lines = [
         'Type natural language directly to continue chatting.',
         '/chat <message>   Send a chat message explicitly',
         '/sessions         Open session switcher (Ctrl+S)',
@@ -376,7 +415,6 @@ export function getTuiHelpLines(): string[] {
         '/timeline toggle  Expand/collapse selected timeline event',
         '/timeline focus <tool|diff|timeline> Focus a panel and sync selection',
         '/export           Export session as Markdown file',
-        '/rollbacks        Show recent rollback points for current project',
         '/doctor           Check config, dependencies, and credentials',
         '/dir <path>       Switch current project directory',
         '/agent <name>     Set current agent (general/plan/coder)',
@@ -387,6 +425,12 @@ export function getTuiHelpLines(): string[] {
         '/help             Show help',
         '/exit             Exit TUI',
     ];
+
+    if (settings?.enabledPlugins?.includes('cli-integrations')) {
+        lines.splice(26, 0, '/rollbacks        Show recent rollback points for current project');
+    }
+
+    return lines;
 }
 
 function resolveCommandPath(currentDir: string, rawPath: string): string {

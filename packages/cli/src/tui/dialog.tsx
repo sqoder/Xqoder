@@ -8,7 +8,7 @@ import { Box, Text, useInput } from 'ink';
 import chalk from 'chalk';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { getTheme, createThemedStyles, getThemeName, getThemeNames, setTheme, themes } from './theme.js';
+import { getTheme, createThemedStyles, getThemeName, getThemeNames, setTheme, themes, themeColor } from './theme.js';
 import type { SessionInfo } from './sidebar.js';
 
 const MAX_DIALOG_LIST_ITEMS = 10;
@@ -91,7 +91,7 @@ export function DialogOverlay({
             {/* Opaque background — fill every row to hide underlying content */}
             {Array.from({ length: appHeight }, (_, i) => (
                 <Box key={`bg-${i}`} position="absolute" marginTop={i}>
-                    <Text color={theme.textMuted}>{blankLine}</Text>
+                    <Text color={themeColor(theme, theme.textMuted)}>{blankLine}</Text>
                 </Box>
             ))}
 
@@ -127,6 +127,7 @@ export function Dialog({
     children,
 }: DialogProps): React.JSX.Element {
     const theme = getTheme();
+    const styles = createThemedStyles(theme);
     const innerWidth = Math.min(width - 4, 70);
 
     useInput((_input, key) => {
@@ -139,14 +140,14 @@ export function Dialog({
             width={innerWidth}
             height={height}
             borderStyle="round"
-            borderColor={theme.borderFocused}
+            borderColor={themeColor(theme, theme.borderFocused)}
             paddingX={1}
         >
             <Box justifyContent="space-between" marginBottom={1}>
                 <Text bold>
-                    {chalk.hex(theme.primary)(title)}
+                    {theme.primary ? chalk.hex(theme.primary)(title) : title}
                 </Text>
-                <Text>{chalk.hex(theme.textMuted)('ESC to close')}</Text>
+                <Text>{styles.muted('ESC to close')}</Text>
             </Box>
             {children}
         </Box>
@@ -174,9 +175,10 @@ const HELP_ENTRIES: HelpEntry[] = [
     { key: 'Tab', description: 'Cycle agent (general → plan → coder)' },
     { key: 'Ctrl+E', description: 'Open external editor' },
     { key: 'Ctrl+C', description: 'Quit immediately' },
-    { key: 'Ctrl+?', description: 'Show this help dialog' },
+    { key: 'Ctrl+? / Ctrl+H', description: 'Show this help dialog' },
     { key: 'Ctrl+T', description: 'Switch theme' },
     { key: 'Ctrl+S', description: 'Session switcher' },
+    { key: 'Ctrl+N', description: 'New session (OpenCode style)' },
     { key: 'Ctrl+O', description: 'Model selector' },
     { key: 'Ctrl+K', description: 'Command palette' },
     { key: 'Ctrl+F', description: 'File picker' },
@@ -257,7 +259,7 @@ export function ThemeDialog({
                     const isSelected = i === selectedIndex;
                     const isCurrent = name === getThemeName();
                     const themeColors = themes[name];
-                    const swatches = themeColors
+                    const swatches = themeColors?.primary
                         ? chalk.bgHex(themeColors.primary)('  ')
                             + chalk.bgHex(themeColors.secondary)('  ')
                             + chalk.bgHex(themeColors.accent)('  ')
@@ -324,12 +326,12 @@ export function ConfirmDialog({
                 <Box marginTop={1} gap={3}>
                     <Text>
                         {selected === 'yes'
-                            ? chalk.bgHex(theme.primary).hex(theme.background).bold(' Yes ')
+                            ? (theme.primary ? chalk.bgHex(theme.primary).hex(theme.background).bold(' Yes ') : chalk.bold(' Yes '))
                             : styles.muted(' Yes ')}
                     </Text>
                     <Text>
                         {selected === 'no'
-                            ? chalk.bgHex(theme.error).hex(theme.background).bold(' No ')
+                            ? (theme.error ? chalk.bgHex(theme.error).hex(theme.background).bold(' No ') : chalk.bold(' No '))
                             : styles.muted(' No ')}
                     </Text>
                 </Box>
@@ -537,10 +539,11 @@ export function PermissionDialog({
                             'deny': theme.error,
                         };
                         const label = labels[btn];
+                        const btnColor = colors[btn];
                         return (
                             <Text key={btn}>
                                 {isSelected
-                                    ? chalk.bgHex(colors[btn]).hex(theme.background).bold(label)
+                                    ? (btnColor ? chalk.bgHex(btnColor).hex(theme.background).bold(label) : chalk.bold(label))
                                     : styles.muted(label)}
                             </Text>
                         );
@@ -549,6 +552,162 @@ export function PermissionDialog({
                 <Box marginTop={1}>
                     <Text>{styles.muted('← → navigate  a/s/d quick select  Enter confirm')}</Text>
                 </Box>
+            </Box>
+        </Dialog>
+    );
+}
+
+// ============================================================
+// QuestionDialog — 结构化问题交互
+// ============================================================
+
+export interface QuestionOption {
+    label: string;
+    description?: string;
+}
+
+export interface QuestionRequest {
+    requestId: string;
+    question: string;
+    header?: string;
+    options: QuestionOption[];
+    multiple?: boolean;
+    allowCustom?: boolean;
+}
+
+export interface QuestionAnswer {
+    requestId: string;
+    selected: string[];
+    customText?: string;
+}
+
+interface QuestionDialogProps {
+    request: QuestionRequest;
+    width: number;
+    onSubmit: (answer: QuestionAnswer) => void;
+    onCancel: () => void;
+}
+
+export function QuestionDialog({
+    request,
+    width,
+    onSubmit,
+    onCancel,
+}: QuestionDialogProps): React.JSX.Element {
+    const theme = getTheme();
+    const styles = createThemedStyles(theme);
+    const [cursor, setCursor] = useState(0);
+    const [selected, setSelected] = useState<string[]>(() => request.options.length > 0 ? [request.options[0]!.label] : []);
+    const [customText, setCustomText] = useState('');
+
+    const hasOptions = request.options.length > 0;
+
+    const commit = (): void => {
+        onSubmit({
+            requestId: request.requestId,
+            selected,
+            ...(customText.trim() ? { customText: customText.trim() } : {}),
+        });
+    };
+
+    useInput((input, key) => {
+        if (key.escape) {
+            onCancel();
+            return;
+        }
+
+        if (key.upArrow && hasOptions) {
+            setCursor((current) => getNextListIndex(current, request.options.length, 'prev'));
+            return;
+        }
+        if (key.downArrow && hasOptions) {
+            setCursor((current) => getNextListIndex(current, request.options.length, 'next'));
+            return;
+        }
+
+        if (key.return) {
+            if (request.multiple && hasOptions) {
+                const option = request.options[cursor];
+                if (option) {
+                    setSelected((current) => current.includes(option.label)
+                        ? current.filter((entry) => entry !== option.label)
+                        : [...current, option.label]);
+                    return;
+                }
+            }
+            commit();
+            return;
+        }
+
+        if (input === ' ' && request.multiple && hasOptions) {
+            const option = request.options[cursor];
+            if (!option) return;
+            setSelected((current) => current.includes(option.label)
+                ? current.filter((entry) => entry !== option.label)
+                : [...current, option.label]);
+            return;
+        }
+
+        if (input && !key.ctrl && !key.meta && request.allowCustom) {
+            setCustomText((current) => current + input);
+            return;
+        }
+
+        if ((key.backspace || key.delete) && request.allowCustom) {
+            setCustomText((current) => current.slice(0, -1));
+        }
+    });
+
+    return (
+        <Dialog title="❓  Question" width={width} onClose={onCancel}>
+            <Box flexDirection="column">
+                {request.header && (
+                    <Box marginBottom={1}>
+                        <Text>{styles.accent(request.header)}</Text>
+                    </Box>
+                )}
+                <Box marginBottom={1}>
+                    <Text>{styles.text(request.question)}</Text>
+                </Box>
+
+                {hasOptions ? (
+                    <Box flexDirection="column" marginBottom={1}>
+                        {request.options.map((option, index) => {
+                            const focused = index === cursor;
+                            const checked = selected.includes(option.label);
+                            const marker = request.multiple ? (checked ? '[x]' : '[ ]') : (checked ? '(*)' : '( )');
+                            return (
+                                <Box key={`${option.label}:${index}`} marginBottom={option.description ? 1 : 0} flexDirection="column">
+                                    <Text>
+                                        {focused ? styles.accent('▸ ') : '  '}
+                                        {styles.text(`${marker} ${option.label}`)}
+                                    </Text>
+                                    {option.description && (
+                                        <Box paddingLeft={4}>
+                                            <Text>{styles.muted(option.description)}</Text>
+                                        </Box>
+                                    )}
+                                </Box>
+                            );
+                        })}
+                    </Box>
+                ) : (
+                    <Box marginBottom={1}>
+                        <Text>{styles.muted('No predefined options')}</Text>
+                    </Box>
+                )}
+
+                {request.allowCustom && (
+                    <Box marginBottom={1}>
+                        <Text>
+                            {styles.muted('Custom: ')}
+                            {customText || styles.muted('(optional)')}
+                            <Text inverse> </Text>
+                        </Text>
+                    </Box>
+                )}
+
+                <Text>{styles.muted(request.multiple ? '↑↓ move  Space toggle  Enter submit  Esc cancel' : '↑↓ move  Enter submit  Esc cancel')}</Text>
             </Box>
         </Dialog>
     );
@@ -817,7 +976,7 @@ export function SessionSelectorDialog({
                 {confirmDelete ? (
                     <Box marginTop={1}>
                         <Text>
-                            {chalk.hex(theme.warning)('Delete this session? ')}
+                            {theme.warning ? chalk.hex(theme.warning)('Delete this session? ') : 'Delete this session? '}
                             {styles.emphasized('y')}
                             {styles.muted(' confirm  ')}
                             {styles.muted('any other key cancel')}
@@ -853,6 +1012,7 @@ export function InitDialog({
     onClose,
 }: InitDialogProps): React.JSX.Element {
     const theme = getTheme();
+    const styles = createThemedStyles(theme);
     const [selected, setSelected] = useState<'init' | 'skip'>('init');
 
     useInput((input, key) => {
@@ -878,27 +1038,27 @@ export function InitDialog({
     return (
         <Dialog width={width} title="Initialize Project" onClose={onClose}>
             <Box flexDirection="column" paddingX={1} paddingY={1}>
-                <Text color={theme.text}>
+                <Text color={themeColor(theme, theme.text)}>
                     Create an XQoder.md memory file for this project?
                 </Text>
-                <Text color={theme.textMuted} dimColor>
+                <Text color={themeColor(theme, theme.textMuted)} dimColor>
                     This helps the AI understand your codebase better.
                 </Text>
                 <Box marginTop={1} flexDirection="column">
                     <Box>
-                        <Text color={selected === 'init' ? theme.primary : theme.textMuted}>
-                            {selected === 'init' ? '▸ ' : '  '}Initialize — analyze codebase and create XQoder.md
-                        </Text>
-                    </Box>
-                    <Box>
-                        <Text color={selected === 'skip' ? theme.primary : theme.textMuted}>
+<Text color={themeColor(theme, selected === 'init' ? theme.primary : theme.textMuted)}>
+                                            {selected === 'init' ? '▸ ' : '  '}Initialize — analyze codebase and create XQoder.md
+                                        </Text>
+                                    </Box>
+                                    <Box>
+                                        <Text color={themeColor(theme, selected === 'skip' ? theme.primary : theme.textMuted)}>
                             {selected === 'skip' ? '▸ ' : '  '}Skip — continue without initializing
                         </Text>
                     </Box>
                 </Box>
                 <Box marginTop={1}>
                     <Text dimColor>
-                        {chalk.hex(theme.textMuted)(`Project: ${projectDir}`)}
+                        {styles.muted(`Project: ${projectDir}`)}
                     </Text>
                 </Box>
             </Box>
@@ -1008,12 +1168,12 @@ export function ContextCompletionDialog({
         <Dialog width={width} title="Add Context" onClose={onClose}>
             <Box flexDirection="column" paddingX={1}>
                 <Box>
-                    <Text color={theme.textMuted}>Search: </Text>
-                    <Text color={theme.text}>{query}<Text inverse> </Text></Text>
+                    <Text color={themeColor(theme, theme.textMuted)}>Search: </Text>
+                    <Text color={themeColor(theme, theme.text)}>{query}<Text inverse> </Text></Text>
                 </Box>
                 <Box marginTop={1} flexDirection="column">
                     {visible.length === 0 ? (
-                        <Text color={theme.textMuted}>No matches found</Text>
+                        <Text color={themeColor(theme, theme.textMuted)}>No matches found</Text>
                     ) : (
                         visible.map((item, i) => {
                             const absIdx = scrollOffset + i;
@@ -1024,9 +1184,9 @@ export function ContextCompletionDialog({
                                         {isSel ? styles.accent('▸ ') : '  '}
                                         {iconMap[item.type]} {' '}
                                         {isSel
-                                            ? chalk.hex(theme.textEmphasized).bold(item.label)
-                                            : chalk.hex(theme.text)(item.label)}
-                                        {item.detail ? chalk.hex(theme.textMuted)(` — ${item.detail}`) : ''}
+                                            ? styles.emphasized(item.label)
+                                            : styles.text(item.label)}
+                                        {item.detail ? styles.muted(` — ${item.detail}`) : ''}
                                     </Text>
                                 </Box>
                             );
@@ -1035,7 +1195,7 @@ export function ContextCompletionDialog({
                 </Box>
                 {items.length > PAGE_SIZE && (
                     <Box marginTop={1}>
-                        <Text color={theme.textMuted}>{items.length} items total  ↑↓ select  Enter confirm  Esc cancel</Text>
+                        <Text color={themeColor(theme, theme.textMuted)}>{items.length} items total  ↑↓ select  Enter confirm  Esc cancel</Text>
                     </Box>
                 )}
             </Box>
@@ -1071,6 +1231,7 @@ export function ArgumentsDialog({
     onClose,
 }: ArgumentsDialogProps): React.JSX.Element {
     const theme = getTheme();
+    const styles = createThemedStyles(theme);
     const [values, setValues] = useState<Record<string, string>>(() => {
         const init: Record<string, string> = {};
         for (const f of fields) init[f.name] = f.defaultValue ?? '';
@@ -1119,16 +1280,16 @@ export function ArgumentsDialog({
                     const showPlaceholder = !value && field.placeholder;
                     return (
                         <Box key={field.name} flexDirection="column" marginBottom={1}>
-                            <Text color={isActive ? theme.primary : theme.textMuted}>
+                            <Text color={themeColor(theme, isActive ? theme.primary : theme.textMuted)}>
                                 {isActive ? '▸ ' : '  '}
-                                {field.label}{field.required ? chalk.hex(theme.error)(' *') : ''}
+                                {field.label}{field.required ? (theme.error ? chalk.hex(theme.error)(' *') : ' *') : ''}
                             </Text>
                             <Box paddingLeft={2}>
                                 <Text>
-                                    {isActive ? chalk.hex(theme.borderFocused)('│ ') : chalk.hex(theme.borderNormal)('│ ')}
+                                    {isActive ? styles.accent('│ ') : (theme.borderNormal ? chalk.hex(theme.borderNormal)('│ ') : '│ ')}
                                     {showPlaceholder
-                                        ? chalk.hex(theme.textMuted)(field.placeholder!)
-                                        : chalk.hex(theme.text)(value)}
+                                        ? styles.muted(field.placeholder!)
+                                        : styles.text(value)}
                                     {isActive && <Text inverse> </Text>}
                                 </Text>
                             </Box>
@@ -1136,7 +1297,7 @@ export function ArgumentsDialog({
                     );
                 })}
                 <Box marginTop={1}>
-                    <Text color={theme.textMuted}>Tab/↑↓ switch  Enter submit  Esc cancel</Text>
+                    <Text color={themeColor(theme, theme.textMuted)}>Tab/↑↓ switch  Enter submit  Esc cancel</Text>
                 </Box>
             </Box>
         </Dialog>

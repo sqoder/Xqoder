@@ -52,6 +52,7 @@ export type TerminalInputEvent =
     | ParsedPasteInputEvent
     | ParsedMouseInputEvent;
 
+// 长序列放前面，避免被短序列抢先匹配（如 \x1b[1;2A 要在 \x1b[A 前）
 const keySequences: Array<{ sequence: string; key: ParsedKeyName; shift?: boolean }> = [
     { sequence: '\x1b[1;2A', key: 'up', shift: true },
     { sequence: '\x1b[1;2B', key: 'down', shift: true },
@@ -65,10 +66,14 @@ const keySequences: Array<{ sequence: string; key: ParsedKeyName; shift?: boolea
     { sequence: '\x1b[F', key: 'end' },
     { sequence: '\x1b[1~', key: 'home' },
     { sequence: '\x1b[4~', key: 'end' },
+    { sequence: '\x1b[7~', key: 'home' },
+    { sequence: '\x1b[8~', key: 'end' },
     { sequence: '\x1b[5~', key: 'pageup' },
     { sequence: '\x1b[6~', key: 'pagedown' },
     { sequence: '\x1b[3~', key: 'delete' },
     { sequence: '\x1b[Z', key: 'tab', shift: true },
+    { sequence: '\x1bOH', key: 'home' },
+    { sequence: '\x1bOF', key: 'end' },
 ];
 
 function normalizeText(text: string): string {
@@ -100,7 +105,8 @@ function decodeMouseKind(code: number, action: 'M' | 'm'): ParsedMouseInputEvent
     return 'press';
 }
 
-function parseMouseSequence(raw: string): { event: ParsedMouseInputEvent; length: number } | null {
+/** SGR 格式：\x1b[<code;x;yM (1006) */
+function parseMouseSequenceSGR(raw: string): { event: ParsedMouseInputEvent; length: number } | null {
     const match = raw.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])/);
     if (!match) {
         return null;
@@ -123,6 +129,29 @@ function parseMouseSequence(raw: string): { event: ParsedMouseInputEvent; length
         event,
         length: match[0].length,
     };
+}
+
+/** 旧式 xterm 格式：\x1b[M + 3 字节 (Cb Cx Cy)，Cb = button+32，部分终端只发这种 */
+function parseMouseSequenceLegacy(raw: string): { event: ParsedMouseInputEvent; length: number } | null {
+    if (raw.length < 6 || !raw.startsWith('\x1b[M')) {
+        return null;
+    }
+    const b = raw.charCodeAt(3) - 32;
+    const x = raw.charCodeAt(4) - 32;
+    const y = raw.charCodeAt(5) - 32;
+    const event: ParsedMouseInputEvent = {
+        type: 'mouse',
+        kind: b === 64 || b === 65 ? 'scroll' : 'press',
+        button: decodeMouseButton(b),
+        x: Math.max(1, x),
+        y: Math.max(1, y),
+        raw: raw.slice(0, 6),
+    };
+    return { event, length: 6 };
+}
+
+function parseMouseSequence(raw: string): { event: ParsedMouseInputEvent; length: number } | null {
+    return parseMouseSequenceSGR(raw) ?? parseMouseSequenceLegacy(raw);
 }
 
 export function parseInputChunk(input: string): TerminalInputEvent[] {
@@ -176,6 +205,11 @@ export function parseInputChunk(input: string): TerminalInputEvent[] {
             cursor += 1;
             continue;
         }
+        if (char === '\x15') {
+            events.push({ type: 'key', key: 'delete-to-line-start', raw: char });
+            cursor += 1;
+            continue;
+        }
         if (char === '\x1b') {
             const next = input[cursor + 1];
             if (next && next !== '[') {
@@ -202,4 +236,104 @@ export function parseInputChunk(input: string): TerminalInputEvent[] {
     }
 
     return events;
+}
+
+const MAX_ESCAPE_LENGTH = 24;
+
+/**
+ * 解析输入并返回未消费的尾部（可能是不完整的转义序列），用于跨 chunk 缓冲。
+ * 当尾部以 \x1b 开头且可能是未收齐的鼠标/按键序列时，放入 rest，下次与新区块拼接后再解析。
+ */
+export function parseInputChunkWithRest(input: string): { events: TerminalInputEvent[]; rest: string } {
+    const events: TerminalInputEvent[] = [];
+    let cursor = 0;
+
+    while (cursor < input.length) {
+        if (input.startsWith('\x1b[200~', cursor)) {
+            const end = input.indexOf('\x1b[201~', cursor + 6);
+            if (end !== -1) {
+                const raw = input.slice(cursor, end + 6);
+                const text = normalizeText(input.slice(cursor + 6, end));
+                events.push({ type: 'paste', text, raw });
+                cursor = end + 6;
+                continue;
+            }
+            return { events, rest: input.slice(cursor) };
+        }
+
+        const mouse = parseMouseSequence(input.slice(cursor));
+        if (mouse) {
+            events.push(mouse.event);
+            cursor += mouse.length;
+            continue;
+        }
+
+        const matchedKey = keySequences.find((entry) => input.startsWith(entry.sequence, cursor));
+        if (matchedKey) {
+            events.push({
+                type: 'key',
+                key: matchedKey.key,
+                ...(matchedKey.shift ? { shift: true } : {}),
+                raw: matchedKey.sequence,
+            });
+            cursor += matchedKey.sequence.length;
+            continue;
+        }
+
+        const char = input[cursor]!;
+        if (char === '\r' || char === '\n') {
+            events.push({ type: 'key', key: 'enter', raw: char });
+            cursor += 1;
+            continue;
+        }
+        if (char === '\t') {
+            events.push({ type: 'key', key: 'tab', raw: char });
+            cursor += 1;
+            continue;
+        }
+        if (char === '\x7f' || char === '\b') {
+            events.push({ type: 'key', key: 'backspace', raw: char });
+            cursor += 1;
+            continue;
+        }
+        if (char === '\x15') {
+            events.push({ type: 'key', key: 'delete-to-line-start', raw: char });
+            cursor += 1;
+            continue;
+        }
+        if (char === '\x1b') {
+            const rest = input.slice(cursor);
+            if (rest.length === 1) {
+                return { events, rest };
+            }
+            if (rest.length <= MAX_ESCAPE_LENGTH) {
+                if (rest.startsWith('\x1b[<') || rest.startsWith('\x1b[M') || rest.startsWith('\x1b[') || rest.startsWith('\x1bO')) {
+                    return { events, rest };
+                }
+            }
+            const next = input[cursor + 1];
+            if (next && next !== '[') {
+                events.push({ type: 'key', key: next, alt: true, raw: input.slice(cursor, cursor + 2) });
+                cursor += 2;
+                continue;
+            }
+            events.push({ type: 'key', key: 'escape', raw: char });
+            cursor += 1;
+            continue;
+        }
+
+        let end = cursor;
+        while (end < input.length) {
+            const candidate = input[end]!;
+            if (candidate === '\x1b' || candidate === '\r' || candidate === '\n' || candidate === '\t' || candidate === '\x7f' || candidate === '\b') {
+                break;
+            }
+            end += 1;
+        }
+        const text = input.slice(cursor, end);
+        events.push({ type: 'text', text, raw: text });
+        cursor = end;
+    }
+
+    return { events, rest: '' };
 }

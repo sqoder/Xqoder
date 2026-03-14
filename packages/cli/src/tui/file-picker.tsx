@@ -7,7 +7,7 @@ import { Box, Text, useInput } from 'ink';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import chalk from 'chalk';
-import { getTheme, createThemedStyles } from './theme.js';
+import { getTheme, createThemedStyles, themeColor } from './theme.js';
 
 /** 文件条目 */
 interface FileEntry {
@@ -136,19 +136,19 @@ export function FilePicker({
             width={width}
             height={height}
             borderStyle="round"
-            borderColor={theme.primary}
+            borderColor={themeColor(theme, theme.primary)}
             paddingX={1}
         >
             {/* 标题 */}
             <Box>
-                <Text bold color={theme.primary}>
+                <Text bold color={themeColor(theme, theme.primary)}>
                     📁 File Picker
                 </Text>
             </Box>
 
             {/* 当前路径 */}
             <Box>
-                <Text color={theme.textMuted}>
+                <Text color={themeColor(theme, theme.textMuted)}>
                     {truncatePath(currentDir, width - 4)}
                 </Text>
             </Box>
@@ -156,7 +156,7 @@ export function FilePicker({
             {/* 过滤器 */}
             {filter && (
                 <Box>
-                    <Text color={theme.accent}>
+                    <Text color={themeColor(theme, theme.accent)}>
                         🔍 {filter}
                     </Text>
                 </Box>
@@ -191,7 +191,7 @@ export function FilePicker({
 
             {/* 底部信息 */}
             <Box>
-                <Text color={theme.textMuted}>
+                <Text color={themeColor(theme, theme.textMuted)}>
                     {filtered.length} items · ↑↓ Navigate · Enter Select · Esc Cancel
                 </Text>
             </Box>

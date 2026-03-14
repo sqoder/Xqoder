@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildCliArgs, getTuiHelpLines, parseTuiCommand } from './commands.js';
+import { buildCliArgs, getSlashCommands, getTuiHelpLines, parseTuiCommand } from './commands.js';
 
 describe('parseTuiCommand', () => {
     const settings = {
@@ -9,6 +9,7 @@ describe('parseTuiCommand', () => {
         agent: 'general',
         scope: 'my-team',
         sandboxMode: 'project' as const,
+        enabledPlugins: ['cli-core-shell'],
     };
 
     it('treats plain text as a chat request', () => {
@@ -115,6 +116,21 @@ describe('parseTuiCommand', () => {
         });
     });
 
+    it('blocks /rollbacks unless integrations plugin is enabled', () => {
+        expect(parseTuiCommand('/rollbacks', settings)).toEqual({
+            type: 'error',
+            message: '/rollbacks 属于扩展能力，默认关闭。请在配置 plugins.enabled 中启用 "cli-integrations"。',
+        });
+
+        expect(parseTuiCommand('/rollbacks', {
+            ...settings,
+            enabledPlugins: ['cli-core-shell', 'cli-integrations'],
+        })).toEqual({
+            type: 'execute',
+            command: 'rollbacks',
+        });
+    });
+
     it('parses session UX slash commands for copy export details and unshare', () => {
         expect(parseTuiCommand('/copy', settings)).toEqual({
             type: 'copy',
@@ -176,7 +192,7 @@ describe('parseTuiCommand', () => {
 
 describe('getTuiHelpLines', () => {
     it('includes session UX discoverability lines', () => {
-        const help = getTuiHelpLines().join('\n');
+        const help = getTuiHelpLines({ enabledPlugins: ['cli-core-shell'] }).join('\n');
         expect(help).toContain('/copy             Copy latest AI response');
         expect(help).toContain('/copy-session     Copy full session transcript');
         expect(help).toContain('/copy-code        Copy code blocks from latest AI response');
@@ -189,6 +205,15 @@ describe('getTuiHelpLines', () => {
         expect(help).toContain('/timeline focus <tool|diff|timeline> Focus a panel and sync selection');
         expect(help).toContain('/export           Export session as Markdown file');
         expect(help).toContain('/unshare          Remove shares for current session');
+        expect(help).not.toContain('/rollbacks        Show recent rollback points for current project');
+    });
+
+    it('shows integration-only help and slash commands only when enabled', () => {
+        const enabledSettings = { enabledPlugins: ['cli-core-shell', 'cli-integrations'] as string[] };
+
+        expect(getTuiHelpLines(enabledSettings).join('\n')).toContain('/rollbacks        Show recent rollback points for current project');
+        expect(getSlashCommands({ enabledPlugins: ['cli-core-shell'] }).map((command) => command.name)).not.toContain('rollbacks');
+        expect(getSlashCommands(enabledSettings).map((command) => command.name)).toContain('rollbacks');
     });
 });
 

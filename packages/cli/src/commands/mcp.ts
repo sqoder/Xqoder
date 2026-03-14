@@ -19,9 +19,12 @@ interface McpOutputOptions {
 }
 
 interface McpAddOptions {
-    command: string;
+    transport?: 'stdio' | 'http' | 'sse';
+    command?: string;
+    url?: string;
     arg: string[];
     env: string[];
+    header?: string[];
     cwd?: string;
     timeoutMs: number;
     disabled?: boolean;
@@ -57,7 +60,9 @@ export function runListMcpServersCommand(
     for (const server of servers) {
         writeOutput([
             `${server.name} ${server.enabled === false ? '[disabled]' : '[enabled]'}`,
-            `command=${server.command}`,
+            `transport=${server.transport ?? 'stdio'}`,
+            `command=${server.command ?? '-'}`,
+            ...(server.url ? [`url=${server.url}`] : []),
             `args=${server.args?.length ?? 0}`,
             `timeout=${server.timeoutMs ?? 15_000}ms`,
         ].join(' '), dependencies);
@@ -119,8 +124,11 @@ export async function runDoctorMcpServersCommand(
 
     for (const inspection of inspections) {
         const status = inspection.status.toUpperCase();
-        const header = `${inspection.name} ${status} tools=${inspection.toolCount} prompts=${inspection.promptCount} resources=${inspection.resourceCount} templates=${inspection.resourceTemplateCount}`;
+        const header = `${inspection.name} ${status} transport=${inspection.transport} tools=${inspection.toolCount} prompts=${inspection.promptCount} resources=${inspection.resourceCount} templates=${inspection.resourceTemplateCount}`;
         writeOutput(header, dependencies);
+        if (inspection.url) {
+            writeOutput(`url=${inspection.url}`, dependencies);
+        }
         if (inspection.serverInfo) {
             writeOutput(`server=${inspection.serverInfo.name}@${inspection.serverInfo.version} protocol=${inspection.protocolVersion ?? 'unknown'}`, dependencies);
         }
@@ -155,15 +163,7 @@ export function runAddMcpServerCommand(
 
     const nextServers = [
         ...(current.mcp?.servers ?? []),
-        {
-            name,
-            command: options.command,
-            args: options.arg,
-            env: parseEnvPairs(options.env),
-            cwd: options.cwd ? path.resolve(options.cwd) : undefined,
-            enabled: !options.disabled,
-            timeoutMs: options.timeoutMs,
-        },
+        buildMcpServerConfigFromOptions(name, options),
     ];
 
     manager.update({
@@ -173,6 +173,46 @@ export function runAddMcpServerCommand(
     });
     manager.save();
     logger.success(`已添加 MCP server: ${name}`);
+}
+
+function buildMcpServerConfigFromOptions(name: string, options: McpAddOptions): MCPServerConfig {
+    const transport = normalizeMcpTransport(options.transport);
+    if (transport === 'http' || transport === 'sse') {
+        if (!options.url?.trim()) {
+            throw new Error(`${transport} transport requires --url`);
+        }
+        return {
+            name,
+            transport,
+            url: options.url.trim(),
+            headers: parseEnvPairs(options.header),
+            enabled: !options.disabled,
+            timeoutMs: options.timeoutMs,
+        };
+    }
+
+    if (!options.command?.trim()) {
+        throw new Error('stdio transport requires --command');
+    }
+
+    return {
+        name,
+        transport: 'stdio',
+        command: options.command.trim(),
+        args: options.arg,
+        env: parseEnvPairs(options.env),
+        cwd: options.cwd ? path.resolve(options.cwd) : undefined,
+        enabled: !options.disabled,
+        timeoutMs: options.timeoutMs,
+    };
+}
+
+function normalizeMcpTransport(value: string | undefined): 'stdio' | 'http' | 'sse' {
+    const raw = (value ?? 'stdio').trim().toLowerCase();
+    if (raw === 'http' || raw === 'sse' || raw === 'stdio') {
+        return raw;
+    }
+    throw new Error(`不支持的 MCP transport: ${value}`);
 }
 
 export function runRemoveMcpServerCommand(
@@ -255,11 +295,14 @@ export function createMcpCommand(
 
     mcpCommand
         .command('add')
-        .description('新增一个 stdio MCP server')
+        .description('新增一个 MCP server（stdio/http/sse）')
         .argument('<name>', 'server 名称')
-        .requiredOption('--command <command>', '启动命令')
+        .option('--transport <transport>', '传输方式: stdio | http | sse', 'stdio')
+        .option('--command <command>', 'stdio 启动命令')
+        .option('--url <url>', 'http/sse server URL')
         .option('--arg <value>', '命令参数，可重复传入', collectOption, [])
         .option('--env <key=value>', '额外环境变量，可重复传入', collectOption, [])
+        .option('--header <key=value>', 'http/sse 请求头，可重复传入', collectOption, [])
         .option('--cwd <dir>', 'server 工作目录')
         .option('--timeout-ms <ms>', '请求超时（毫秒）', parseNumberOption, 15_000)
         .option('--disabled', '新增后保持禁用状态')
@@ -351,7 +394,7 @@ function findServerOrThrow(config: XQoderConfig, name: string): MCPServerConfig 
     return server;
 }
 
-function parseEnvPairs(entries: string[]): Record<string, string> {
+function parseEnvPairs(entries: string[] = []): Record<string, string> {
     return Object.fromEntries(entries.map((entry) => {
         const separatorIndex = entry.indexOf('=');
         if (separatorIndex <= 0) {

@@ -3,7 +3,7 @@
 // 参考 OpenCode: internal/tui/theme/theme.go
 // ============================================================
 
-import chalk, { type ChalkInstance } from 'chalk';
+import chalk from 'chalk';
 
 /**
  * Theme 接口
@@ -60,49 +60,99 @@ export interface Theme {
 }
 
 /**
- * 主题化的 chalk 工具
+ * 主题化的样式函数（终端默认主题时不加颜色，仅返回原文）
  */
 export interface ThemedStyles {
-    primary: ChalkInstance;
-    secondary: ChalkInstance;
-    accent: ChalkInstance;
-    error: ChalkInstance;
-    warning: ChalkInstance;
-    success: ChalkInstance;
-    info: ChalkInstance;
-    text: ChalkInstance;
-    muted: ChalkInstance;
-    emphasized: ChalkInstance;
-    heading: ChalkInstance;
-    code: ChalkInstance;
-    link: ChalkInstance;
-    diffAdded: ChalkInstance;
-    diffRemoved: ChalkInstance;
+    primary: (s: string) => string;
+    secondary: (s: string) => string;
+    accent: (s: string) => string;
+    error: (s: string) => string;
+    warning: (s: string) => string;
+    success: (s: string) => string;
+    info: (s: string) => string;
+    text: (s: string) => string;
+    muted: (s: string) => string;
+    emphasized: (s: string) => string;
+    heading: (s: string) => string;
+    code: (s: string) => string;
+    link: (s: string) => string;
+    diffAdded: (s: string) => string;
+    diffRemoved: (s: string) => string;
     border: (focused?: boolean) => string;
 }
 
+/** 是否使用终端默认主题（不输出任何颜色码） */
+export function isTerminalDefaultTheme(theme: Theme): boolean {
+    return theme.name === 'Default' || theme.primary === '';
+}
+
+/** 在终端默认主题下返回 undefined，否则返回颜色值，用于 Ink 的 color/borderColor（不传则用终端默认） */
+export function themeColor(theme: Theme, value: string): string | undefined {
+    if (isTerminalDefaultTheme(theme) || !value) return undefined;
+    return value;
+}
+
 export function createThemedStyles(theme: Theme): ThemedStyles {
+    const useTerminal = isTerminalDefaultTheme(theme);
+    const noColor = (s: string): string => s;
+    const noColorBold = (s: string): string => chalk.bold(s);
+    const noColorUnderline = (s: string): string => chalk.underline(s);
     return {
-        primary: chalk.hex(theme.primary),
-        secondary: chalk.hex(theme.secondary),
-        accent: chalk.hex(theme.accent),
-        error: chalk.hex(theme.error),
-        warning: chalk.hex(theme.warning),
-        success: chalk.hex(theme.success),
-        info: chalk.hex(theme.info),
-        text: chalk.hex(theme.text),
-        muted: chalk.hex(theme.textMuted),
-        emphasized: chalk.hex(theme.textEmphasized).bold,
-        heading: chalk.hex(theme.markdownHeading).bold,
-        code: chalk.hex(theme.markdownCode),
-        link: chalk.hex(theme.markdownLink).underline,
-        diffAdded: chalk.hex(theme.diffAdded),
-        diffRemoved: chalk.hex(theme.diffRemoved),
-        border: (focused = false) => focused ? theme.borderFocused : theme.borderNormal,
+        primary: useTerminal ? noColor : chalk.hex(theme.primary),
+        secondary: useTerminal ? noColor : chalk.hex(theme.secondary),
+        accent: useTerminal ? noColor : chalk.hex(theme.accent),
+        error: useTerminal ? noColor : chalk.hex(theme.error),
+        warning: useTerminal ? noColor : chalk.hex(theme.warning),
+        success: useTerminal ? noColor : chalk.hex(theme.success),
+        info: useTerminal ? noColor : chalk.hex(theme.info),
+        text: useTerminal ? noColor : chalk.hex(theme.text),
+        muted: useTerminal ? noColor : chalk.hex(theme.textMuted),
+        emphasized: useTerminal ? noColorBold : chalk.hex(theme.textEmphasized).bold,
+        heading: useTerminal ? noColorBold : chalk.hex(theme.markdownHeading).bold,
+        code: useTerminal ? noColor : chalk.hex(theme.markdownCode),
+        link: useTerminal ? noColorUnderline : chalk.hex(theme.markdownLink).underline,
+        diffAdded: useTerminal ? noColor : chalk.hex(theme.diffAdded),
+        diffRemoved: useTerminal ? noColor : chalk.hex(theme.diffRemoved),
+        border: (focused = false) => (useTerminal ? '' : (focused ? theme.borderFocused : theme.borderNormal)),
     };
 }
 
 // ---- 预设主题 ----
+
+/** Default — 与终端主题一致，不输出任何自定义颜色，完全使用终端默认前景/背景 */
+export const defaultTheme: Theme = {
+    name: 'Default',
+    primary: '',
+    secondary: '',
+    accent: '',
+    error: '',
+    warning: '',
+    success: '',
+    info: '',
+    text: '',
+    textMuted: '',
+    textEmphasized: '',
+    background: '',
+    backgroundSecondary: '',
+    backgroundDarker: '',
+    borderNormal: '',
+    borderFocused: '',
+    borderDim: '',
+    markdownHeading: '',
+    markdownCode: '',
+    markdownLink: '',
+    markdownBlockQuote: '',
+    syntaxComment: '',
+    syntaxKeyword: '',
+    syntaxFunction: '',
+    syntaxString: '',
+    syntaxNumber: '',
+    syntaxType: '',
+    syntaxOperator: '',
+    diffAdded: '',
+    diffRemoved: '',
+    diffContext: '',
+};
 
 /** Catppuccin Mocha — 柔和暗色主题 */
 export const catppuccinMocha: Theme = {
@@ -458,6 +508,7 @@ export const highContrast: Theme = {
 
 /** 所有可用主题 */
 export const themes: Record<string, Theme> = {
+    'default': defaultTheme,
     'xqoder': xqoderDefault,
     'catppuccin': catppuccinMocha,
     'dracula': dracula,
@@ -470,7 +521,7 @@ export const themes: Record<string, Theme> = {
     'high-contrast': highContrast,
 };
 
-let currentThemeName = 'xqoder';
+let currentThemeName = 'default';
 
 function prefersLightTerminalBackground(): boolean {
     const colorfgbg = process.env['COLORFGBG'];
@@ -484,7 +535,7 @@ function prefersLightTerminalBackground(): boolean {
 }
 
 function withReadableContrast(theme: Theme): Theme {
-    if (!prefersLightTerminalBackground()) {
+    if (!prefersLightTerminalBackground() || theme.name === 'Default' || theme.primary === '') {
         return theme;
     }
 
@@ -509,7 +560,7 @@ export function setTheme(name: string): void {
 }
 
 export function getTheme(): Theme {
-    return withReadableContrast(themes[currentThemeName] ?? xqoderDefault);
+    return withReadableContrast(themes[currentThemeName] ?? defaultTheme);
 }
 
 export function getThemeName(): string {

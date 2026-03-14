@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentSession } from '@xqoder/agent';
 import { normalizeLLMConfig } from '@xqoder/shared';
-import { runNonInteractivePrompt } from './chat-service.js';
+import { runChatHeadless, runNonInteractivePrompt } from './chat-service.js';
 
 describe('runNonInteractivePrompt', () => {
     const stdoutWrite = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -88,5 +88,65 @@ describe('runNonInteractivePrompt', () => {
             projectRoot: '/tmp/xqoder-non-interactive',
             cwd: '/tmp/xqoder-non-interactive',
         }));
+    });
+});
+
+describe('runChatHeadless', () => {
+    it('does not force-enable tool approval callback in headless mode', async () => {
+        const run = vi.fn().mockResolvedValue('ok');
+        const session = new AgentSession('system prompt');
+
+        await runChatHeadless('hello', {
+            dir: '/tmp/xqoder-headless',
+        }, {
+            configManager: {
+                load: () => ({
+                    llm: normalizeLLMConfig({
+                        provider: 'openai',
+                        model: 'gpt-4.1',
+                        apiKey: 'test-key',
+                    }),
+                    providers: {
+                        openai: {
+                            apiKey: 'test-key',
+                            defaultModel: 'gpt-4.1',
+                        },
+                    },
+                    defaultAgent: 'general',
+                    agents: {},
+                    instructions: [],
+                    commands: {},
+                    permissions: { defaultMode: 'ask', tools: {} },
+                    sandbox: {
+                        mode: 'project',
+                        allowedPaths: [],
+                    },
+                    vercel: {},
+                    mcp: { servers: [] },
+                    lsp: { servers: [] },
+                    debug: false,
+                    recentProjects: [],
+                    share: 'manual',
+                    autoupdate: true,
+                    contextPaths: ['CLAUDE.md'],
+                    theme: 'xqoder',
+                    tui: { mouseMode: 'terminal', scrollStep: 3 },
+                }),
+            },
+            sessionStore: {
+                findLatestSession: vi.fn().mockReturnValue(null),
+                getSession: vi.fn().mockReturnValue(null),
+                saveSession: vi.fn().mockReturnValue({
+                    id: 'session_headless',
+                }),
+            },
+            agentFactory: () => ({
+                run,
+                getSession: () => session,
+            }),
+        });
+
+        const callbacks = run.mock.calls[0]?.[1] as { onToolApproval?: unknown };
+        expect(callbacks.onToolApproval).toBeUndefined();
     });
 });
