@@ -1,10 +1,16 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { GlobFilesTool, GrepContentTool, ListFilesTool } from './discovery-tools.js';
 
 const tempDirs: string[] = [];
+
+function hasRipgrep(): boolean {
+    const probe = spawnSync('rg', ['--version'], { encoding: 'utf-8' });
+    return !probe.error && probe.status === 0;
+}
 
 function createToolContext(): {
     projectRoot: string;
@@ -45,6 +51,10 @@ describe('discovery tools', () => {
     });
 
     it('finds files with a glob pattern', async () => {
+        if (!hasRipgrep()) {
+            return;
+        }
+
         const context = createToolContext();
         fs.mkdirSync(path.join(context.projectRoot, 'src'), { recursive: true });
         fs.writeFileSync(path.join(context.projectRoot, 'src', 'index.ts'), 'export {};\n');
@@ -61,6 +71,10 @@ describe('discovery tools', () => {
     });
 
     it('greps file content with an include glob', async () => {
+        if (!hasRipgrep()) {
+            return;
+        }
+
         const context = createToolContext();
         fs.mkdirSync(path.join(context.projectRoot, 'src'), { recursive: true });
         fs.writeFileSync(path.join(context.projectRoot, 'src', 'index.ts'), "console.log('needle');\n");
