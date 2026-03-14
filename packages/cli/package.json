@@ -1,6 +1,6 @@
 {
     "name": "@xqoder/cli",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "private": true,
     "type": "module",
     "description": "XQoder CLI - terminal interface",
@@ -14,6 +14,7 @@
         "dev": "tsc --watch",
         "clean": "rm -rf dist",
         "test": "vitest run --exclude '**/tui.permission.e2e.test.ts'",
+        "parity:test": "vitest run src/server/index.test.ts src/parity/local-attach-consistency.test.ts src/tui/agent-service.remote-reliability.test.ts src/tui/agent-service.permissions.test.ts src/terminal-core/interaction-protocol.test.ts src/terminal-app/interrupt-policy.test.ts",
         "test:e2e": "vitest run src/commands/fix.integration.test.ts src/commands/fix.real-llm.e2e.test.ts src/commands/tui.smoke.e2e.test.ts src/commands/tui.permission.e2e.test.ts",
         "test:e2e:real": "vitest run src/commands/fix.real-llm.e2e.test.ts",
         "lint": "tsc --noEmit"

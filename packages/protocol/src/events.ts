@@ -76,6 +76,29 @@ export interface ApprovalResolvedEvent extends EventEnvelope {
   decision: 'allow' | 'ask' | 'deny';
 }
 
+export interface QuestionOption {
+  label: string;
+  description?: string;
+}
+
+export interface QuestionRequestedEvent extends EventEnvelope {
+  type: 'question.requested';
+  requestId: string;
+  question: string;
+  header?: string;
+  options: QuestionOption[];
+  multiple?: boolean;
+  allowCustom?: boolean;
+}
+
+export interface QuestionResolvedEvent extends EventEnvelope {
+  type: 'question.resolved';
+  requestId: string;
+  selected: string[];
+  customText?: string;
+  answerSource: 'ui' | 'fallback';
+}
+
 export interface StatusChangedEvent extends EventEnvelope {
   type: 'status.changed';
   status: RunStatus;
@@ -98,5 +121,7 @@ export type AppEvent =
   | ToolCompletedEvent
   | ApprovalRequestedEvent
   | ApprovalResolvedEvent
+  | QuestionRequestedEvent
+  | QuestionResolvedEvent
   | StatusChangedEvent
   | ErrorEvent;

@@ -513,14 +513,20 @@ export interface TuiConfig {
 export interface MCPServerConfig {
     /** 配置名，用于 CLI 和工具前缀 */
     name: string;
-    /** 启动命令 */
-    command: string;
+    /** 传输方式，默认 stdio */
+    transport?: 'stdio' | 'http' | 'sse';
+    /** stdio 模式下的启动命令 */
+    command?: string;
     /** 传给命令的参数 */
     args?: string[];
     /** 额外环境变量 */
     env?: Record<string, string>;
     /** 进程工作目录 */
     cwd?: string;
+    /** http/sse 模式下的目标 URL */
+    url?: string;
+    /** http/sse 模式下的请求头 */
+    headers?: Record<string, string>;
     /** 是否启用 */
     enabled?: boolean;
     /** 单次请求超时，单位毫秒 */

@@ -420,6 +420,62 @@ describe('ConfigManager', () => {
         ]);
     });
 
+    it('supports OPENCODE_DISABLE_AUTOCOMPACT as a compatibility env override', () => {
+        const resolved = resolveConfigWithEnvOverrides({
+            llm: normalizeLLMConfig({
+                provider: 'openai',
+                apiKey: 'saved-key',
+            }),
+            compaction: {
+                auto: true,
+                prune: false,
+            },
+            vercel: {},
+            mcp: { servers: [] },
+            lsp: { servers: [] },
+            debug: false,
+            recentProjects: [],
+        }, {
+            OPENCODE_DISABLE_AUTOCOMPACT: 'true',
+        });
+
+        expect(resolved.config.compaction).toEqual({
+            auto: false,
+            prune: false,
+            reserved: undefined,
+        });
+        expect(resolved.appliedEnvVars).toContain('OPENCODE_DISABLE_AUTOCOMPACT');
+    });
+
+    it('lets XQODER_AUTO_COMPACT override OPENCODE compatibility value', () => {
+        const resolved = resolveConfigWithEnvOverrides({
+            llm: normalizeLLMConfig({
+                provider: 'openai',
+                apiKey: 'saved-key',
+            }),
+            compaction: {
+                auto: false,
+                prune: false,
+            },
+            vercel: {},
+            mcp: { servers: [] },
+            lsp: { servers: [] },
+            debug: false,
+            recentProjects: [],
+        }, {
+            OPENCODE_DISABLE_AUTOCOMPACT: 'true',
+            XQODER_AUTO_COMPACT: 'true',
+        });
+
+        expect(resolved.config.compaction).toEqual({
+            auto: true,
+            prune: false,
+            reserved: undefined,
+        });
+        expect(resolved.appliedEnvVars).toContain('OPENCODE_DISABLE_AUTOCOMPACT');
+        expect(resolved.appliedEnvVars).toContain('XQODER_AUTO_COMPACT');
+    });
+
     it('upgrades legacy llm config into providers and default agent metadata', () => {
         const configPath = createTempConfigPath();
         fs.writeFileSync(configPath, JSON.stringify({
@@ -547,6 +603,26 @@ describe('ConfigManager', () => {
             defaultModel: 'qwen-max',
         });
         expect(resolved.config.agents?.general?.provider).toBe('dashscope');
+    });
+
+    it('loads provider credential from credential directory override', () => {
+        const configPath = createTempConfigPath();
+        const manager = new ConfigManager(configPath);
+        const loaded = manager.load({ mode: 'single' });
+        const credentialDir = path.dirname(configPath);
+        const credentialsPath = path.join(credentialDir, 'credentials');
+        fs.mkdirSync(credentialsPath, { recursive: true });
+        fs.writeFileSync(path.join(credentialsPath, 'openai.key'), 'secret-from-file', 'utf-8');
+
+        const resolved = resolveConfigWithEnvOverrides(loaded, {}, {
+            credentialDir,
+        });
+
+        expect(resolveAgentLLMConfig(resolved.config)).toMatchObject({
+            provider: 'openai',
+            apiKey: 'secret-from-file',
+        });
+        expect(resolved.appliedEnvVars).toContain('CREDENTIAL_FILE:openai');
     });
 
     it('merges global, xdg, project, and explicit config layers in priority order', () => {

@@ -1,8 +1,22 @@
 import type { TerminalWriter, TerminalRenderResult } from './types.js';
 import type { CellStyle } from './screen-buffer.js';
 
+function hexToRgb(hex: string): [number, number, number] | null {
+    const m = hex.replace(/^#/, '').match(/^([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/);
+    if (!m) return null;
+    return [Number.parseInt(m[1]!, 16), Number.parseInt(m[2]!, 16), Number.parseInt(m[3]!, 16)];
+}
+
 function styleToAnsi(style: CellStyle): string {
     const codes: string[] = [];
+    if (style.fg) {
+        const rgb = hexToRgb(style.fg);
+        if (rgb) codes.push('38', '2', String(rgb[0]), String(rgb[1]), String(rgb[2]));
+    }
+    if (style.bg) {
+        const rgb = hexToRgb(style.bg);
+        if (rgb) codes.push('48', '2', String(rgb[0]), String(rgb[1]), String(rgb[2]));
+    }
     if (style.bold) codes.push('1');
     if (style.dim) codes.push('2');
     if (style.underline) codes.push('4');

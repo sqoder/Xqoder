@@ -41,13 +41,17 @@ describe('auth command', () => {
         expect(manager.load({ mode: 'single' })).toMatchObject({
             providers: {
                 anthropic: {
-                    apiKey: 'anthropic-key',
+                    apiKey: '',
                     defaultModel: 'claude-sonnet-4',
                     baseUrl: 'https://example.com/anthropic',
                     disabled: false,
                 },
             },
         });
+
+        const credentialFile = path.join(path.dirname(manager.getConfigPath()), 'credentials', 'anthropic.key');
+        expect(fs.existsSync(credentialFile)).toBe(true);
+        expect(fs.readFileSync(credentialFile, 'utf-8')).toBe('anthropic-key');
 
         await command.parseAsync([
             'logout',
@@ -60,6 +64,7 @@ describe('auth command', () => {
             baseUrl: 'https://example.com/anthropic',
             disabled: false,
         });
+        expect(fs.existsSync(credentialFile)).toBe(false);
     });
 
     it('lists stored provider auth status', () => {
@@ -101,14 +106,23 @@ describe('auth command', () => {
         const manager = new ConfigManager(configPath);
         runAuthLoginCommand('openai', { apiKey: 'openai-secret' }, manager);
         const fresh = new ConfigManager(configPath).load({ mode: 'single' });
-        expect(fresh.providers?.openai?.apiKey).toBe('openai-secret');
+        expect(fresh.providers?.openai?.apiKey).toBe('');
+        const credentialFile = path.join(path.dirname(configPath), 'credentials', 'openai.key');
+        expect(fs.readFileSync(credentialFile, 'utf-8')).toBe('openai-secret');
         const summaries = runListAuthCommand({}, {}, { load: () => fresh } as Parameters<typeof runListAuthCommand>[2]);
-        expect(summaries.find((s) => s.provider === 'openai')?.authenticated).toBe(true);
+        expect(summaries.find((s) => s.provider === 'openai')?.authenticated).toBe(false);
+
+        const summariesWithCredentialDir = runListAuthCommand({}, {}, {
+            load: () => fresh,
+            getConfigPath: () => configPath,
+        });
+        expect(summariesWithCredentialDir.find((s) => s.provider === 'openai')?.authenticated).toBe(true);
 
         runAuthLogoutCommand('openai', manager);
         const afterLogout = new ConfigManager(configPath).load({ mode: 'single' });
         expect(afterLogout.providers?.openai?.apiKey).toBe('');
         const summariesAfter = runListAuthCommand({}, {}, { load: () => afterLogout } as Parameters<typeof runListAuthCommand>[2]);
         expect(summariesAfter.find((s) => s.provider === 'openai')?.authenticated).toBe(false);
+        expect(fs.existsSync(credentialFile)).toBe(false);
     });
 });

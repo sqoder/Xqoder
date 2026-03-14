@@ -2,10 +2,221 @@
 // 命令执行工具
 // ============================================================
 
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { spawn } from 'node:child_process';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { ToolDefinition, ToolResult } from '@xqoder/shared';
 import type { ITool, ToolApprovalRequest, ToolContext } from './tool.js';
 import { isSandboxAccessError, resolveWorkingDirectory, validateCommandSafety } from './sandbox.js';
+
+interface CommandExecutionResult {
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+    interrupted: boolean;
+    err?: Error;
+}
+
+class PersistentShell {
+    private readonly shellPath: string;
+    private readonly shellArgs: string[];
+    private readonly env: Record<string, string | undefined>;
+    private readonly cwd: string;
+    private process: ChildProcessWithoutNullStreams | undefined;
+    private alive = false;
+    private queue: Promise<CommandExecutionResult> = Promise.resolve({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        interrupted: false,
+    });
+
+    constructor(options: {
+        shellPath: string;
+        shellArgs: string[];
+        cwd: string;
+        env: Record<string, string | undefined>;
+    }) {
+        this.shellPath = options.shellPath;
+        this.shellArgs = options.shellArgs;
+        this.cwd = options.cwd;
+        this.env = options.env;
+    }
+
+    async execute(command: string, timeout: number): Promise<CommandExecutionResult> {
+        const run = this.queue.then(() => this.executeSerial(command, timeout));
+        this.queue = run.catch(() => ({
+            stdout: '',
+            stderr: '',
+            exitCode: 1,
+            interrupted: false,
+        }));
+        return run;
+    }
+
+    terminate(): void {
+        if (this.process && this.alive) {
+            this.process.kill('SIGTERM');
+        }
+        this.process = undefined;
+        this.alive = false;
+    }
+
+    isAlive(): boolean {
+        return this.alive;
+    }
+
+    private ensureProcess(): void {
+        if (this.process && this.alive) {
+            return;
+        }
+
+        const proc = spawn(this.shellPath, this.shellArgs, {
+            cwd: this.cwd,
+            env: {
+                ...process.env,
+                ...this.env,
+                GIT_EDITOR: 'true',
+            },
+            stdio: ['pipe', 'pipe', 'pipe'],
+        });
+
+        proc.stdout.on('data', () => {
+            // Drain shell stdout to avoid pipe backpressure.
+        });
+        proc.stderr.on('data', () => {
+            // Drain shell stderr to avoid pipe backpressure.
+        });
+        proc.once('exit', () => {
+            this.alive = false;
+            this.process = undefined;
+        });
+        proc.once('error', () => {
+            this.alive = false;
+            this.process = undefined;
+        });
+
+        this.process = proc;
+        this.alive = true;
+    }
+
+    private async executeSerial(command: string, timeout: number): Promise<CommandExecutionResult> {
+        try {
+            this.ensureProcess();
+        } catch (err) {
+            return {
+                stdout: '',
+                stderr: '',
+                exitCode: 1,
+                interrupted: false,
+                err: err instanceof Error ? err : new Error(String(err)),
+            };
+        }
+
+        if (!this.process || !this.alive) {
+            return {
+                stdout: '',
+                stderr: 'Shell is not available',
+                exitCode: 1,
+                interrupted: false,
+                err: new Error('Shell is not available'),
+            };
+        }
+
+        const tempPrefix = `xqoder-shell-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const tempDir = os.tmpdir();
+        const stdoutFile = path.join(tempDir, `${tempPrefix}-stdout.log`);
+        const stderrFile = path.join(tempDir, `${tempPrefix}-stderr.log`);
+        const statusFile = path.join(tempDir, `${tempPrefix}-status.log`);
+        const cwdFile = path.join(tempDir, `${tempPrefix}-cwd.log`);
+
+        const fullCommand = `
+eval ${shellQuote(command)} < /dev/null > ${shellQuote(stdoutFile)} 2> ${shellQuote(stderrFile)}
+EXEC_EXIT_CODE=$?
+pwd > ${shellQuote(cwdFile)}
+echo $EXEC_EXIT_CODE > ${shellQuote(statusFile)}
+`;
+
+        try {
+            this.process.stdin.write(`${fullCommand}\n`);
+        } catch (err) {
+            this.terminate();
+            return {
+                stdout: '',
+                stderr: `Failed to write command to shell: ${err instanceof Error ? err.message : String(err)}`,
+                exitCode: 1,
+                interrupted: false,
+                err: err instanceof Error ? err : new Error(String(err)),
+            };
+        }
+
+        const startedAt = Date.now();
+        let interrupted = false;
+
+        while (true) {
+            if (fileHasContent(statusFile)) {
+                break;
+            }
+
+            if (Date.now() - startedAt > timeout) {
+                interrupted = true;
+                this.terminate();
+                break;
+            }
+
+            await sleep(15);
+        }
+
+        const stdout = safeReadFile(stdoutFile);
+        const stderr = safeReadFile(stderrFile);
+        const statusRaw = safeReadFile(statusFile).trim();
+        const parsed = Number.parseInt(statusRaw, 10);
+        const exitCode = Number.isFinite(parsed) ? parsed : 1;
+
+        safeUnlink(stdoutFile);
+        safeUnlink(stderrFile);
+        safeUnlink(statusFile);
+        safeUnlink(cwdFile);
+
+        return {
+            stdout,
+            stderr,
+            exitCode,
+            interrupted,
+        };
+    }
+}
+
+const persistentShells = new Map<string, PersistentShell>();
+
+function getPersistentShell(context: ToolContext, cwd: string): PersistentShell {
+    const shellPath = context.shell?.path ?? process.env.SHELL ?? '/bin/sh';
+    const shellArgs = context.shell?.args ?? ['-l'];
+    const key = context.sessionId ? `session:${context.sessionId}` : `cwd:${cwd}`;
+    const existing = persistentShells.get(key);
+
+    if (existing && existing.isAlive()) {
+        return existing;
+    }
+
+    const shell = new PersistentShell({
+        shellPath,
+        shellArgs,
+        cwd,
+        env: context.env ?? {},
+    });
+    persistentShells.set(key, shell);
+    return shell;
+}
+
+export function resetPersistentShellsForTests(): void {
+    for (const shell of persistentShells.values()) {
+        shell.terminate();
+    }
+    persistentShells.clear();
+}
 
 /**
  * RunCommandTool
@@ -42,124 +253,85 @@ export class RunCommandTool implements ITool {
         const startedAt = new Date();
         let cwd: string;
 
-        return new Promise<ToolResult>((resolve, reject) => {
-            const safetyError = validateCommandSafety(command);
-            if (safetyError) {
-                resolve({
-                    toolCallId,
-                    success: false,
-                    output: '',
-                    error: safetyError,
-                    metadata: createCommandMetadata(command, context.cwd, timeout, startedAt, new Date()),
-                });
-                return;
+        const safetyError = validateCommandSafety(command);
+        if (safetyError) {
+            return {
+                toolCallId,
+                success: false,
+                output: '',
+                error: safetyError,
+                metadata: createCommandMetadata(command, context.cwd, timeout, startedAt, new Date()),
+            };
+        }
+
+        try {
+            cwd = resolveWorkingDirectory(args['cwd'] as string | undefined, context);
+        } catch (err) {
+            if (isSandboxAccessError(err)) {
+                throw err;
             }
+            return {
+                toolCallId,
+                success: false,
+                output: '',
+                error: err instanceof Error ? err.message : String(err),
+                metadata: createCommandMetadata(command, context.cwd, timeout, startedAt, new Date()),
+            };
+        }
 
-            try {
-                cwd = resolveWorkingDirectory(args['cwd'] as string | undefined, context);
-            } catch (err) {
-                if (isSandboxAccessError(err)) {
-                    reject(err);
-                    return;
-                }
-                resolve({
-                    toolCallId,
-                    success: false,
-                    output: '',
-                    error: err instanceof Error ? err.message : String(err),
-                    metadata: createCommandMetadata(command, context.cwd, timeout, startedAt, new Date()),
-                });
-                return;
-            }
+        const shell = getPersistentShell(context, cwd);
+        const result = await shell.execute(command, timeout);
+        const completedAt = new Date();
 
-            let stdout = '';
-            let stderr = '';
-            let killed = false;
-
-            const shellPath = context.shell?.path ?? process.env.SHELL ?? '/bin/sh';
-            const shellArgs = context.shell?.args ?? ['-c'];
-
-            const child = spawn(shellPath, [...shellArgs, command], {
-                cwd,
-                env: { ...process.env, ...context.env },
-                stdio: ['ignore', 'pipe', 'pipe'],
+        if (result.stdout) {
+            context.onToolStream?.({
+                chunk: result.stdout,
+                stream: 'stdout',
             });
-
-            // 超时处理
-            const timer = setTimeout(() => {
-                killed = true;
-                child.kill('SIGTERM');
-            }, timeout);
-
-            child.stdout?.on('data', (data: Buffer) => {
-                const chunk = data.toString();
-                stdout += chunk;
-                context.onToolStream?.({
-                    chunk,
-                    stream: 'stdout',
-                });
-                // 限制输出大小
-                if (stdout.length > 50000) {
-                    stdout = stdout.slice(-50000);
-                }
+        }
+        if (result.stderr) {
+            context.onToolStream?.({
+                chunk: result.stderr,
+                stream: 'stderr',
             });
+        }
 
-            child.stderr?.on('data', (data: Buffer) => {
-                const chunk = data.toString();
-                stderr += chunk;
-                context.onToolStream?.({
-                    chunk,
-                    stream: 'stderr',
-                });
-                if (stderr.length > 20000) {
-                    stderr = stderr.slice(-20000);
-                }
-            });
+        if (result.interrupted) {
+            return {
+                toolCallId,
+                success: false,
+                output: result.stdout,
+                error: `命令超时 (${timeout}ms): ${command}`,
+                metadata: createCommandMetadata(command, cwd, timeout, startedAt, completedAt),
+            };
+        }
 
-            child.on('close', (code) => {
-                clearTimeout(timer);
+        if (result.err) {
+            return {
+                toolCallId,
+                success: false,
+                output: result.stdout,
+                error: `命令启动失败: ${result.err.message}`,
+                metadata: createCommandMetadata(command, cwd, timeout, startedAt, completedAt),
+            };
+        }
 
-                if (killed) {
-                    resolve({
-                        toolCallId,
-                        success: false,
-                        output: stdout,
-                        error: `命令超时 (${timeout}ms): ${command}`,
-                        metadata: createCommandMetadata(command, cwd, timeout, startedAt, new Date()),
-                    });
-                    return;
-                }
+        if (result.exitCode !== 0) {
+            return {
+                toolCallId,
+                success: false,
+                output: result.stdout,
+                error: `命令退出码 ${result.exitCode}: ${result.stderr || '未知错误'}`,
+                metadata: createCommandMetadata(command, cwd, timeout, startedAt, completedAt),
+            };
+        }
 
-                if (code !== 0) {
-                    resolve({
-                        toolCallId,
-                        success: false,
-                        output: stdout,
-                        error: `命令退出码 ${code}: ${stderr || '未知错误'}`,
-                        metadata: createCommandMetadata(command, cwd, timeout, startedAt, new Date()),
-                    });
-                    return;
-                }
-
-                resolve({
-                    toolCallId,
-                    success: true,
-                    output: stdout + (stderr ? `\n[stderr]: ${stderr}` : ''),
-                    metadata: createCommandMetadata(command, cwd, timeout, startedAt, new Date()),
-                });
-            });
-
-            child.on('error', (err) => {
-                clearTimeout(timer);
-                resolve({
-                    toolCallId,
-                    success: false,
-                    output: '',
-                    error: `命令启动失败: ${err.message}`,
-                    metadata: createCommandMetadata(command, cwd, timeout, startedAt, new Date()),
-                });
-            });
-        });
+        return {
+            toolCallId,
+            success: true,
+            output: result.stdout + (result.stderr ? `\n[stderr]: ${result.stderr}` : ''),
+            metadata: createCommandMetadata(command, cwd, timeout, startedAt, completedAt),
+        };
     }
 }
 
@@ -195,10 +367,6 @@ export class InstallPackageTool implements ITool {
         const packages = args['packages'] as string;
         const isDev = (args['dev'] as boolean) ?? false;
         const toolCallId = (args['toolCallId'] as string) ?? '';
-
-        // 检测包管理器
-        const fs = await import('node:fs');
-        const path = await import('node:path');
 
         let command: string;
         let packageManager = 'unknown';
@@ -265,4 +433,36 @@ function createCommandMetadata(
         startedAt: startedAt.toISOString(),
         completedAt: completedAt.toISOString(),
     };
+}
+
+function shellQuote(value: string): string {
+    return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function fileHasContent(filePath: string): boolean {
+    try {
+        return fs.existsSync(filePath) && fs.statSync(filePath).size > 0;
+    } catch {
+        return false;
+    }
+}
+
+function safeReadFile(filePath: string): string {
+    try {
+        return fs.readFileSync(filePath, 'utf-8');
+    } catch {
+        return '';
+    }
+}
+
+function safeUnlink(filePath: string): void {
+    try {
+        fs.unlinkSync(filePath);
+    } catch {
+        // ignore
+    }
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }

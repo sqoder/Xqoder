@@ -4,6 +4,7 @@ import type { TerminalAppState, TerminalTranscriptEntry } from './app-state.js';
 import { getEditorViewModel } from './editor-model.js';
 import type { TerminalCoreEvent } from './types.js';
 import { rebuildTranscriptWithCodeBlocks } from './transcript-blocks.js';
+import { getApprovalStatusHint, getOverlayStatusHint, getQuestionStatusHint } from './interaction-protocol.js';
 
 function getTranscriptWidth(state: TerminalAppState): number {
     const sidebarWidth = 0;
@@ -35,13 +36,29 @@ function buildSidebar(state: TerminalAppState): TerminalAppState['sidebar'] {
             lines: [state.activeSessionId ?? 'not started'],
         },
     ];
+    if (state.modifiedFiles && state.modifiedFiles.length > 0) {
+        sections.push({
+            title: 'Modified',
+            lines: state.modifiedFiles.map((p) => p.split(/[/\\]/).pop() ?? p),
+        });
+    }
 
     if (state.pendingApproval) {
         sections.push({
             title: 'Approval',
             lines: [
                 state.pendingApproval.summary,
-                state.pendingApproval.payload ?? 'Press y to allow / n to deny',
+                state.pendingApproval.payload ?? '1: Allow once  2: Always allow (session)  3: Deny',
+            ],
+        });
+    }
+
+    if (state.pendingQuestion) {
+        sections.push({
+            title: 'Question',
+            lines: [
+                state.pendingQuestion.header ? `${state.pendingQuestion.header}: ${state.pendingQuestion.question}` : state.pendingQuestion.question,
+                `${state.pendingQuestion.options.length} options${state.pendingQuestion.multiple ? ' (multi)' : ''}`,
             ],
         });
     }
@@ -54,18 +71,40 @@ function buildStatusItems(state: TerminalAppState): TerminalAppState['statusItem
         { text: state.runtimeStatus },
         ...(state.notice ? [{ text: state.notice, tone: 'accent' as const }] : []),
         ...(state.model ? [{ text: state.model, tone: 'muted' as const }] : []),
-        ...(state.transcriptCodeBlocks.length > 0 ? [{ text: 'Alt+C copy', tone: 'muted' as const }] : []),
-        ...(state.pendingApproval ? [{ text: 'approval: y / n', tone: 'accent' as const }] : []),
+        ...(state.transcriptCodeBlocks.length > 0 ? [{ text: 'Alt+C / Ctrl+Shift+C 复制代码块', tone: 'muted' as const }] : []),
+        ...(state.transcriptEntries.length > 0 ? [{ text: 'y 复制消息  Y 复制代码块', tone: 'muted' as const }] : []),
+        ...(process.platform === 'darwin' ? [{ text: '⌘+C 复制选中', tone: 'muted' as const }] : []),
+        ...(state.editor.value.length > 0 ? [{ text: 'Ctrl+U 删至行首', tone: 'muted' as const }] : []),
+        { text: process.platform === 'darwin' ? '⌘+V 粘贴' : 'Ctrl+V 粘贴', tone: 'muted' as const },
+        ...(state.pendingApproval
+            ? [{
+                text: getApprovalStatusHint(),
+                tone: 'accent' as const,
+            }]
+            : []),
+        ...(state.pendingQuestion
+            ? [{
+                text: getQuestionStatusHint(state.pendingQuestion.multiple),
+                tone: 'accent' as const,
+            }]
+            : []),
+        ...(state.overlay
+            ? [{
+                text: getOverlayStatusHint(state.overlay) ?? 'overlay active',
+                tone: 'muted' as const,
+            }]
+            : []),
     ];
 }
 
-function withDerivedChrome(state: TerminalAppState): TerminalAppState {
+export function withDerivedChrome(state: TerminalAppState): TerminalAppState {
     const width = getTranscriptWidth(state);
-    const { lines: transcriptLines, codeBlocks: transcriptCodeBlocks } = rebuildTranscriptWithCodeBlocks(state.transcriptEntries, width);
+    const { lines: transcriptLines, codeBlocks: transcriptCodeBlocks, entryLineRanges: transcriptEntryLineRanges } = rebuildTranscriptWithCodeBlocks(state.transcriptEntries, width);
     return {
         ...state,
         transcriptLines,
         transcriptCodeBlocks,
+        transcriptEntryLineRanges,
         sidebar: buildSidebar(state),
         statusItems: buildStatusItems(state),
     };
@@ -156,6 +195,7 @@ export function reduceProtocolEventToTerminalState(state: TerminalAppState, even
                 ...state,
                 activeSessionId: event.sessionId,
                 pendingApproval: undefined,
+                pendingQuestion: undefined,
                 transcriptEntries: upsertTranscriptEntry(state.transcriptEntries, {
                     id: event.message.id,
                     role: event.message.role === 'tool' ? 'tool' : event.message.role,
@@ -257,6 +297,7 @@ export function reduceProtocolEventToTerminalState(state: TerminalAppState, even
                     kind: event.kind,
                     summary: event.summary,
                     payload: typeof event.payload === 'string' ? event.payload : undefined,
+                    selectedIndex: 0,
                 },
             });
         case 'approval.resolved':
@@ -265,11 +306,38 @@ export function reduceProtocolEventToTerminalState(state: TerminalAppState, even
                 notice: `approval ${event.decision}`,
                 pendingApproval: undefined,
             });
+        case 'question.requested': {
+            const selected = event.options.length > 0 ? [event.options[0]!.label] : [];
+            return withDerivedChrome({
+                ...state,
+                runtimeStatus: 'awaiting-approval',
+                notice: event.header ? `${event.header}: ${event.question}` : event.question,
+                pendingQuestion: {
+                    requestId: event.requestId,
+                    ...(event.header ? { header: event.header } : {}),
+                    question: event.question,
+                    options: event.options,
+                    multiple: event.multiple,
+                    allowCustom: event.allowCustom,
+                    selectedIndex: 0,
+                    selected,
+                    customText: '',
+                },
+            });
+        }
+        case 'question.resolved':
+            return withDerivedChrome({
+                ...state,
+                runtimeStatus: 'thinking',
+                notice: `question resolved: ${event.selected.join(', ') || 'none'}`,
+                pendingQuestion: undefined,
+            });
         case 'error':
             return withDerivedChrome({
                 ...state,
                 runtimeStatus: 'error',
                 notice: event.message,
+                pendingQuestion: undefined,
                 transcriptEntries: [...state.transcriptEntries, {
                     id: `${event.sessionId}:error:${event.timestamp}`,
                     role: 'system',
@@ -279,6 +347,19 @@ export function reduceProtocolEventToTerminalState(state: TerminalAppState, even
         default:
             return withDerivedChrome(state);
     }
+}
+
+export function reduceTerminalCoreEventToState(state: TerminalAppState, event: TerminalCoreEvent): TerminalAppState {
+    if (event.type === 'approval.menu.move' && state.pendingApproval) {
+        return withDerivedChrome({
+            ...state,
+            pendingApproval: {
+                ...state.pendingApproval,
+                selectedIndex: event.selectedIndex,
+            },
+        });
+    }
+    return state;
 }
 
 export function reduceTerminalRuntimeResize(state: TerminalAppState, size: TerminalAppState['size']): TerminalAppState {

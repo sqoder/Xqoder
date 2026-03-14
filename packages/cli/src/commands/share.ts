@@ -132,6 +132,7 @@ export function runCreateShareCommand(
 
     logger.success(`已创建本地 share: ${share.id}`);
     logger.info(`Artifact: ${share.artifactPath} (${share.format})`);
+    logger.info(`Share URL: ${buildShareUrl(share.id)}`);
     return share;
 }
 
@@ -258,4 +259,12 @@ async function confirmShareRemoval(share: SessionShareDetails): Promise<boolean>
 
 function isInteractiveSession(): boolean {
     return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
+function buildShareUrl(shareId: string): string {
+    const explicit = process.env['XQODER_SHARE_BASE_URL']?.trim();
+    const base = explicit && explicit.length > 0
+        ? explicit
+        : 'http://127.0.0.1:4096';
+    return `${base.replace(/\/$/, '')}/share/${encodeURIComponent(shareId)}`;
 }

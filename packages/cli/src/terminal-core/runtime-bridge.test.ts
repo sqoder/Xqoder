@@ -81,7 +81,7 @@ describe('runtime bridge', () => {
             payload: 'preview text',
         });
 
-        expect(state.transcriptLines.join('\n')).toContain('README content');
+        expect(state.transcriptLines.join('\n')).toContain('输出已折叠');
         expect(state.pendingApproval?.summary).toBe('Need permission');
         expect(state.sidebar.some((section) => section.title === 'Approval')).toBe(true);
     });

@@ -4,8 +4,9 @@
 
 import * as path from 'node:path';
 import { Command } from 'commander';
-import { logger } from '@xqoder/shared';
+import { logger, type MessageAttachment } from '@xqoder/shared';
 import type { AgentSessionStore } from '@xqoder/storage-sqlite';
+import { buildMessageAttachments } from '../tui/attachments.js';
 import { runChatCommand } from './chat.js';
 
 interface RunCommandOptions {
@@ -56,6 +57,15 @@ export function createRunCommand(
                 const resolvedDir = path.resolve(options.dir);
                 const newSession = !options.continue && !options.session;
                 const sessionId = options.session ?? undefined;
+                const filePaths = options.file ?? [];
+                const { attachments, issues } = filePaths.length > 0
+                    ? buildMessageAttachments(filePaths)
+                    : { attachments: [] as MessageAttachment[], issues: [] };
+                if (issues.length > 0) {
+                    for (const i of issues) {
+                        logger.warn(`附件 ${i.filePath}: ${i.reason}`);
+                    }
+                }
 
                 await runChatCommand(message, {
                     dir: resolvedDir,
@@ -63,6 +73,7 @@ export function createRunCommand(
                     agent: options.agent,
                     session: sessionId,
                     newSession,
+                    attachments: attachments.length > 0 ? attachments : undefined,
                 }, dependencies);
             } catch (err) {
                 logger.error(`run 失败: ${err instanceof Error ? err.message : String(err)}`);

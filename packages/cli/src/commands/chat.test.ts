@@ -50,7 +50,7 @@ describe('chat command', () => {
             },
         });
 
-        expect(run).toHaveBeenCalledWith('你好', expect.any(Object));
+        expect(run).toHaveBeenCalledWith('你好', expect.any(Object), expect.any(Array));
     });
 
     it('resumes the latest persisted session for the current project by default', async () => {
@@ -198,7 +198,7 @@ describe('chat command', () => {
             '记住标记 A-123',
         ], { from: 'user' });
 
-        expect(run).toHaveBeenCalledWith('记住标记 A-123', expect.any(Object));
+        expect(run).toHaveBeenCalledWith('记住标记 A-123', expect.any(Object), expect.any(Array));
     });
 
     it('parses --dir and --session when the chat message appears before options', async () => {
@@ -254,6 +254,6 @@ describe('chat command', () => {
             'session_A123',
         ], { from: 'user' });
 
-        expect(run).toHaveBeenCalledWith('继续，重复当前会话里的标记。', expect.any(Object));
+        expect(run).toHaveBeenCalledWith('继续，重复当前会话里的标记。', expect.any(Object), expect.any(Array));
     });
 });
