@@ -1,23 +1,23 @@
 {
-  "name": "@xqoder/permissions",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "description": "XQoder permission policy contracts",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "clean": "rm -rf dist",
-    "test": "node -e \"process.exit(0)\" --",
-    "lint": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@xqoder/protocol": "workspace:*"
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0",
-    "typescript": "^5.4.0"
-  }
+    "name": "@xqoder/permissions",
+    "version": "0.1.0-rc.202603230340",
+    "private": true,
+    "type": "module",
+    "description": "XQoder permission policy contracts",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "scripts": {
+        "build": "tsc",
+        "dev": "tsc --watch",
+        "clean": "rm -rf dist",
+        "test": "node -e \"process.exit(0)\" --",
+        "lint": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@xqoder/protocol": "workspace:*"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "typescript": "^5.4.0"
+    }
 }

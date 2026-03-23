@@ -1,24 +1,24 @@
 {
-  "name": "@xqoder/provider-anthropic",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "description": "Anthropic LLM provider for XQoder",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.30.0",
-    "@xqoder/llm-api": "workspace:*",
-    "@xqoder/shared": "workspace:*"
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0",
-    "typescript": "^5.4.0"
-  }
+    "name": "@xqoder/provider-anthropic",
+    "version": "0.1.0-rc.202603230340",
+    "private": true,
+    "type": "module",
+    "description": "Anthropic LLM provider for XQoder",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "scripts": {
+        "build": "tsc",
+        "dev": "tsc --watch",
+        "clean": "rm -rf dist",
+        "lint": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@anthropic-ai/sdk": "^0.30.0",
+        "@xqoder/llm-api": "workspace:*",
+        "@xqoder/shared": "workspace:*"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "typescript": "^5.4.0"
+    }
 }

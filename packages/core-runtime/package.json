@@ -1,26 +1,26 @@
 {
-  "name": "@xqoder/core-runtime",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "description": "XQoder extensible runtime kernel",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "clean": "rm -rf dist",
-    "test": "vitest run",
-    "lint": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@xqoder/permissions": "workspace:*",
-    "@xqoder/plugin-sdk": "workspace:*",
-    "@xqoder/protocol": "workspace:*"
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0",
-    "typescript": "^5.4.0",
-    "vitest": "^2.0.0"
-  }
+    "name": "@xqoder/core-runtime",
+    "version": "0.1.0-rc.202603230340",
+    "private": true,
+    "type": "module",
+    "description": "XQoder extensible runtime kernel",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "scripts": {
+        "build": "tsc",
+        "dev": "tsc --watch",
+        "clean": "rm -rf dist",
+        "test": "vitest run",
+        "lint": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@xqoder/permissions": "workspace:*",
+        "@xqoder/plugin-sdk": "workspace:*",
+        "@xqoder/protocol": "workspace:*"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "typescript": "^5.4.0",
+        "vitest": "^2.0.0"
+    }
 }

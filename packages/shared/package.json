@@ -1,6 +1,6 @@
 {
     "name": "@xqoder/shared",
-    "version": "0.1.0",
+    "version": "0.1.0-rc.202603230340",
     "private": true,
     "type": "module",
     "description": "XQoder shared types and utilities",
