@@ -7,7 +7,7 @@ Scope: roadmap `Phase 4 Gate` acceptance status
 
 | Criteria | Status | Evidence |
 | --- | --- | --- |
-| 三平台 CI 均绿 | ⏳ Pending | `.github/workflows/platform-matrix.yml` 已包含 macOS/Linux/Windows；本地 `gh workflow list` 仅显示远端当前启用 `CI` / `Manual E2E`，`Platform Matrix` 还未出现在远端运行列表 |
+| 三平台 CI 均绿 | ✅ Pass | PR [#3](https://github.com/sqoder/Xqoder/pull/3) 已合并（`mergedAt: 2026-03-23T03:32:02Z`）；`Platform Matrix` run `23420141198` 全绿（macOS `68123381402` / Linux `68123381409` / Windows Preview `68123381404`） |
 | benchmark/eval 页面数据可重现 | ✅ Pass | `pnpm release:check:strict` 通过并重跑 benchmark/eval；`docs/quality-report.md`、`docs/benchmarks/report.md`、`docs/evals/report.md`、`docs/opencode-comparison.md` 均已更新 |
 | RC 发布包可安装使用 | ✅ Pass | `pnpm release:prepare:rc:strict:capture` 成功，生成 `docs/artifacts/release/prepare-rc-strict.txt`（Suggested Version: `0.1.0-rc.202603230255`） |
 
@@ -24,12 +24,22 @@ Scope: roadmap `Phase 4 Gate` acceptance status
 5. `pnpm verify:week3:input` / `pnpm verify:week4:navigation`  
    Result: 周专项验收脚本全绿（week4 脚本已修复为当前 terminal-core API）。
 
+## Verification Log (remote)
+
+1. `Platform Matrix`（run `23420141198`）  
+   Result: macOS / Linux / Windows Preview 全绿。
+2. `CI`（run `23420141192`）  
+   Result: `verify` 全绿。
+3. `CI`（run `23420140602`）  
+   Result: `verify` 全绿（同一变更链路补充验证）。
+4. PR `#3`  
+   Result: 已合并到 `main`（merge commit `f42138fa3fd536480fa4a2aa781052ee55a5ae0c`）。
+
 ## Decision
 
-Phase 4 Gate 当前状态：**仅差远端三平台 CI 绿灯**。
+Phase 4 Gate 当前状态：**通过（Pass）**。
 
 ## Next Step To Close Gate
 
-1. 将本次 workflow 变更推送到远端分支。  
-2. 等待 `Platform Matrix` workflow 在 GitHub Actions 上完成并全绿。  
-3. 回填路线图 `Phase 4 Gate 验收 → 发布` 为完成并执行 RC tag 发布流程。
+1. 已回填路线图 `Phase 4 Gate 验收 → 发布` 为完成。  
+2. 执行 RC tag 发布流程并同步发布公告/安装说明。  
