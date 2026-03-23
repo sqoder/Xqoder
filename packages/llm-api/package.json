@@ -1,22 +1,22 @@
 {
-  "name": "@xqoder/llm-api",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "description": "LLM provider interface and base types for XQoder",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@xqoder/shared": "workspace:*"
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0",
-    "typescript": "^5.4.0"
-  }
+    "name": "@xqoder/llm-api",
+    "version": "0.1.0-rc.202603230340",
+    "private": true,
+    "type": "module",
+    "description": "LLM provider interface and base types for XQoder",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "scripts": {
+        "build": "tsc",
+        "dev": "tsc --watch",
+        "clean": "rm -rf dist",
+        "lint": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@xqoder/shared": "workspace:*"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "typescript": "^5.4.0"
+    }
 }
