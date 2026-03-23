@@ -39,6 +39,7 @@
     "release:prepare:rc": "node scripts/release/prepare-channel.mjs --channel rc",
     "release:prepare:beta": "node scripts/release/prepare-channel.mjs --channel beta",
     "release:prepare:stable": "node scripts/release/prepare-channel.mjs --channel stable",
+    "release:rollout:init": "node scripts/release/init-rollout.mjs",
     "release:rollout:check": "node scripts/release/evaluate-rollout.mjs",
     "verify:day30": "node scripts/verify-day30-gates.mjs",
     "xqoder": "node --max-old-space-size=4096 ./scripts/xqoder.mjs",

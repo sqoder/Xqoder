@@ -1,0 +1,19 @@
+{
+  "release": "0.1.0-rc.202603230340",
+  "stage": 100,
+  "collectedAt": "",
+  "window": "",
+  "notes": "",
+  "stream": {
+    "total": 0,
+    "errors": 0
+  },
+  "findSymbol": {
+    "total": 0,
+    "timeouts": 0
+  },
+  "attachRecovery": {
+    "attempts": 0,
+    "failures": 0
+  }
+}
