@@ -18,7 +18,32 @@ node scripts/release/prepare-channel.mjs --channel beta
 
 Use output `commands` as a copy/paste checklist for tagging and release prep.
 
-## 2) Ramp Plan
+## 2) Initialize Rollout Bundle (Recommended)
+
+Generate stage templates and checklist for one release id:
+
+```bash
+pnpm release:rollout:init -- --release 0.1.0-rc.202603230340
+```
+
+Default output directory:
+
+`docs/artifacts/release/rollout/<release>/`
+
+Generated files:
+
+- `metrics-stage10.json`
+- `metrics-stage30.json`
+- `metrics-stage100.json`
+- `checklist.md`
+
+If you need to regenerate an existing directory:
+
+```bash
+pnpm release:rollout:init -- --release 0.1.0-rc.202603230340 --overwrite
+```
+
+## 3) Ramp Plan
 
 - Stage A: 10%
 - Stage B: 30%
@@ -39,9 +64,9 @@ Example metrics JSON (`rollout-metrics.json`):
 Evaluate stage gate:
 
 ```bash
-node scripts/release/evaluate-rollout.mjs --metrics rollout-metrics.json --stage 10
-node scripts/release/evaluate-rollout.mjs --metrics rollout-metrics.json --stage 30
-node scripts/release/evaluate-rollout.mjs --metrics rollout-metrics.json --stage 100 --stableDays 7
+pnpm release:rollout:check -- --metrics rollout-metrics.json --stage 10
+pnpm release:rollout:check -- --metrics rollout-metrics.json --stage 30
+pnpm release:rollout:check -- --metrics rollout-metrics.json --stage 100 --stableDays 7
 ```
 
 Exit code semantics:
@@ -50,7 +75,7 @@ Exit code semantics:
 - `1` -> hold
 - `2` -> rollback
 
-## 3) Rollback Thresholds
+## 4) Rollback Thresholds
 
 The gate evaluates three indicators:
 
@@ -65,7 +90,7 @@ Current thresholds:
 
 If rollback threshold is hit, return to last stable release immediately.
 
-## 4) GA Promotion Rule
+## 5) GA Promotion Rule
 
 After reaching 100% traffic, maintain healthy metrics for 7 days.
 Only then promote from RC/Beta to stable.
@@ -73,7 +98,7 @@ Only then promote from RC/Beta to stable.
 Use:
 
 ```bash
-node scripts/release/evaluate-rollout.mjs --metrics rollout-metrics.json --stage 100 --stableDays 7
+pnpm release:rollout:check -- --metrics rollout-metrics.json --stage 100 --stableDays 7
 ```
 
 Expected decision: `promote-to-stable`.
