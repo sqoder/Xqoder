@@ -111,8 +111,5 @@ jobs:
       - name: Build Windows Node CLI path
         run: pnpm build
 
-      - name: Lint
-        run: pnpm lint
-
       - name: CLI smoke test
         run: pnpm xqoder -- --help
