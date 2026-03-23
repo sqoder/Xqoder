@@ -1,0 +1,135 @@
+name: Platform Matrix
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+concurrency:
+  group: platform-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-stable:
+    name: macOS Stable
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build macOS targets
+        run: |
+          pnpm build:shared
+          pnpm build:renderer
+          pnpm build:daemon
+          pnpm build:client
+          pnpm build:cli
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: CLI smoke test
+        run: node packages/cli/dist/index.js --help
+
+  linux-beta:
+    name: Linux Beta
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Linux targets
+        run: |
+          pnpm build:shared
+          pnpm build:renderer
+          pnpm build:daemon
+          pnpm build:client
+          pnpm build:cli
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Session lifecycle verification
+        run: pnpm verify:session:lifecycle
+
+      - name: CLI smoke test
+        run: node packages/cli/dist/index.js --help
+
+  windows-preview:
+    name: Windows Preview (Node CLI)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Windows Node CLI path
+        run: |
+          pnpm build:shared
+          pnpm build:renderer
+          pnpm build:daemon
+          pnpm build:cli
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: CLI smoke test
+        run: node packages/cli/dist/index.js --help
