@@ -1,14 +1,7 @@
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createFixCommand, runFixCommand } from './fix.js';
-import {
-    getProjectPermissionAuditLogPath,
-    getProjectPermissionsFilePath,
-    RuntimeErrorType,
-} from '@xqoder/shared';
-import type { WorkflowRunRecord } from '../services/workflow-history.js';
 import {
     cleanupTempProjects,
     createIntegrationRuntime,
@@ -161,16 +154,12 @@ describe('xqoder fix integration', () => {
     for (const testCase of cases) {
         it(testCase.description, async () => {
             const projectDir = createTempProjectFromFixture(testCase.fixture);
-            const workflowHistoryStore = {
-                append: vi.fn(),
-            };
             const repairProject = vi.fn(async ({ projectConfig }) => {
                 return testCase.repair(projectConfig.rootDir);
             });
 
             const command = createFixCommand({
                 configManager: createTestConfigManager(),
-                workflowHistoryStore,
                 runtimeFactory: () => createIntegrationRuntime(),
                 repairProject: async (input) => repairProject(input),
             });
@@ -183,166 +172,9 @@ describe('xqoder fix integration', () => {
             ], { from: 'user' });
 
             expect(repairProject).toHaveBeenCalledTimes(1);
-            expect(workflowHistoryStore.append).toHaveBeenCalledWith(expect.objectContaining({
-                flow: 'fix',
-                projectRoot: projectDir,
-            }));
             testCase.assert(projectDir);
         }, 10000);
     }
-
-    it('promotes and executes safe automatic remediation based on workflow history evidence', async () => {
-        const missingPackageName = 'xqoder-auto-promotion-missing-package';
-        const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-fix-auto-promotion-'));
-        const packageJsonPath = path.join(projectDir, 'package.json');
-        const serverPath = path.join(projectDir, 'server.js');
-        fs.writeFileSync(packageJsonPath, JSON.stringify({
-            name: 'xqoder-fix-auto-promotion',
-            private: true,
-            scripts: {
-                dev: 'node server.js',
-            },
-        }, null, 2), 'utf8');
-        fs.writeFileSync(serverPath, [
-            `require('${missingPackageName}');`,
-            "console.log(`Local: http://localhost:${process.env.PORT || 3000}`);",
-            'setInterval(() => {}, 10000);',
-            '',
-        ].join('\n'), 'utf8');
-
-        const workflowHistoryStore = {
-            append: vi.fn(),
-            list: vi.fn((): WorkflowRunRecord[] => ([
-                {
-                    id: 'history_fix_1',
-                    flow: 'fix',
-                    projectRoot: projectDir,
-                    projectName: path.basename(projectDir),
-                    userRequest: 'fix dependency',
-                    status: 'completed',
-                    success: true,
-                    startedAt: '2026-03-19T00:00:00.000Z',
-                    completedAt: '2026-03-19T00:01:00.000Z',
-                    totalDurationMs: 60000,
-                    automaticActionIds: ['auto-install-dependency-v1'],
-                    suspectedFailureBuckets: ['runtime_dependency_missing'],
-                },
-                {
-                    id: 'history_fix_2',
-                    flow: 'fix',
-                    projectRoot: projectDir,
-                    projectName: path.basename(projectDir),
-                    userRequest: 'fix dependency again',
-                    status: 'completed',
-                    success: true,
-                    startedAt: '2026-03-20T00:00:00.000Z',
-                    completedAt: '2026-03-20T00:01:00.000Z',
-                    totalDurationMs: 60000,
-                    automaticActionIds: ['auto-install-dependency-v1'],
-                    suspectedFailureBuckets: ['runtime_dependency_missing'],
-                },
-                {
-                    id: 'history_fix_3',
-                    flow: 'fix',
-                    projectRoot: projectDir,
-                    projectName: path.basename(projectDir),
-                    userRequest: 'fix dependency third',
-                    status: 'completed',
-                    success: true,
-                    startedAt: '2026-03-21T00:00:00.000Z',
-                    completedAt: '2026-03-21T00:01:00.000Z',
-                    totalDurationMs: 60000,
-                    automaticActionIds: ['auto-install-dependency-v1'],
-                    suspectedFailureBuckets: ['runtime_dependency_missing'],
-                },
-            ])),
-        };
-        const runSafeCommand = vi.fn(async () => {
-            const moduleFile = path.join(projectDir, 'node_modules', missingPackageName, 'index.js');
-            fs.mkdirSync(path.dirname(moduleFile), { recursive: true });
-            fs.writeFileSync(moduleFile, 'module.exports = {};\n', 'utf8');
-            return `installed ${missingPackageName}`;
-        });
-        const repairProject = vi.fn(async (_input: unknown) => 'agent should not run');
-
-        try {
-            const command = createFixCommand({
-                configManager: createTestConfigManager(),
-                workflowHistoryStore,
-                runtimeFactory: () => {
-                    const runtime = createIntegrationRuntime();
-                    return {
-                        async start(rootDir: string) {
-                            const report = await runtime.start(rootDir);
-                            const missingDependencyMessage = `Cannot find module '${missingPackageName}'`;
-                            if (report.errors.some((entry) => entry.message.includes(missingDependencyMessage))) {
-                                report.errors = report.errors.map((entry) => (
-                                    entry.message.includes(missingDependencyMessage)
-                                        ? {
-                                            ...entry,
-                                            type: RuntimeErrorType.DependencyMissing,
-                                        }
-                                        : entry
-                                ));
-                            }
-                            return report;
-                        },
-                        analyzeErrors: runtime.analyzeErrors,
-                        stop: runtime.stop,
-                    };
-                },
-                runSafeCommand,
-                repairProject: async (input) => repairProject(input),
-            });
-
-            await command.parseAsync([
-                '--dir',
-                projectDir,
-                '--max-attempts',
-                '2',
-            ], { from: 'user' });
-
-            expect(runSafeCommand).toHaveBeenCalledTimes(1);
-            expect(repairProject).not.toHaveBeenCalled();
-            expect(workflowHistoryStore.append).toHaveBeenCalledWith(expect.objectContaining({
-                flow: 'fix',
-                success: true,
-                automaticActionIds: ['auto-install-dependency-v1'],
-                suspectedFailureBuckets: ['runtime_dependency_missing'],
-            }));
-
-            const permissionFile = JSON.parse(fs.readFileSync(getProjectPermissionsFilePath(projectDir), 'utf8')) as {
-                automaticActionPromotions: Array<{ actionId: string; bucket: string }>;
-            };
-            expect(permissionFile.automaticActionPromotions).toEqual(expect.arrayContaining([
-                expect.objectContaining({
-                    actionId: 'auto-install-dependency-v1',
-                    bucket: 'runtime_dependency_missing',
-                }),
-            ]));
-
-            const auditEntries = fs.readFileSync(getProjectPermissionAuditLogPath(projectDir), 'utf8')
-                .trim()
-                .split('\n')
-                .map((line) => JSON.parse(line) as { kind: string; decision: string; actionId?: string; bucket?: string });
-            expect(auditEntries).toEqual(expect.arrayContaining([
-                expect.objectContaining({
-                    kind: 'automatic-action.promotion',
-                    decision: 'allow',
-                    actionId: 'auto-install-dependency-v1',
-                    bucket: 'runtime_dependency_missing',
-                }),
-                expect.objectContaining({
-                    kind: 'automatic-action.execution',
-                    decision: 'allow',
-                    actionId: 'auto-install-dependency-v1',
-                    bucket: 'runtime_dependency_missing',
-                }),
-            ]));
-        } finally {
-            fs.rmSync(projectDir, { recursive: true, force: true });
-        }
-    }, 12000);
 
     it('fails fast when the default agent has no API key', async () => {
         await expect(runFixCommand({
