@@ -2,6 +2,7 @@
 
 Generated: 2026-03-23T04:09:54.752Z
 Bundle dir: `docs/artifacts/release/rollout/0.1.0-rc.202603230340`
+Latest stage status: `docs/artifacts/release/rollout/0.1.0-rc.202603230340/status-stage10.md`
 
 本清单用于执行 RC/Beta 发布后的分阶段放量门禁（10% -> 30% -> 100%）。
 
@@ -48,4 +49,3 @@ pnpm release:rollout:check -- --metrics docs/artifacts/release/rollout/0.1.0-rc.
 
 - `docs/release-rollout-runbook.md`
 - `scripts/release/evaluate-rollout.mjs`
-

@@ -1,0 +1,61 @@
+{
+  "stage": 10,
+  "stableDays": 0,
+  "metrics": {
+    "stream": {
+      "total": 0,
+      "errors": 0,
+      "errorRate": 0
+    },
+    "findSymbol": {
+      "total": 0,
+      "timeouts": 0,
+      "timeoutRate": 0
+    },
+    "attachRecovery": {
+      "attempts": 0,
+      "failures": 0,
+      "failureRate": 0
+    }
+  },
+  "thresholds": {
+    "minSamples": {
+      "10": {
+        "stream": 200,
+        "findSymbol": 100,
+        "attachRecovery": 40
+      },
+      "30": {
+        "stream": 500,
+        "findSymbol": 250,
+        "attachRecovery": 100
+      },
+      "100": {
+        "stream": 2000,
+        "findSymbol": 1000,
+        "attachRecovery": 300
+      }
+    },
+    "hold": {
+      "streamErrorRate": 0.005,
+      "findSymbolTimeoutRate": 0.01,
+      "attachRecoveryFailureRate": 0.015
+    },
+    "rollback": {
+      "streamErrorRate": 0.015,
+      "findSymbolTimeoutRate": 0.025,
+      "attachRecoveryFailureRate": 0.03
+    },
+    "stableDaysForGA": 7
+  },
+  "decision": {
+    "status": "hold",
+    "reasons": [],
+    "warnings": [
+      "Insufficient stream sample: 0/200",
+      "Insufficient find/symbol sample: 0/100",
+      "Insufficient attach recovery sample: 0/40"
+    ],
+    "next": "remain-10pct"
+  }
+}

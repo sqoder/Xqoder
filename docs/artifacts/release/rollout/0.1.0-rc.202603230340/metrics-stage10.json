@@ -1,9 +1,9 @@
 {
   "release": "0.1.0-rc.202603230340",
   "stage": 10,
-  "collectedAt": "",
-  "window": "",
-  "notes": "",
+  "collectedAt": "2026-03-23T12:20:03+0800",
+  "window": "pending-production-observation-window",
+  "notes": "Bootstrap gate run to validate rollout pipeline wiring before real traffic metrics are ingested.",
   "stream": {
     "total": 0,
     "errors": 0
