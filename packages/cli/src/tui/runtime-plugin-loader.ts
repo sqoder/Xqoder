@@ -1,4 +1,4 @@
-import type { RuntimeKernel } from '@xqoder/core-runtime';
+import type { RuntimeKernel } from '@xqoder/runtime';
 import { definePlugin } from '@xqoder/plugin-sdk';
 import { createXQoderAgentProvider, type AgentConfigResolver, type XQoderAgentProviderOptions } from '@xqoder/agent';
 

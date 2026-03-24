@@ -2,7 +2,11 @@ import type { TerminalAppState } from './app-state.js';
 import type { ClipboardService } from './clipboard.js';
 import { writeToClipboardOSC52 } from './clipboard.js';
 import type { TerminalCoreEvent } from './types.js';
-import { getTranscriptHeight } from './runtime-bridge.js';
+import { getProjectedTranscriptViewportHeight } from './runtime-bridge.js';
+import { getTranscriptEntryRangeAtLine } from './transcript-line-mapping.js';
+import { getViewportSelectionCopyText, type ViewportSelection } from './viewport-selection-text.js';
+
+const TRANSCRIPT_COPY_HOTSPOT_WIDTH = 12;
 
 /**
  * 模块 2：复制目标（当前先做整块，后续可扩展选区）
@@ -11,6 +15,13 @@ export type CopyTarget =
   | { kind: 'code-block'; blockId: string }
   | { kind: 'message'; messageId: string }
   | { kind: 'message-latest-assistant' };
+
+export type ViewportCopyFallback = 'visible-code-block' | 'latest-assistant' | null;
+
+interface CopyViewportSelectionOptions {
+  ttl?: number;
+  clearSelectionOnEmpty?: boolean;
+}
 
 /** 去掉每行行尾和整段末尾的空白（含 \\r、\\t、全角空格等），复制时不带留白 */
 function trimTrailingWhitespace(text: string): string {
@@ -106,13 +117,110 @@ export async function copyTarget(
  * 取当前视口内第一个代码块，用于快捷键 Alt+C / Ctrl+Shift+C。
  */
 export function getFirstVisibleCodeBlockTarget(state: TerminalAppState): CopyTarget | null {
-  const th = getTranscriptHeight(state);
-  const first = state.viewport.topLine;
+  const th = getProjectedTranscriptViewportHeight(state);
+  const first = state.viewport.scrollOffset;
   const last = first + th - 1;
   const block = state.transcriptCodeBlocks.find(
     (b) => b.startLine <= last && b.endLine >= first,
   );
   return block ? { kind: 'code-block', blockId: block.id } : null;
+}
+
+/**
+ * Transcript copy hotspot 只吃右侧固定宽度区域，避免把正文点击误当复制。
+ * 这个几何规则集中在这里，controller 只读取边界，不自己再写 -12。
+ */
+export function getTranscriptCopyHotspotBounds(scrollbarCol: number): { left: number; right: number } {
+  const right = Math.max(0, Math.trunc(scrollbarCol));
+  const left = Math.max(0, right - TRANSCRIPT_COPY_HOTSPOT_WIDTH);
+  return { left, right };
+}
+
+/**
+ * 当前焦点行的复制目标。
+ * 这层规则集中在 terminal-core，controller 不再自己读 anchor + getCopyTargetAtLine。
+ */
+export function getFocusedCopyTarget(state: TerminalAppState): CopyTarget | null {
+  const focusedLine = state.viewport.anchorMessageId;
+  return typeof focusedLine === 'number' ? getCopyTargetAtLine(state, focusedLine) : null;
+}
+
+/**
+ * 键盘复制快捷键的目标解析：
+ * 1. 先复制当前焦点行对应的 message/code block
+ * 2. 然后按调用方指定的 fallback 继续退化
+ */
+export function resolveViewportCopyTarget(
+  state: TerminalAppState,
+  fallback: ViewportCopyFallback,
+): CopyTarget | null {
+  const focusedTarget = getFocusedCopyTarget(state);
+  if (focusedTarget) {
+    return focusedTarget;
+  }
+  if (fallback === 'visible-code-block') {
+    return getFirstVisibleCodeBlockTarget(state);
+  }
+  if (fallback === 'latest-assistant') {
+    return { kind: 'message-latest-assistant' };
+  }
+  return null;
+}
+
+/**
+ * Transcript 右侧复制热点只复制代码块。
+ * 即使该行映射到 message，也不在这里触发 message 复制，避免把正文点击误当成复制。
+ */
+export function getTranscriptCopyHotspotTarget(
+  state: TerminalAppState,
+  lineIndex: number,
+): Extract<CopyTarget, { kind: 'code-block' }> | null {
+  const target = getCopyTargetAtLine(state, lineIndex);
+  return target?.kind === 'code-block' ? target : null;
+}
+
+/**
+ * 统一的 viewport 选区复制入口：
+ * 1. 提取选区文本并按复制语义 trimEnd
+ * 2. 写入 OSC52 / 系统剪贴板
+ * 3. 推送 toast，并按需要清空选区
+ */
+export function copyViewportSelection(
+  lines: string[],
+  selection: ViewportSelection | null,
+  clipboard: ClipboardService,
+  dispatch: (event: TerminalCoreEvent) => void,
+  renderNow: () => Promise<unknown>,
+  osc52Stream?: NodeJS.WritableStream,
+  options: CopyViewportSelectionOptions = {},
+): boolean {
+  if (!selection) {
+    return false;
+  }
+  const text = getViewportSelectionCopyText(lines, selection);
+  if (text.length === 0) {
+    if (options.clearSelectionOnEmpty) {
+      dispatch({ type: 'viewport.selection.set', selection: null });
+    }
+    return true;
+  }
+  const ttl = options.ttl ?? 5000;
+  const toastId = `toast-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  if (osc52Stream) {
+    writeToClipboardOSC52(text, osc52Stream);
+  }
+  clipboard.writeText(text).then(() => {
+    dispatch({ type: 'toast.push', id: toastId, text: 'Copied to clipboard', kind: 'success', ttl });
+    dispatch({ type: 'viewport.selection.set', selection: null });
+    renderNow();
+    setTimeout(() => dispatch({ type: 'toast.dismiss', id: toastId }), ttl);
+  }).catch(() => {
+    dispatch({ type: 'toast.push', id: toastId, text: 'Copied to clipboard', kind: 'success', ttl });
+    dispatch({ type: 'viewport.selection.set', selection: null });
+    renderNow();
+    setTimeout(() => dispatch({ type: 'toast.dismiss', id: toastId }), ttl);
+  });
+  return true;
 }
 
 /**
@@ -125,9 +233,7 @@ export function getCopyTargetAtLine(state: TerminalAppState, lineIndex: number):
     (b) => b.startLine <= lineIndex && b.endLine >= lineIndex,
   );
   if (block) return { kind: 'code-block', blockId: block.id };
-  const range = state.transcriptEntryLineRanges.find(
-    (r) => r.startLine <= lineIndex && r.endLine >= lineIndex,
-  );
+  const range = getTranscriptEntryRangeAtLine(state, lineIndex);
   if (range) return { kind: 'message', messageId: range.entryId };
   return null;
 }

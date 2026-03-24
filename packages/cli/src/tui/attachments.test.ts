@@ -68,6 +68,7 @@ describe('tui attachment helpers', () => {
         expect(buildMessageAttachments([imagePath, filePath])).toEqual({
             attachments: [
                 {
+                    kind: 'image',
                     type: 'image',
                     mimeType: 'image/png',
                     data: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64'),
@@ -75,6 +76,7 @@ describe('tui attachment helpers', () => {
                     fileName: 'diagram.png',
                 },
                 {
+                    kind: 'file',
                     type: 'file',
                     mimeType: 'application/octet-stream',
                     filePath,

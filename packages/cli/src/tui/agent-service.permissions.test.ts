@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveRemoteToolPermissionMode } from './agent-service.js';
+import { isPlanReadOnlyTool, resolveRemoteToolPermissionMode } from './agent-service.js';
 
 describe('remote tool permission mapping', () => {
     it('maps allow/ask/deny using tool aliases used by serve runtime', () => {
@@ -31,5 +31,14 @@ describe('remote tool permission mapping', () => {
         })).toBe('deny');
 
         expect(resolveRemoteToolPermissionMode('read_file', undefined)).toBe('ask');
+    });
+
+    it('allows only read-only tools in plan mode', () => {
+        expect(isPlanReadOnlyTool('read_file')).toBe(true);
+        expect(isPlanReadOnlyTool('search_code')).toBe(true);
+        expect(isPlanReadOnlyTool('lsp_definition')).toBe(true);
+        expect(isPlanReadOnlyTool('write_file')).toBe(false);
+        expect(isPlanReadOnlyTool('run_command')).toBe(false);
+        expect(isPlanReadOnlyTool('apply_patch')).toBe(false);
     });
 });
