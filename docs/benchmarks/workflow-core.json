@@ -1,0 +1,45 @@
+{
+  "slug": "workflow-core",
+  "title": "Workflow Core Benchmark",
+  "generatedAt": "2026-03-23T16:43:00.089Z",
+  "summary": "Measures orchestration overhead for the build/fix workflow engine with deterministic fake runtimes.",
+  "meta": {
+    "iterations": 20
+  },
+  "sections": [
+    {
+      "title": "Build Flow Latency (ms)",
+      "metrics": {
+        "min": 0.006,
+        "p50": 0.014,
+        "p95": 0.398,
+        "avg": 0.047,
+        "max": 0.398
+      }
+    },
+    {
+      "title": "Fix Flow Latency (ms)",
+      "metrics": {
+        "min": 0.009,
+        "p50": 0.028,
+        "p95": 0.502,
+        "avg": 0.063,
+        "max": 0.502
+      }
+    }
+  ],
+  "acceptance": [
+    {
+      "label": "Build flow p95",
+      "target": "< 25ms",
+      "actual": "0.398ms",
+      "pass": true
+    },
+    {
+      "label": "Fix flow p95",
+      "target": "< 25ms",
+      "actual": "0.502ms",
+      "pass": true
+    }
+  ]
+}

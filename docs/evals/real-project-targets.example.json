@@ -1,0 +1,21 @@
+{
+  "projects": [
+    {
+      "id": "example-monorepo",
+      "label": "Example Monorepo",
+      "checkoutRoot": "${HOME}/code/example-monorepo",
+      "repo": "https://github.com/example/example-monorepo",
+      "prepareCommand": "pnpm install --frozen-lockfile",
+      "testCommand": "pnpm run test:smoke",
+      "requiredCommands": ["pnpm"],
+      "requiredPaths": [".env.local"],
+      "readinessChecks": [
+        {
+          "label": "local-api@localhost:3001",
+          "command": "python3 -c \"import socket; socket.create_connection(('localhost', 3001), 1).close()\""
+        }
+      ],
+      "notes": "Use checkoutRoot for repo-backed targets. Add projectPath when the eval target is a subdirectory inside the checkout, and declare requiredCommands / requiredPaths when the sample needs local prerequisites."
+    }
+  ]
+}

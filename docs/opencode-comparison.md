@@ -10,9 +10,9 @@
 
 | 维度 | 当前证据 | 为什么重要 |
 | --- | --- | --- |
-| 终端内核 | Rust client 冷启动 `2.379ms`、warm p95 `1.772ms`、daemon warm attach p95 `0.670ms` | 主路径体验是否稳定、够快、可长期演进，取决于底层终端内核而不是 prompt 包装 |
+| 终端内核 | Rust client 冷启动 `2.615ms`、warm p95 `2.091ms`、daemon warm attach p95 `0.647ms` | 主路径体验是否稳定、够快、可长期演进，取决于底层终端内核而不是 prompt 包装 |
 | 工程闭环 | `build / fix / test / deploy` 已有 deterministic fixture eval，`Workflow Fixture Eval` 当前 `6/6 PASS` | AI coding assistant 不能只会“说”，还要能形成可回归的工程流 |
-| 质量证据 | 真实项目页当前 `6` 个目标、`80` 次 workflow run、`5/5 PASS`；Benchmark/Eval 页面均已公开 | 对外叙事不靠形容词，靠可重复运行的数据页面 |
+| 质量证据 | 真实项目页当前 `10` 个目标、`129` 次 workflow run、deploy 覆盖 `9`、`6/6 PASS`；Benchmark/Eval 页面均已公开 | 对外叙事不靠形容词，靠可重复运行的数据页面 |
 
 ## Public Metrics
 
@@ -20,12 +20,12 @@
 
 | 指标 | 当前值 | 来源 |
 | --- | ---: | --- |
-| Rust client cold startup | `2.379ms` | [`docs/benchmarks/report.md`](./benchmarks/report.md) |
-| Rust client warm startup p95 | `1.772ms` | [`docs/benchmarks/report.md`](./benchmarks/report.md) |
-| daemon warm attach p95 | `0.670ms` | [`docs/benchmarks/report.md`](./benchmarks/report.md) |
-| transcript rebuild p95 | `3.814ms` | [`docs/benchmarks/report.md`](./benchmarks/report.md) |
-| transcript frame latency p95 | `11.565ms` | [`docs/benchmarks/report.md`](./benchmarks/report.md) |
-| transcript peak RSS | `167.14MB` | [`docs/benchmarks/report.md`](./benchmarks/report.md) |
+| Rust client cold startup | `2.615ms` | [`docs/benchmarks/report.md`](./benchmarks/report.md) |
+| Rust client warm startup p95 | `2.091ms` | [`docs/benchmarks/report.md`](./benchmarks/report.md) |
+| daemon warm attach p95 | `0.647ms` | [`docs/benchmarks/report.md`](./benchmarks/report.md) |
+| transcript rebuild p95 | `4.116ms` | [`docs/benchmarks/report.md`](./benchmarks/report.md) |
+| transcript frame latency p95 | `10.790ms` | [`docs/benchmarks/report.md`](./benchmarks/report.md) |
+| transcript peak RSS | `166.77MB` | [`docs/benchmarks/report.md`](./benchmarks/report.md) |
 
 ### Workflow Reliability
 
@@ -33,22 +33,25 @@
 | --- | ---: | --- |
 | Workflow fixture acceptance | `6/6 PASS` | [`docs/evals/report.md`](./evals/report.md) |
 | Workflow fixture overall success rate | `1.0` | [`docs/evals/report.md`](./evals/report.md) |
-| Real-project acceptance | `5/5 PASS` | [`docs/evals/report.md`](./evals/report.md) |
-| Real-project targets | `6` | [`docs/evals/real-project-results.md`](./evals/real-project-results.md) |
-| Real-project workflow runs | `80` | [`docs/evals/real-project-results.md`](./evals/real-project-results.md) |
-| Projects with build coverage | `6` | [`docs/evals/real-project-results.md`](./evals/real-project-results.md) |
-| Projects with fix coverage | `6` | [`docs/evals/real-project-results.md`](./evals/real-project-results.md) |
+| Real-project acceptance | `6/6 PASS` | [`docs/evals/report.md`](./evals/report.md) |
+| Real-project targets | `10` | [`docs/evals/real-project-results.md`](./evals/real-project-results.md) |
+| Real-project workflow runs | `129` | [`docs/evals/real-project-results.md`](./evals/real-project-results.md) |
+| Ready real-project targets | `9` | [`docs/evals/real-project-results.md`](./evals/real-project-results.md) |
+| Blocked real-project targets | `1` | [`docs/evals/real-project-results.md`](./evals/real-project-results.md) |
+| Projects with build coverage | `9` | [`docs/evals/real-project-results.md`](./evals/real-project-results.md) |
+| Projects with fix coverage | `9` | [`docs/evals/real-project-results.md`](./evals/real-project-results.md) |
+| Projects with deploy coverage | `9` | [`docs/evals/real-project-results.md`](./evals/real-project-results.md) |
 
 ## Why This Is Different
 
 1. XQoder 的重点不是把更多命令堆到 CLI，而是让 Rust client、daemon、workflow、session、quality gate 形成一个能长期复用的系统。
-2. `fix` 不只是一次性 demo。现在真实项目页已经能公开展示 `test` 与 deterministic `fix drill` 覆盖，且这些记录直接来自正式 workflow history。
+2. `fix` 和 `deploy` 都不只是一次性 demo。现在真实项目页已经能公开展示 `test`、deterministic `fix drill` 与 deterministic `deploy drill` 覆盖，且这些记录直接来自正式 workflow history。
 3. benchmark、eval、release gate、golden test 这些证据已经接成统一页面，意味着“好不好”可以持续比较，而不是每次发布重新讲故事。
 
 ## Honest Gaps
 
 - 真实项目样本仍以本仓库 workspace package 为主，外部开源仓库样本还需要继续扩展。
-- 真实项目页已有 deterministic `build` 覆盖，但跨语言、跨框架的大样本仍需继续补齐。
+- 真实项目页已有 deterministic `build / deploy` 覆盖，但跨语言、跨框架的大样本仍需继续补齐。
 - Windows 仍处于 Node CLI preview 路径，Rust client 主路径还没正式拉齐。
 
 ## Reading Path

@@ -1,0 +1,109 @@
+{
+  "projects": [
+    {
+      "id": "agent-package",
+      "label": "XQoder Agent Package",
+      "projectRoot": "/Users/wangxinglin/Desktop/code/Xqoder/packages/agent",
+      "notes": "Stable workspace package used as a deterministic real-project build/test/fix drill target."
+    },
+    {
+      "id": "protocol-package",
+      "label": "XQoder Protocol Package",
+      "projectRoot": "/Users/wangxinglin/Desktop/code/Xqoder/packages/protocol",
+      "notes": "Small protocol package with deterministic build/test/fix drill coverage."
+    },
+    {
+      "id": "shared-package",
+      "label": "XQoder Shared Package",
+      "projectRoot": "/Users/wangxinglin/Desktop/code/Xqoder/packages/shared",
+      "notes": "Shared utilities package used for repeatable local build/test/fix drill evaluation."
+    },
+    {
+      "id": "plugin-sdk-package",
+      "label": "XQoder Plugin SDK Package",
+      "projectRoot": "/Users/wangxinglin/Desktop/code/Xqoder/packages/plugin-sdk",
+      "notes": "Plugin SDK package with a focused Vitest suite and deterministic build/test/fix drill coverage."
+    },
+    {
+      "id": "permissions-package",
+      "label": "XQoder Permissions Package",
+      "projectRoot": "/Users/wangxinglin/Desktop/code/Xqoder/packages/permissions",
+      "notes": "Minimal package used to seed baseline real-project build/test/fix drill workflow history."
+    },
+    {
+      "id": "openclaw-monorepo",
+      "label": "OpenClaw Monorepo (Optional)",
+      "checkoutRoot": "/Users/wangxinglin/Desktop/code/openclaw",
+      "repo": "https://github.com/openclaw/openclaw",
+      "prepareCommand": "pnpm install --frozen-lockfile",
+      "testCommand": "pnpm vitest run --config vitest.unit.config.ts src/logger.test.ts",
+      "requiredCommands": ["pnpm"],
+      "enabled": true,
+      "notes": "Validated external OSS target with build/test/fix/deploy drill coverage and default-run readiness."
+    },
+    {
+      "id": "opencode-core-package",
+      "label": "OpenCode Core Package (Optional)",
+      "checkoutRoot": "/Users/wangxinglin/Desktop/code/opencode-dev",
+      "projectPath": "packages/opencode",
+      "repo": "https://github.com/anomalyco/opencode",
+      "prepareCommand": "cd ../.. && bun install",
+      "testCommand": "bun test --timeout 30000",
+      "scenarios": ["test", "fix", "build", "deploy"],
+      "requiredCommands": ["bun"],
+      "commandEnv": {
+        "OPENCODE_CHANNEL": "latest"
+      },
+      "deployBuildCommand": "bun run build --single",
+      "deployOutputDir": "dist/opencode-darwin-arm64/bin",
+      "enabled": true,
+      "notes": "Validated external OpenCode core target for test/fix/build/deploy drill coverage. Snapshot deploy uses OPENCODE_CHANNEL=latest plus a single-platform build override."
+    },
+    {
+      "id": "opencode-app-package",
+      "label": "OpenCode App Package (Optional)",
+      "checkoutRoot": "/Users/wangxinglin/Desktop/code/opencode-dev",
+      "projectPath": "packages/app",
+      "repo": "https://github.com/anomalyco/opencode",
+      "prepareCommand": "cd ../.. && bun install",
+      "testCommand": "bun run test:unit",
+      "scenarios": ["test", "fix", "build", "deploy"],
+      "requiredCommands": ["bun"],
+      "enabled": true,
+      "notes": "Validated external OpenCode frontend target with test/fix/build/deploy drill coverage on the local snapshot checkout."
+    },
+    {
+      "id": "directus-monorepo",
+      "label": "Directus Monorepo (Optional)",
+      "checkoutRoot": "/Users/wangxinglin/Desktop/code/directus",
+      "projectPath": "packages/schema-builder",
+      "repo": "https://github.com/directus/directus",
+      "prepareCommand": "cd .. && pnpm install --frozen-lockfile",
+      "testCommand": "pnpm test",
+      "scenarios": ["test", "fix", "build", "deploy"],
+      "requiredCommands": ["pnpm"],
+      "enabled": true,
+      "notes": "Validated Directus package target using packages/schema-builder with stable build/test/dist output for default external build/deploy drill coverage."
+    },
+    {
+      "id": "fastapi-template",
+      "label": "Full Stack FastAPI Template (Optional)",
+      "checkoutRoot": "/Users/wangxinglin/Desktop/code/full-stack-fastapi-template",
+      "projectPath": "backend",
+      "repo": "https://github.com/fastapi/full-stack-fastapi-template",
+      "prepareCommand": "uv sync && (docker info >/dev/null 2>&1 || colima start) && docker-compose -f ../compose.yml -f ../compose.override.yml up -d db && uv run alembic upgrade head",
+      "testCommand": "uv run bash scripts/test.sh",
+      "scenarios": ["test"],
+      "requiredCommands": ["uv", "python3", "docker-compose"],
+      "requiredPaths": ["../.env"],
+      "readinessChecks": [
+        {
+          "label": "postgres@localhost:5432",
+          "command": "python3 -c \"import socket; socket.create_connection(('localhost', 5432), 1).close()\""
+        }
+      ],
+      "enabled": true,
+      "notes": "Optional Python backend target with docker-compose-backed local Postgres preparation. Default coverage is test-only for now; deploy/build/fix stay out of scope until the Python workflow drills are promoted."
+    }
+  ]
+}

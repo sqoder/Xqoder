@@ -1,0 +1,15 @@
+Channel: stable
+Current Version: 0.1.0
+Base Version: 0.1.0
+Suggested Version: 0.1.0
+Branch: release/stable-0.1.0
+Strict: no
+Commands:
+  1. git checkout -b release/stable-0.1.0
+  2. npm version 0.1.0 --no-git-tag-version
+  3. pnpm version:sync
+  4. pnpm release:check
+  5. pnpm parity:test
+  6. git add package.json packages/*/package.json
+  7. git commit -m "release: prepare stable 0.1.0"
+  8. git tag v0.1.0

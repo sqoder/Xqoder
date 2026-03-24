@@ -37,7 +37,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build macOS targets
-        run: pnpm build
+        run: |
+          pnpm build:shared
+          pnpm build:renderer
+          pnpm build:daemon
+          pnpm build:client
+          pnpm build:cli
 
       - name: Lint
         run: pnpm lint
@@ -46,7 +51,7 @@ jobs:
         run: pnpm test
 
       - name: CLI smoke test
-        run: pnpm xqoder -- --help
+        run: node packages/cli/dist/index.js --help
 
   linux-beta:
     name: Linux Beta
@@ -73,7 +78,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build Linux targets
-        run: pnpm build
+        run: |
+          pnpm build:shared
+          pnpm build:renderer
+          pnpm build:daemon
+          pnpm build:client
+          pnpm build:cli
 
       - name: Lint
         run: pnpm lint
@@ -81,8 +91,11 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Session lifecycle verification
+        run: pnpm verify:session:lifecycle
+
       - name: CLI smoke test
-        run: pnpm xqoder -- --help
+        run: node packages/cli/dist/index.js --help
 
   windows-preview:
     name: Windows Preview (Node CLI)
@@ -109,7 +122,14 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build Windows Node CLI path
-        run: pnpm --filter @xqoder/cli... run build
+        run: |
+          pnpm build:shared
+          pnpm build:renderer
+          pnpm build:daemon
+          pnpm build:cli
+
+      - name: Lint
+        run: pnpm lint
 
       - name: CLI smoke test
-        run: pnpm xqoder -- --help
+        run: node packages/cli/dist/index.js --help

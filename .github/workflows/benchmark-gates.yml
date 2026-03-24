@@ -1,0 +1,57 @@
+name: Benchmark Gates
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  benchmark-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.0
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build release prerequisites
+        run: |
+          pnpm build:shared
+          pnpm build:renderer
+          pnpm build:daemon
+          pnpm build:client
+          pnpm build:cli
+
+      - name: Run benchmark gates
+        run: pnpm benchmark:all --release
+
+      - name: Run workflow eval gate
+        run: pnpm eval:workflow --release
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-and-eval-reports
+          path: |
+            docs/benchmarks/*.json
+            docs/benchmarks/*.md
+            docs/evals/*.json
+            docs/evals/*.md

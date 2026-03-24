@@ -1,0 +1,30 @@
+{
+  "generatedAt": "2026-03-24T14:59:07.938Z",
+  "reference": "origin/main",
+  "referenceCommit": "c9b233b6d4e23223370ad7d22cf2c43cbab41d8f",
+  "localVersion": "0.1.0",
+  "currentVersion": "0.1.0-rc.202603230340",
+  "baseVersion": "0.1.0",
+  "stableTag": "v0.1.0",
+  "stableTagExists": false,
+  "rcTags": [
+    "v0.1.0-rc.202603230340"
+  ],
+  "latestRcTag": "v0.1.0-rc.202603230340",
+  "strictReleaseCheckAvailable": false,
+  "strictReleaseCheckDryRunAvailable": false,
+  "strictGateReady": false,
+  "availableGateScripts": [
+    "release:check"
+  ],
+  "missingGateScripts": [
+    "release:check:strict",
+    "release:check:strict:dry-run",
+    "capture:release:plans",
+    "verify:contracts",
+    "verify:session:recovery",
+    "verify:terminal:main-path",
+    "verify:release:blockers"
+  ],
+  "versionDrift": true
+}

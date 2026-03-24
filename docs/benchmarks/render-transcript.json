@@ -1,0 +1,46 @@
+{
+  "slug": "render-transcript",
+  "title": "Transcript Render Benchmark",
+  "generatedAt": "2026-03-23T16:42:59.488Z",
+  "summary": "Measures transcript block rebuild latency on the real CLI render path.",
+  "meta": {
+    "entries": 2000,
+    "iterations": 30,
+    "baseWidth": 96
+  },
+  "sections": [
+    {
+      "title": "Latency (ms)",
+      "metrics": {
+        "min": 2.352,
+        "p50": 2.773,
+        "p95": 4.116,
+        "avg": 3.036,
+        "max": 7.067
+      }
+    },
+    {
+      "title": "Output Shape",
+      "metrics": {
+        "lineCount": 5999,
+        "codeBlockCount": 0,
+        "entryTotalLines": 5999,
+        "peakRssMb": 84.33
+      }
+    }
+  ],
+  "acceptance": [
+    {
+      "label": "Transcript rebuild p95",
+      "target": "< 25ms",
+      "actual": "4.116ms",
+      "pass": true
+    },
+    {
+      "label": "Peak RSS",
+      "target": "< 350MB",
+      "actual": "84.33MB",
+      "pass": true
+    }
+  ]
+}

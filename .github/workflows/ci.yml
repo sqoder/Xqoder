@@ -1,13 +1,20 @@
 name: CI
 
 on:
-  push:
   pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  verify:
+  lint-test:
+    name: Lint & Test (Node)
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,14 +27,77 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: pnpm
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Release check (version:sync + build + test + lint)
-        run: pnpm release:check
+      - name: Build (all packages in order)
+        run: |
+          pnpm build:shared
+          pnpm build:renderer
+          pnpm build:daemon
+          pnpm build:client
+          pnpm build:cli
 
-      - name: CLI smoke test
-        run: node packages/cli/dist/index.js --help
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Session boundary guards
+        run: |
+          pnpm verify:session:boundary
+          pnpm verify:session:legacy-boundary
+          pnpm verify:session:legacy-import-boundary
+          pnpm verify:session:legacy-deep-import-boundary
+          pnpm verify:session:compat-import-boundary
+          pnpm verify:session:compat-allowlist
+          pnpm verify:chat:session-store-allowlist
+
+      - name: Session lifecycle E2E
+        run: pnpm verify:session:lifecycle
+
+      - name: Contract gates
+        run: pnpm verify:contracts
+
+      - name: Terminal main-path gate
+        run: pnpm verify:terminal:main-path
+
+      - name: Release blocker drills
+        run: pnpm verify:release:blockers
+
+      - name: Golden snapshot test
+        run: pnpm golden:test
+
+  rust:
+    name: Rust (clippy & test)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Clippy (renderer)
+        run: cargo clippy --manifest-path packages/renderer/Cargo.toml -- -D warnings
+
+      - name: Clippy (client)
+        run: cargo clippy --manifest-path packages/client/Cargo.toml -- -D warnings
+
+      - name: Test (renderer)
+        run: cargo test --manifest-path packages/renderer/Cargo.toml
+
+      - name: Test (client)
+        run: cargo test --manifest-path packages/client/Cargo.toml

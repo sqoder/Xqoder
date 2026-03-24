@@ -1,0 +1,47 @@
+{
+  "slug": "memory-transcript",
+  "title": "Transcript Memory Benchmark",
+  "generatedAt": "2026-03-23T16:42:58.813Z",
+  "summary": "Measures RSS and frame latency while scrolling a large transcript on the real CLI state/render path with terminal device flush suppressed for stable CI gating.",
+  "meta": {
+    "transcriptEntries": 3000,
+    "iterations": 180,
+    "warmupIterations": 40,
+    "settleMs": 25
+  },
+  "sections": [
+    {
+      "title": "Memory (MB)",
+      "metrics": {
+        "baselineRssMb": 166.59,
+        "peakRssMb": 166.77,
+        "rssDeltaMb": 0.17,
+        "peakHeapMb": 39.66
+      }
+    },
+    {
+      "title": "Frame Latency (ms)",
+      "metrics": {
+        "min": 6.939,
+        "p50": 8.28,
+        "p95": 10.79,
+        "avg": 8.552,
+        "max": 11.347
+      }
+    }
+  ],
+  "acceptance": [
+    {
+      "label": "Peak RSS",
+      "target": "< 220MB",
+      "actual": "166.77MB",
+      "pass": true
+    },
+    {
+      "label": "Frame p95",
+      "target": "< 16ms",
+      "actual": "10.79ms",
+      "pass": true
+    }
+  ]
+}
