@@ -6,31 +6,46 @@
 import * as path from 'node:path';
 import {
     ConfigManager,
+    type PermissionSettings,
     type LSPServerConfig,
     type MCPServerConfig,
     configManager,
-    getXQoderPaths,
+    getMessageAttachmentKind,
     logger,
     resolveConfigWithEnvOverrides,
     formatOutput,
     createSpinner,
+    type LLMMessage,
     type LLMProviderConfig,
     type SandboxSettings,
     type OutputFormat,
     type ShellConfig,
+    resolveToolPermissionMode,
 } from '@xqoder/shared';
-import {
-    AgentSession,
-    SQLiteSessionStore,
-    type AgentSessionStore,
-} from '@xqoder/storage-sqlite';
 import type { MessageAttachment } from '@xqoder/shared';
 import {
-    XQoderAgent,
+    AgentSession,
+    createXQoderAgentProvider,
     buildAgentConfigFromXQoderConfig,
+    type AgentConfig,
     type AgentCallbacks,
 } from '@xqoder/agent';
-import { createCliToolApprovalHandler, createCliToolStreamHandler } from '../agent-ux.js';
+import { definePlugin, type RuntimeDescriptor } from '@xqoder/plugin-sdk';
+import type { AppEvent, CoreMessage, MessageAttachment as ProtocolMessageAttachment } from '@xqoder/protocol';
+import {
+    createRuntimeSessionKernel,
+    isRuntimeSessionKernelHandle,
+    openDefaultRuntimeSessionKernel,
+    openInMemoryRuntimeSessionKernel,
+    type RuntimeSessionKernelHandle,
+    type RuntimeSessionKernelStoreLike,
+} from './runtime-session-kernel.js';
+import {
+    createRuntimeSessionResolveStoreAdapter,
+    loadRuntimeSessionSnapshotRecord,
+    resolveSessionForReuse,
+    type RuntimeSessionResolveStore,
+} from './session-resolve.js';
 
 export interface ChatRunOptions {
     dir: string;
@@ -45,7 +60,10 @@ export interface ChatRunOptions {
 
 export interface ChatServiceDependencies {
     configManager?: Pick<ConfigManager, 'load'>;
-    sessionStore?: Pick<AgentSessionStore, 'findLatestSession' | 'getSession' | 'saveSession'>;
+    /**
+     * 优先注入 runtime-native handle；这是新的推荐路径。
+     */
+    sessionKernelHandle?: ChatSessionKernelHandle;
     agentFactory?: (config: {
         llmConfig: LLMProviderConfig;
         cwd: string;
@@ -60,11 +78,21 @@ export interface ChatServiceDependencies {
         sessionTitle?: string;
         autoApproveTools?: boolean;
     }) => {
-        run(prompt: string, callbacks?: AgentCallbacks): Promise<string>;
-        getSession(): AgentSession;
+        run(prompt: string, callbacks?: AgentCallbacks, attachments?: MessageAttachment[]): Promise<string>;
         dispose?: () => Promise<void> | void;
     };
 }
+
+type ChatRuntimeStoreLike = RuntimeSessionKernelStoreLike;
+type ChatSessionSource = ChatSessionKernelHandle | ChatRuntimeStoreLike;
+
+export interface ChatSessionAccess {
+    resolveStore: RuntimeSessionResolveStore;
+    runtimeStore: ChatRuntimeStoreLike;
+    close(): void;
+}
+
+type ChatSessionKernelHandle = RuntimeSessionKernelHandle;
 
 export interface NonInteractivePromptOptions {
     prompt: string;
@@ -74,6 +102,8 @@ export interface NonInteractivePromptOptions {
     model?: string;
     agent?: string;
 }
+
+export { resolveRuntimeSessionStore } from './runtime-session-kernel.js';
 
 export function buildChatSystemPrompt(sandbox: SandboxSettings): string {
     const permissionHint = sandbox.mode === 'full-access'
@@ -128,34 +158,363 @@ NEXT_STEPS
 在终端宽度受限时，你可以适当精简文字，但仍应保留上述 6 个区块的标题顺序。`;
 }
 
-function createDefaultSessionStore(): AgentSessionStore | undefined {
+function resolveRuntimeToolPermissionMode(toolName: string, permissions: PermissionSettings | undefined) {
+    return resolveToolPermissionMode(toolName, permissions);
+}
+
+function readToolNameFromTarget(target: string): string {
+    const separator = target.lastIndexOf(':');
+    return separator >= 0 ? target.slice(separator + 1) : target;
+}
+
+function toProtocolAttachment(attachment: MessageAttachment): ProtocolMessageAttachment {
+    const kind = getMessageAttachmentKind(attachment);
+    return {
+        kind,
+        mimeType: attachment.mimeType,
+        data: attachment.data,
+        fileName: attachment.fileName,
+        filePath: attachment.filePath,
+        ...(attachment.url ? { url: attachment.url } : {}),
+    };
+}
+
+function toSharedAttachment(attachment: ProtocolMessageAttachment): MessageAttachment {
+    const kind = attachment.kind === 'image' ? 'image' : 'file';
+    return {
+        kind,
+        type: kind,
+        mimeType: attachment.mimeType ?? (attachment.kind === 'image' ? 'image/png' : 'application/octet-stream'),
+        data: attachment.data,
+        fileName: attachment.fileName,
+        filePath: attachment.filePath,
+        ...(attachment.url ? { url: attachment.url } : {}),
+    };
+}
+
+function toCoreMessage(message: LLMMessage, sessionId: string, index: number): CoreMessage {
+    return {
+        id: `${sessionId}:history:${index}`,
+        sessionId,
+        role: message.role,
+        content: message.content,
+        createdAt: Date.now(),
+        ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
+        ...(message.thinking ? { thinking: message.thinking } : {}),
+        ...(message.toolCalls && message.toolCalls.length > 0
+            ? { toolCalls: message.toolCalls.map((toolCall) => ({ ...toolCall })) }
+            : {}),
+        ...(message.attachments && message.attachments.length > 0
+            ? { attachments: message.attachments.map((attachment) => toProtocolAttachment(attachment as MessageAttachment)) }
+            : {}),
+        ...(message.parts && message.parts.length > 0
+            ? {
+                parts: message.parts.map((part) => {
+                    if (part.type === 'tool_call') {
+                        return {
+                            ...part,
+                            toolCall: { ...part.toolCall },
+                        };
+                    }
+                    return { ...part };
+                }),
+            }
+            : {}),
+    };
+}
+
+function readToolCallId(event: Extract<AppEvent, { type: 'tool.output' | 'tool.completed' }>): string | undefined {
+    const metadata = (event as { metadata?: unknown }).metadata;
+    if (!metadata || typeof metadata !== 'object') {
+        return undefined;
+    }
+    const value = (metadata as Record<string, unknown>)['toolCallId'];
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function createRuntimeDescriptor(options: {
+    sessionId: string;
+    cwd: string;
+    permissions: PermissionSettings | undefined;
+    callbacks?: AgentCallbacks;
+}): RuntimeDescriptor {
+    return {
+        sessionId: options.sessionId,
+        cwd: options.cwd,
+        permissionPolicy: {
+            evaluate: async (request: { target?: string }) => {
+                const target = typeof request.target === 'string' ? request.target : '';
+                const toolName = readToolNameFromTarget(target);
+                const mode = resolveRuntimeToolPermissionMode(toolName, options.permissions);
+                if (mode === 'ask' && !options.callbacks?.onToolApproval) {
+                    return 'deny' as const;
+                }
+                return mode;
+            },
+        },
+        requestToolApproval: options.callbacks?.onToolApproval
+            ? async (request) => (await options.callbacks?.onToolApproval?.({
+                toolCallId: request.toolCallId,
+                toolName: request.toolName,
+                summary: request.summary,
+                reason: request.reason,
+                preview: request.preview,
+                risk: request.risk,
+            })) ? 'allow' : 'deny'
+            : undefined,
+        requestQuestion: options.callbacks?.onQuestion
+            ? async (request) => (await options.callbacks?.onQuestion?.(request)) ?? {
+                requestId: request.requestId,
+                selected: request.options.length > 0 ? [request.options[0]!.label] : [],
+            }
+            : async (request) => ({
+                requestId: request.requestId,
+                selected: request.options.length > 0 ? [request.options[0]!.label] : [],
+            }),
+    };
+}
+
+async function runChatViaRuntime(options: {
+    prompt: string;
+    resolvedDir: string;
+    agentConfig: AgentConfig;
+    runtimeStore: ChatRuntimeStoreLike;
+    callbacks?: AgentCallbacks;
+    attachments?: MessageAttachment[];
+    agentFactory?: ChatServiceDependencies['agentFactory'];
+}): Promise<{ response: string; sessionId: string }> {
+    const runtime = createRuntimeSessionKernel(options.runtimeStore, {
+        projectRoot: options.resolvedDir,
+        model: options.agentConfig.llmConfig.model,
+    }, options.agentConfig.session ? [options.agentConfig.session] : []);
+
+    let pendingAgentConfig: AgentConfig | null = null;
+    await runtime.registerPlugin(definePlugin({
+        manifest: {
+            name: 'xqoder-chat-runtime-builtins',
+            version: '0.1.0',
+            capabilities: ['agent-provider'],
+        },
+        setup(api) {
+            api.registerAgentProvider(createXQoderAgentProvider(
+                async () => {
+                    if (!pendingAgentConfig) {
+                        throw new Error('No pending agent configuration');
+                    }
+                    return pendingAgentConfig;
+                },
+                {
+                    name: 'xqoder-agent',
+                    ...(options.agentFactory
+                        ? {
+                            createAgent: (config) => {
+                                const created = options.agentFactory?.({
+                                    ...config,
+                                    cwd: config.cwd ?? options.resolvedDir,
+                                    projectRoot: config.projectRoot ?? options.resolvedDir,
+                                    systemPrompt: config.systemPrompt ?? '',
+                                    sandboxMode: config.sandboxMode ?? 'project',
+                                    allowedPaths: config.allowedPaths ?? [],
+                                    shell: config.shell,
+                                    mcpServers: config.mcpServers,
+                                    lspServers: config.lspServers,
+                                    session: config.session,
+                                    sessionTitle: config.sessionTitle,
+                                    autoApproveTools: config.autoApproveTools,
+                                    llmConfig: config.llmConfig,
+                                });
+                                if (!created) {
+                                    throw new Error('agentFactory returned undefined');
+                                }
+                                return {
+                                    run: (prompt, callbacks, attachments) => created.run(prompt, callbacks, attachments),
+                                    ...(created.dispose
+                                        ? {
+                                            dispose: async () => {
+                                                await created.dispose?.();
+                                            },
+                                        }
+                                        : {}),
+                                };
+                            },
+                        }
+                        : {}),
+                },
+            ));
+        },
+    }));
+
+    const session = options.agentConfig.session ?? new AgentSession({
+        systemPrompt: options.agentConfig.systemPrompt,
+        title: options.agentConfig.sessionTitle,
+    });
+    pendingAgentConfig = {
+        ...options.agentConfig,
+        cwd: options.resolvedDir,
+        projectRoot: options.resolvedDir,
+        session,
+    };
+
+    const runtimeDescriptor = createRuntimeDescriptor({
+        sessionId: session.id,
+        cwd: options.resolvedDir,
+        permissions: options.agentConfig.permissions,
+        callbacks: options.callbacks,
+    });
+
+    let fullResponse = '';
+    let sawAssistantDelta = false;
+    let completedAssistant = '';
+    let runtimeError: Error | null = null;
+    const toolOutputs = new Map<string, string>();
+
+    const historyMessages = session.getMessages().map((entry, index) => toCoreMessage(entry, session.id, index));
+    const attachments = options.attachments ?? [];
+    const task = {
+        prompt: options.prompt,
+        messages: historyMessages,
+        ...(attachments.length > 0 ? { attachments: attachments.map(toProtocolAttachment) } : {}),
+    };
+
+    for await (const event of runtime.runAgent('xqoder-agent', task, runtimeDescriptor)) {
+        switch (event.type) {
+            case 'message.delta':
+                if (event.role === 'assistant') {
+                    sawAssistantDelta = true;
+                    fullResponse += event.text;
+                    options.callbacks?.onToken?.(event.text);
+                }
+                break;
+            case 'message.completed':
+                if (event.message.role === 'assistant') {
+                    completedAssistant = event.message.content;
+                    if (!sawAssistantDelta && event.message.content.length > 0) {
+                        fullResponse += event.message.content;
+                        options.callbacks?.onToken?.(event.message.content);
+                    }
+                }
+                break;
+            case 'tool.called':
+                options.callbacks?.onToolStart?.(
+                    event.tool,
+                    typeof event.args === 'object' && event.args !== null && !Array.isArray(event.args)
+                        ? event.args as Record<string, unknown>
+                        : {},
+                );
+                break;
+            case 'tool.output':
+                if (event.partial) {
+                    options.callbacks?.onToolStream?.(event.tool, event.output, 'stdout');
+                } else {
+                    const key = readToolCallId(event) ?? event.tool;
+                    toolOutputs.set(key, event.output);
+                }
+                break;
+            case 'tool.completed':
+                {
+                    const key = readToolCallId(event) ?? event.tool;
+                    const result = toolOutputs.get(key) ?? '';
+                    options.callbacks?.onToolEnd?.(
+                        event.tool,
+                        result,
+                        event.success,
+                        event.metadata && typeof event.metadata === 'object'
+                            ? event.metadata as Record<string, unknown>
+                            : undefined,
+                    );
+                }
+                break;
+            case 'error':
+                runtimeError = new Error(event.message);
+                options.callbacks?.onError?.(runtimeError);
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (runtimeError) {
+        throw runtimeError;
+    }
+
+    const response = fullResponse || completedAssistant;
+    const persistedRecord = await loadRuntimeSessionSnapshotRecord(runtime, session.id);
+    return {
+        response,
+        sessionId: persistedRecord?.id ?? session.id,
+    };
+}
+
+export function openChatSessionAccess(
+    sessionSource: ChatSessionSource | undefined,
+    defaults: {
+        projectRoot: string;
+        model: string;
+    },
+    options: {
+        allowMemoryFallback: boolean;
+        openSessionKernel?: (defaults: { projectRoot: string; model: string }) => ChatSessionKernelHandle;
+    } = {
+        allowMemoryFallback: false,
+    },
+): ChatSessionAccess | undefined {
+    if (sessionSource && isRuntimeSessionKernelHandle(sessionSource)) {
+        return {
+            resolveStore: sessionSource.kernel,
+            runtimeStore: sessionSource.store,
+            close: () => {
+                sessionSource.close();
+            },
+        };
+    }
+
+    if (sessionSource) {
+        return {
+            resolveStore: createRuntimeSessionResolveStoreAdapter(sessionSource, {
+                projectRoot: defaults.projectRoot,
+                cwd: defaults.projectRoot,
+                model: defaults.model,
+            }),
+            runtimeStore: sessionSource,
+            close: () => {},
+        };
+    }
+
     try {
-        return new SQLiteSessionStore(getXQoderPaths().sessionDbFile);
+        const kernelHandle = (options.openSessionKernel ?? openDefaultRuntimeSessionKernel)(defaults);
+        return {
+            resolveStore: kernelHandle.kernel,
+            runtimeStore: kernelHandle.store,
+            close: () => {
+                kernelHandle.close();
+            },
+        };
     } catch (err) {
         logger.warn(`Session 持久化不可用，将退回到内存会话: ${err instanceof Error ? err.message : String(err)}`);
-        return undefined;
+        if (!options.allowMemoryFallback) {
+            return undefined;
+        }
+
+        const kernelHandle = openInMemoryRuntimeSessionKernel(defaults);
+        return {
+            resolveStore: kernelHandle.kernel,
+            runtimeStore: kernelHandle.store,
+            close: () => {
+                kernelHandle.close();
+            },
+        };
     }
 }
 
-function resolveChatSession(
-    sessionStore: Pick<AgentSessionStore, 'findLatestSession' | 'getSession'> | undefined,
+async function resolveChatSession(
+    resolveStore: RuntimeSessionResolveStore | undefined,
     options: {
         projectRoot: string;
         sessionId?: string;
         newSession: boolean;
     },
-): AgentSession | undefined {
-    if (!sessionStore || options.newSession) {
-        return undefined;
-    }
-    if (options.sessionId) {
-        const explicitSession = sessionStore.getSession(options.sessionId);
-        if (!explicitSession) {
-            throw new Error(`未找到指定 session: ${options.sessionId}`);
-        }
-        return explicitSession;
-    }
-    return sessionStore.findLatestSession(options.projectRoot) ?? undefined;
+): Promise<AgentSession | undefined> {
+    return resolveSessionForReuse(resolveStore, options);
 }
 
 /** 无头运行单轮对话并返回结果（供 serve API 使用） */
@@ -169,54 +528,58 @@ export async function runChatHeadless(
     const { config: effectiveConfig } = resolveConfigWithEnvOverrides(loadedConfig);
 
     const sandbox = effectiveConfig.sandbox ?? { mode: 'project', allowedPaths: [] };
-    const sessionStore = dependencies.sessionStore ?? createDefaultSessionStore();
-    if (!sessionStore) {
+    const sessionAccess = openChatSessionAccess(dependencies.sessionKernelHandle, {
+        projectRoot: resolvedDir,
+        model: options.model?.trim() || effectiveConfig.llm.model,
+    }, {
+        allowMemoryFallback: false,
+    });
+    if (!sessionAccess) {
         throw new Error('Session 存储不可用');
     }
-
-    const session = resolveChatSession(sessionStore, {
-        projectRoot: resolvedDir,
-        sessionId: options.session,
-        newSession: options.newSession ?? false,
-    });
-    const agentConfig = buildAgentConfigFromXQoderConfig(effectiveConfig, {
-        agentName: options.agent,
-        cwd: resolvedDir,
-        projectRoot: resolvedDir,
-        modelOverride: options.model,
-        promptAppendix: buildChatSystemPrompt(sandbox),
-        session,
-    });
-
-    if (!agentConfig.llmConfig.apiKey.trim()) {
-        throw new Error('LLM API Key 未配置');
-    }
-
-    const factoryConfig = {
-        ...agentConfig,
-        cwd: resolvedDir,
-        projectRoot: resolvedDir,
-        systemPrompt: agentConfig.systemPrompt ?? '',
-        sandboxMode: agentConfig.sandboxMode ?? sandbox.mode,
-        allowedPaths: agentConfig.allowedPaths ?? sandbox.allowedPaths,
-        shell: agentConfig.shell,
-    };
-    const agent = dependencies.agentFactory?.(factoryConfig) ?? new XQoderAgent(agentConfig);
-
-    let fullResponse = '';
     try {
-        await agent.run(prompt, {
-            onToken: (token: string) => { fullResponse += token; },
-        }, options.attachments ?? []);
-        const summary = sessionStore.saveSession({
-            session: agent.getSession(),
+        const session = await resolveChatSession(sessionAccess.resolveStore, {
             projectRoot: resolvedDir,
-            cwd: resolvedDir,
-            model: agentConfig.llmConfig.model,
+            sessionId: options.session,
+            newSession: options.newSession ?? false,
         });
-        return { response: fullResponse, sessionId: summary.id };
+        const agentConfig = buildAgentConfigFromXQoderConfig(effectiveConfig, {
+            agentName: options.agent,
+            cwd: resolvedDir,
+            projectRoot: resolvedDir,
+            modelOverride: options.model,
+            promptAppendix: buildChatSystemPrompt(sandbox),
+            session,
+        });
+
+        if (!agentConfig.llmConfig.apiKey.trim()) {
+            throw new Error('LLM API Key 未配置');
+        }
+
+        let fullResponse = '';
+        const result = await runChatViaRuntime({
+            prompt,
+            resolvedDir,
+            agentConfig: {
+                ...agentConfig,
+                cwd: resolvedDir,
+                projectRoot: resolvedDir,
+            },
+            runtimeStore: sessionAccess.runtimeStore,
+            callbacks: {
+                onToken: (token) => {
+                    fullResponse += token;
+                },
+            },
+            attachments: options.attachments ?? [],
+            agentFactory: dependencies.agentFactory,
+        });
+        return {
+            response: fullResponse || result.response,
+            sessionId: result.sessionId,
+        };
     } finally {
-        await agent.dispose?.();
+        sessionAccess.close();
     }
 }
 
@@ -234,62 +597,65 @@ export async function runChat(
         mode: 'project',
         allowedPaths: [],
     };
-    const sessionStore = dependencies.sessionStore ?? createDefaultSessionStore();
-    const session = resolveChatSession(sessionStore, {
+    const sessionAccess = openChatSessionAccess(dependencies.sessionKernelHandle, {
         projectRoot: resolvedDir,
-        sessionId: options.session,
-        newSession: options.newSession ?? false,
-    });
-    const agentConfig = buildAgentConfigFromXQoderConfig(effectiveConfig, {
-        agentName: options.agent,
-        cwd: resolvedDir,
-        projectRoot: resolvedDir,
-        modelOverride: options.model,
-        promptAppendix: buildChatSystemPrompt(sandbox),
-        session,
-    });
-
-    if (!dependencies.agentFactory && !agentConfig.llmConfig.apiKey.trim()) {
-        throw new Error('LLM API Key 未配置，请先运行 xqoder config init --api-key <key>');
-    }
-
-    const factoryConfig = {
-        ...agentConfig,
-        cwd: resolvedDir,
-        projectRoot: resolvedDir,
-        systemPrompt: agentConfig.systemPrompt ?? '',
-        sandboxMode: agentConfig.sandboxMode ?? sandbox.mode,
-        allowedPaths: agentConfig.allowedPaths ?? sandbox.allowedPaths,
-        shell: agentConfig.shell,
-    };
-    const agent = dependencies.agentFactory?.(factoryConfig) ?? new XQoderAgent(agentConfig);
-
-    const outputFormat: OutputFormat = options.format ?? 'text';
-    const isJson = outputFormat === 'json';
-
-    const spinner = isJson ? createSpinner('Thinking...') : null;
+        model: options.model?.trim() || effectiveConfig.llm.model,
+    }, {
+        allowMemoryFallback: true,
+    })!;
     try {
-        let fullResponse = '';
-        const callbacks = isJson
-            ? { ...callbacksFactory(), onToken: (token: string) => { fullResponse += token; } }
-            : callbacksFactory();
-
-        await agent.run(prompt, callbacks, options.attachments ?? []);
-        sessionStore?.saveSession({
-            session: agent.getSession(),
+        const session = await resolveChatSession(sessionAccess.resolveStore, {
             projectRoot: resolvedDir,
+            sessionId: options.session,
+            newSession: options.newSession ?? false,
+        });
+        const agentConfig = buildAgentConfigFromXQoderConfig(effectiveConfig, {
+            agentName: options.agent,
             cwd: resolvedDir,
-            model: agentConfig.llmConfig.model,
+            projectRoot: resolvedDir,
+            modelOverride: options.model,
+            promptAppendix: buildChatSystemPrompt(sandbox),
+            session,
         });
 
-        spinner?.stop();
-        if (isJson) {
-            process.stdout.write(formatOutput(fullResponse, { format: 'json' }));
+        if (!dependencies.agentFactory && !agentConfig.llmConfig.apiKey.trim()) {
+            throw new Error('LLM API Key 未配置，请先运行 xqoder config init --api-key <key>');
         }
-        process.stdout.write('\n');
+
+        const outputFormat: OutputFormat = options.format ?? 'text';
+        const isJson = outputFormat === 'json';
+
+        const spinner = isJson ? createSpinner('Thinking...') : null;
+        try {
+            let fullResponse = '';
+            const callbacks = isJson
+                ? { ...callbacksFactory(), onToken: (token: string) => { fullResponse += token; } }
+                : callbacksFactory();
+
+            const result = await runChatViaRuntime({
+                prompt,
+                resolvedDir,
+                agentConfig: {
+                    ...agentConfig,
+                    cwd: resolvedDir,
+                    projectRoot: resolvedDir,
+                },
+                runtimeStore: sessionAccess.runtimeStore,
+                callbacks,
+                attachments: options.attachments ?? [],
+                agentFactory: dependencies.agentFactory,
+            });
+
+            spinner?.stop();
+            if (isJson) {
+                process.stdout.write(formatOutput(fullResponse || result.response, { format: 'json' }));
+            }
+            process.stdout.write('\n');
+        } finally {
+            spinner?.stop();
+        }
     } finally {
-        spinner?.stop();
-        await agent.dispose?.();
+        sessionAccess.close();
     }
 }
 
@@ -305,7 +671,12 @@ export async function runNonInteractivePrompt(
         mode: 'project',
         allowedPaths: [],
     };
-    const sessionStore = dependencies.sessionStore ?? createDefaultSessionStore();
+    const sessionAccess = openChatSessionAccess(dependencies.sessionKernelHandle, {
+        projectRoot: resolvedDir,
+        model: options.model?.trim() || effectiveConfig.llm.model,
+    }, {
+        allowMemoryFallback: true,
+    })!;
     const agentConfig = buildAgentConfigFromXQoderConfig(effectiveConfig, {
         agentName: options.agent,
         cwd: resolvedDir,
@@ -320,44 +691,35 @@ export async function runNonInteractivePrompt(
         throw new Error('LLM API Key 未配置，请先运行 xqoder config init --api-key <key>');
     }
 
-    const factoryConfig = {
-        ...agentConfig,
-        cwd: resolvedDir,
-        projectRoot: resolvedDir,
-        systemPrompt: agentConfig.systemPrompt ?? '',
-        sandboxMode: agentConfig.sandboxMode ?? sandbox.mode,
-        allowedPaths: agentConfig.allowedPaths ?? sandbox.allowedPaths,
-        shell: agentConfig.shell,
-        sessionTitle: agentConfig.sessionTitle,
-        autoApproveTools: agentConfig.autoApproveTools,
-    };
-    const agent = dependencies.agentFactory?.(factoryConfig) ?? new XQoderAgent(agentConfig);
-
     const spinner = !options.quiet && options.outputFormat === 'text'
         ? createSpinner('Thinking...')
         : null;
 
     try {
         let fullResponse = '';
-        await agent.run(options.prompt, {
-            onToken: (token: string) => {
-                fullResponse += token;
+        const result = await runChatViaRuntime({
+            prompt: options.prompt,
+            resolvedDir,
+            agentConfig: {
+                ...agentConfig,
+                cwd: resolvedDir,
+                projectRoot: resolvedDir,
             },
-        });
-
-        sessionStore?.saveSession({
-            session: agent.getSession(),
-            projectRoot: resolvedDir,
-            cwd: resolvedDir,
-            model: agentConfig.llmConfig.model,
+            runtimeStore: sessionAccess.runtimeStore,
+            callbacks: {
+                onToken: (token: string) => {
+                    fullResponse += token;
+                },
+            },
+            agentFactory: dependencies.agentFactory,
         });
 
         spinner?.stop();
-        process.stdout.write(formatOutput(fullResponse, { format: options.outputFormat }));
+        process.stdout.write(formatOutput(fullResponse || result.response, { format: options.outputFormat }));
         process.stdout.write('\n');
     } finally {
         spinner?.stop();
-        await agent.dispose?.();
+        sessionAccess.close();
     }
 }
 

@@ -16,6 +16,11 @@ export interface CustomCommand {
     variables: string[];
 }
 
+export interface CustomCommandReference {
+    id: string;
+    label: string;
+}
+
 const VAR_PATTERN = /\$([A-Z_][A-Z0-9_]*)/g;
 
 function extractVariables(content: string): string[] {
@@ -57,10 +62,7 @@ function loadCommandsFromDir(dir: string, scope: 'user' | 'project'): CustomComm
     return commands;
 }
 
-/**
- * Load all custom commands from user and project directories.
- */
-export function loadCustomCommands(projectDir?: string): CustomCommand[] {
+function loadCustomCommandSources(projectDir?: string): CustomCommand[] {
     const commands: CustomCommand[] = [];
 
     // User-level commands: ~/.config/xqoder/commands/ or ~/.xqoder/commands/
@@ -73,6 +75,15 @@ export function loadCustomCommands(projectDir?: string): CustomCommand[] {
         commands.push(...loadCommandsFromDir(path.join(projectDir, '.xqoder', 'commands'), 'project'));
     }
 
+    return commands;
+}
+
+/**
+ * Load all custom commands from user and project directories.
+ */
+export function loadCustomCommands(projectDir?: string): CustomCommand[] {
+    const commands = loadCustomCommandSources(projectDir);
+
     // De-duplicate by name (project takes precedence)
     const seen = new Map<string, CustomCommand>();
     for (const cmd of commands) {
@@ -83,6 +94,63 @@ export function loadCustomCommands(projectDir?: string): CustomCommand[] {
     }
 
     return Array.from(seen.values());
+}
+
+/**
+ * Resolve command by reference:
+ * - "foo" -> merged command (project overrides user)
+ * - "user:foo" -> user-scoped command
+ * - "project:foo" -> project-scoped command
+ */
+export function resolveCustomCommand(commandRef: string, projectDir?: string): CustomCommand | null {
+    const trimmed = commandRef.trim();
+    if (!trimmed) {
+        return null;
+    }
+
+    const scopedMatch = trimmed.match(/^(user|project):(.+)$/);
+    if (scopedMatch) {
+        const scope = scopedMatch[1] as 'user' | 'project';
+        const name = scopedMatch[2]!.trim();
+        if (!name) {
+            return null;
+        }
+        const sources = loadCustomCommandSources(projectDir);
+        return sources.find((command) => command.scope === scope && command.name === name) ?? null;
+    }
+
+    return loadCustomCommands(projectDir).find((command) => command.name === trimmed) ?? null;
+}
+
+/**
+ * Returns command references for command palette / slash completion.
+ * Includes merged names and scoped aliases (user:/project:).
+ */
+export function listCustomCommandReferences(projectDir?: string): CustomCommandReference[] {
+    const refs: CustomCommandReference[] = [];
+    const merged = loadCustomCommands(projectDir);
+    for (const command of merged) {
+        refs.push({
+            id: command.name,
+            label: command.name,
+        });
+    }
+
+    const seen = new Set(refs.map((ref) => ref.id));
+    const sources = loadCustomCommandSources(projectDir);
+    for (const source of sources) {
+        const id = `${source.scope}:${source.name}`;
+        if (seen.has(id)) {
+            continue;
+        }
+        seen.add(id);
+        refs.push({
+            id,
+            label: id,
+        });
+    }
+
+    return refs;
 }
 
 /**

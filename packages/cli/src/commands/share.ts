@@ -5,10 +5,7 @@ import {
     getXQoderPaths,
     logger,
 } from '@xqoder/shared';
-import {
-    SQLiteSessionStore,
-    type AgentSessionStore,
-} from '@xqoder/storage-sqlite';
+import { FileRollbackStore, type RollbackStore } from '@xqoder/agent';
 import {
     FileSessionShareStore,
     createSessionExportDocument,
@@ -19,18 +16,21 @@ import {
     type SessionShareRecord,
     type SessionShareStore,
 } from '../session-assets.js';
-import { resolveSessionForExport } from '../services/session-resolve.js';
+import { createSessionReplayBundleDocument } from '../session-bundle.js';
+import { openDefaultRuntimeSessionKernel } from '../services/runtime-session-kernel.js';
+import { resolveSessionForExport, type SessionResolveStore } from '../services/session-resolve.js';
 
 interface ShareCommandDependencies {
-    sessionStore?: Pick<AgentSessionStore, 'findLatestSession' | 'getSession' | 'getSessionSummary'>;
+    sessionStore?: SessionResolveStore;
     shareStore?: SessionShareStore;
+    rollbackStore?: Pick<RollbackStore, 'listPoints' | 'getPointDetails'>;
     confirmRemove?: (share: SessionShareDetails) => Promise<boolean> | boolean;
     isInteractiveSession?: () => boolean;
 }
 
 interface ShareCreateOptions {
     dir: string;
-    format: 'json' | 'markdown';
+    format: 'json' | 'markdown' | 'bundle';
 }
 
 interface ShareListOptions {
@@ -54,10 +54,10 @@ export function createShareCommand(
         .description('为某个 session 生成本地 share 资产')
         .argument('[sessionId]', 'session ID；省略时使用当前项目最近一次会话')
         .option('-d, --dir <dir>', '项目目录', '.')
-        .option('-f, --format <format>', 'share 格式: json | markdown', 'markdown')
-        .action((sessionId: string | undefined, options: ShareCreateOptions) => {
+        .option('-f, --format <format>', 'share 格式: json | markdown | bundle', 'markdown')
+        .action(async (sessionId: string | undefined, options: ShareCreateOptions) => {
             try {
-                runCreateShareCommand(sessionId, options, dependencies);
+                await runCreateShareCommand(sessionId, options, dependencies);
             } catch (error) {
                 logger.error(`share create 失败: ${error instanceof Error ? error.message : String(error)}`);
                 process.exit(1);
@@ -110,30 +110,48 @@ export function createShareCommand(
     return command;
 }
 
-export function runCreateShareCommand(
+export async function runCreateShareCommand(
     sessionId: string | undefined,
     options: ShareCreateOptions,
     dependencies: ShareCommandDependencies = {},
-): SessionShareRecord {
-    const sessionStore = dependencies.sessionStore ?? createDefaultSessionStore();
+): Promise<SessionShareRecord> {
     const shareStore = dependencies.shareStore ?? createDefaultShareStore();
+    const rollbackStore = dependencies.rollbackStore ?? createDefaultRollbackStore();
     const resolvedDir = path.resolve(options.dir);
-    const resolved = resolveSessionForExport(sessionStore, sessionId, resolvedDir);
-    const payload = options.format === 'json'
-        ? JSON.stringify(createSessionExportDocument(resolved.summary, resolved.session), null, 2)
-        : renderSessionMarkdown(resolved.summary, resolved.session);
-    const share = shareStore.createShare({
-        sessionId: resolved.summary.id,
-        projectRoot: resolved.summary.projectRoot,
-        title: resolved.summary.title,
-        format: options.format,
-        content: payload,
-    });
+    const kernelHandle = dependencies.sessionStore
+        ? null
+        : openDefaultRuntimeSessionKernel({
+            projectRoot: resolvedDir,
+            model: 'unknown',
+        });
 
-    logger.success(`已创建本地 share: ${share.id}`);
-    logger.info(`Artifact: ${share.artifactPath} (${share.format})`);
-    logger.info(`Share URL: ${buildShareUrl(share.id)}`);
-    return share;
+    try {
+        const sessionStore = dependencies.sessionStore ?? kernelHandle!.kernel;
+        const resolved = await resolveSessionForExport(sessionStore, sessionId, resolvedDir);
+        const payload = options.format === 'bundle'
+            ? JSON.stringify(createSessionReplayBundleDocument({
+                summary: resolved.summary,
+                session: resolved.session,
+                rollbackStore,
+            }), null, 2)
+            : options.format === 'json'
+                ? JSON.stringify(createSessionExportDocument(resolved.summary, resolved.session), null, 2)
+                : renderSessionMarkdown(resolved.summary, resolved.session);
+        const share = shareStore.createShare({
+            sessionId: resolved.summary.id,
+            projectRoot: resolved.summary.projectRoot,
+            title: resolved.summary.title,
+            format: options.format,
+            content: payload,
+        });
+
+        logger.success(`已创建本地 share: ${share.id}`);
+        logger.info(`Artifact: ${share.artifactPath} (${share.format})`);
+        logger.info(`Share URL: ${buildShareUrl(share.id)}`);
+        return share;
+    } finally {
+        kernelHandle?.close();
+    }
 }
 
 export function runListSharesCommand(
@@ -217,12 +235,12 @@ export const shareCommand = createShareCommand();
 
 export { FileSessionShareStore } from '../session-assets.js';
 
-function createDefaultSessionStore(): AgentSessionStore {
-    return new SQLiteSessionStore(getXQoderPaths().sessionDbFile);
-}
-
 function createDefaultShareStore(): SessionShareStore {
     return new FileSessionShareStore(getXQoderPaths().shareDir);
+}
+
+function createDefaultRollbackStore(): Pick<RollbackStore, 'listPoints' | 'getPointDetails'> {
+    return new FileRollbackStore(getXQoderPaths().rollbackDir);
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {

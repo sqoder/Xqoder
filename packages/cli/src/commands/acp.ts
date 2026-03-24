@@ -14,12 +14,21 @@ import {
     type PermissionSettings,
 } from '@xqoder/shared';
 import {
-    XQoderAgent,
+    type ClosableSessionStore,
+    type AgentConfig,
+    type XQoderAgentProviderOptions,
     buildAgentConfigFromXQoderConfig,
     SQLiteSessionStore,
+    type RuntimeAgentSessionStore,
     listBuiltInAgents,
 } from '@xqoder/agent';
+import { InMemorySessionStore, RuntimeKernel, type SessionRecord } from '@xqoder/runtime';
 import { buildChatSystemPrompt } from '../services/chat-service.js';
+import { createRuntimeSessionKernel } from '../services/runtime-session-kernel.js';
+import { resolveSessionForReuse } from '../services/session-resolve.js';
+import { loadBuiltInRuntimePlugins } from '../tui/runtime-plugin-loader.js';
+
+type AcpSessionStore = RuntimeAgentSessionStore & ClosableSessionStore;
 
 /** ACP 请求（JSON-RPC 2.0 风格，id 可为 string 或 number） */
 interface AcpRequest {
@@ -45,6 +54,14 @@ interface AcpNotification {
             content: { type: 'text'; text: string };
         };
     };
+}
+
+interface AcpSessionDependencies {
+    loadConfig?: Pick<typeof configManager, 'load'>['load'];
+    createSessionStore?: (dbPath: string) => AcpSessionStore;
+    createAgent?: XQoderAgentProviderOptions['createAgent'];
+    emitUpdate?: (notification: AcpNotification) => void;
+    emitToken?: (token: string) => void;
 }
 
 function sendResponse(response: AcpResponse): void {
@@ -73,6 +90,272 @@ const ACP_SLASH_COMMANDS = [
 
 function getSessionDbPath(cwd: string): string {
     return path.join(path.resolve(cwd), '.xqoder', 'data', 'sessions.sqlite');
+}
+
+function readSessionTitle(record: SessionRecord): string | undefined {
+    return record.title && record.title.length > 0 ? record.title : undefined;
+}
+
+function openAcpSessionStore(
+    resolvedCwd: string,
+    createSessionStore: AcpSessionDependencies['createSessionStore'] = (dbPath) => new SQLiteSessionStore(dbPath),
+): AcpSessionStore {
+    return createSessionStore(getSessionDbPath(resolvedCwd));
+}
+
+export async function runAcpSessionNew(
+    params: Record<string, unknown> | undefined,
+    baseCwd: string,
+    dependencies: AcpSessionDependencies = {},
+): Promise<{ sessionId: string }> {
+    const cwd = (params?.cwd as string) || baseCwd;
+    const resolvedCwd = path.resolve(cwd);
+    const loadedConfig = (dependencies.loadConfig ?? configManager.load)({ cwd: resolvedCwd });
+    const { config } = resolveConfigWithEnvOverrides(loadedConfig);
+    const model = config.llm?.model ?? 'openai/gpt-4o';
+    const title = typeof params?.title === 'string' && params.title.trim().length > 0 ? params.title.trim() : undefined;
+    const store = openAcpSessionStore(resolvedCwd, dependencies.createSessionStore);
+    try {
+        const kernel = createRuntimeSessionKernel(store, {
+            projectRoot: resolvedCwd,
+            model,
+        });
+        const record = await kernel.createSession({
+            cwd: resolvedCwd,
+            projectRoot: resolvedCwd,
+            model,
+            title,
+        });
+        return { sessionId: record.id };
+    } finally {
+        store.close();
+    }
+}
+
+export async function runAcpSessionList(
+    params: Record<string, unknown> | undefined,
+    baseCwd: string,
+    dependencies: AcpSessionDependencies = {},
+): Promise<{ sessions: Array<{ sessionId: string; cwd: string; title?: string; updatedAt: string; _meta: unknown }>; nextCursor: undefined }> {
+    const cwd = (params?.cwd as string) || baseCwd;
+    const resolvedCwd = path.resolve(cwd);
+    const limit = typeof params?.limit === 'number'
+        ? Math.min(Math.max(1, params.limit), 100)
+        : LIST_PAGE_SIZE;
+    const store = openAcpSessionStore(resolvedCwd, dependencies.createSessionStore);
+    try {
+        const kernel = createRuntimeSessionKernel(store, {
+            projectRoot: resolvedCwd,
+            model: 'unknown',
+        });
+        const list = await kernel.listSessions({ projectRoot: resolvedCwd, limit });
+        return {
+            sessions: list.map((record) => ({
+                sessionId: record.id,
+                cwd: record.cwd,
+                title: readSessionTitle(record),
+                updatedAt: new Date(record.updatedAt).toISOString(),
+                _meta: undefined as unknown,
+            })),
+            nextCursor: undefined,
+        };
+    } finally {
+        store.close();
+    }
+}
+
+export async function runAcpSessionPrompt(
+    params: Record<string, unknown> | undefined,
+    baseCwd: string,
+    dependencies: AcpSessionDependencies = {},
+): Promise<{ stopReason: 'complete' }> {
+    const sessionId = params?.sessionId as string;
+    const content = params?.content as unknown[];
+    if (!sessionId || !Array.isArray(content)) {
+        throw new Error('Missing sessionId or content');
+    }
+
+    const cwd = (params?.cwd as string) || baseCwd;
+    const resolvedCwd = path.resolve(cwd);
+    const prompt = contentBlocksToPrompt(content);
+    if (!prompt.trim()) {
+        throw new Error('Empty prompt content');
+    }
+
+    const loadedConfig = (dependencies.loadConfig ?? configManager.load)({ cwd: resolvedCwd });
+    const { config } = resolveConfigWithEnvOverrides(loadedConfig);
+    const sandbox = config.sandbox ?? { mode: 'project', allowedPaths: [] };
+    const store = openAcpSessionStore(resolvedCwd, dependencies.createSessionStore);
+    const emitUpdate = dependencies.emitUpdate ?? sendNotification;
+
+    try {
+        const session = await resolveSessionForReuse(store, {
+            projectRoot: resolvedCwd,
+            sessionId,
+            newSession: false,
+        });
+        if (!session) {
+            throw new Error(`Session not found: ${sessionId}`);
+        }
+
+        const agentConfig = buildAgentConfigFromXQoderConfig(config, {
+            cwd: resolvedCwd,
+            projectRoot: resolvedCwd,
+            promptAppendix: buildChatSystemPrompt(sandbox),
+            session,
+        });
+
+        const kernel = createRuntimeSessionKernel(store, {
+            projectRoot: resolvedCwd,
+            model: agentConfig.llmConfig.model,
+        });
+        let pendingAgentConfig: AgentConfig | null = null;
+        await loadBuiltInRuntimePlugins(kernel, {
+            resolveAgentConfig: async () => {
+                if (!pendingAgentConfig) {
+                    throw new Error('No pending agent configuration');
+                }
+                return pendingAgentConfig;
+            },
+            ...(dependencies.createAgent ? { createAgent: dependencies.createAgent } : {}),
+        });
+        pendingAgentConfig = {
+            ...agentConfig,
+            cwd: resolvedCwd,
+            projectRoot: resolvedCwd,
+            session,
+        };
+
+        let sawAssistantDelta = false;
+        let runtimeError: Error | null = null;
+
+        for await (const event of kernel.runAgent('xqoder-agent', {
+            prompt,
+            messages: [],
+        }, {
+            sessionId,
+            cwd: resolvedCwd,
+            permissionPolicy: {
+                evaluate: async () => 'allow' as const,
+            },
+        })) {
+            if (event.type === 'message.delta' && event.role === 'assistant') {
+                sawAssistantDelta = true;
+                emitUpdate({
+                    method: 'session/update',
+                    params: {
+                        sessionId,
+                        update: {
+                            sessionUpdate: 'agent_message_chunk',
+                            content: { type: 'text', text: event.text },
+                        },
+                    },
+                });
+            }
+
+            if (event.type === 'message.completed' && event.message.role === 'assistant' && !sawAssistantDelta) {
+                emitUpdate({
+                    method: 'session/update',
+                    params: {
+                        sessionId,
+                        update: {
+                            sessionUpdate: 'agent_message_chunk',
+                            content: { type: 'text', text: event.message.content },
+                        },
+                    },
+                });
+            }
+
+            if (event.type === 'error') {
+                runtimeError = new Error(event.message);
+            }
+        }
+
+        if (runtimeError) {
+            throw runtimeError;
+        }
+
+        return { stopReason: 'complete' };
+    } finally {
+        store.close();
+    }
+}
+
+export async function runAcpChat(
+    params: Record<string, unknown> | undefined,
+    baseCwd: string,
+    dependencies: AcpSessionDependencies = {},
+): Promise<{ type: 'complete'; content: string }> {
+    const message = String(params?.message ?? '');
+    if (!message.trim()) {
+        throw new Error('Missing message param');
+    }
+
+    const loadedConfig = (dependencies.loadConfig ?? configManager.load)({ cwd: baseCwd });
+    const { config } = resolveConfigWithEnvOverrides(loadedConfig);
+    const sandbox = config.sandbox ?? { mode: 'project', allowedPaths: [] };
+    const agentConfig = buildAgentConfigFromXQoderConfig(config, {
+        cwd: baseCwd,
+        projectRoot: baseCwd,
+        promptAppendix: buildChatSystemPrompt(sandbox),
+    });
+
+    const kernel = new RuntimeKernel({
+        sessionStore: new InMemorySessionStore(),
+        permissionPolicy: {
+            evaluate: async () => 'allow' as const,
+        },
+    });
+
+    let pendingAgentConfig: AgentConfig | null = null;
+    await loadBuiltInRuntimePlugins(kernel, {
+        resolveAgentConfig: async () => {
+            if (!pendingAgentConfig) {
+                throw new Error('No pending agent configuration');
+            }
+            return pendingAgentConfig;
+        },
+        ...(dependencies.createAgent ? { createAgent: dependencies.createAgent } : {}),
+    });
+    pendingAgentConfig = {
+        ...agentConfig,
+        cwd: baseCwd,
+        projectRoot: baseCwd,
+    };
+
+    let response = '';
+    let sawAssistantDelta = false;
+    let runtimeError: Error | null = null;
+    const emitToken = dependencies.emitToken ?? (() => {});
+
+    for await (const event of kernel.runAgent('xqoder-agent', {
+        prompt: message,
+        messages: [],
+    }, {
+        sessionId: `acp-chat-${Date.now()}`,
+        cwd: baseCwd,
+        permissionPolicy: {
+            evaluate: async () => 'allow' as const,
+        },
+    })) {
+        if (event.type === 'message.delta' && event.role === 'assistant') {
+            sawAssistantDelta = true;
+            response += event.text;
+            emitToken(event.text);
+        }
+        if (event.type === 'message.completed' && event.message.role === 'assistant' && !sawAssistantDelta) {
+            response = event.message.content;
+        }
+        if (event.type === 'error') {
+            runtimeError = new Error(event.message);
+        }
+    }
+
+    if (runtimeError) {
+        throw runtimeError;
+    }
+
+    return { type: 'complete', content: response };
 }
 
 /** 从 ACP ContentBlock[] 提取纯文本（仅支持 type: "text"） */
@@ -177,37 +460,17 @@ export const acpCommand = new Command('acp')
                     }
 
                     case 'session/new': {
-                        const cwd = (request.params?.cwd as string) || baseCwd;
-                        const resolvedCwd = path.resolve(cwd);
-                        const loadedConfig = configManager.load({ cwd: resolvedCwd });
-                        const { config } = resolveConfigWithEnvOverrides(loadedConfig);
-                        const model = config.llm?.model ?? 'openai/gpt-4o';
-                        const store = new SQLiteSessionStore(getSessionDbPath(resolvedCwd));
-                        const summary = store.createEmptySession(resolvedCwd, model);
-                        store.close();
-                        sendResponse({ id, result: { sessionId: summary.id } });
+                        sendResponse({
+                            id,
+                            result: await runAcpSessionNew(request.params, baseCwd),
+                        });
                         break;
                     }
 
                     case 'session/list': {
-                        const cwd = (request.params?.cwd as string) || baseCwd;
-                        const resolvedCwd = path.resolve(cwd);
-                        const limit = typeof request.params?.limit === 'number'
-                            ? Math.min(Math.max(1, request.params.limit), 100)
-                            : LIST_PAGE_SIZE;
-                        const store = new SQLiteSessionStore(getSessionDbPath(resolvedCwd));
-                        const list = store.listSessions(resolvedCwd, limit);
-                        store.close();
-                        const sessions = list.map((s) => ({
-                            sessionId: s.id,
-                            cwd: s.cwd,
-                            title: s.title ?? undefined,
-                            updatedAt: s.updatedAt.toISOString(),
-                            _meta: undefined as unknown,
-                        }));
                         sendResponse({
                             id,
-                            result: { sessions, nextCursor: undefined },
+                            result: await runAcpSessionList(request.params, baseCwd),
                         });
                         break;
                     }
@@ -222,7 +485,11 @@ export const acpCommand = new Command('acp')
                             break;
                         }
                         const store = new SQLiteSessionStore(getSessionDbPath(resolvedCwd));
-                        const session = store.getSession(sessionId);
+                        const session = await resolveSessionForReuse(store, {
+                            projectRoot: resolvedCwd,
+                            sessionId,
+                            newSession: false,
+                        });
                         if (!session) {
                             store.close();
                             sendResponse({ id, error: { code: -32602, message: `Session not found: ${sessionId}` } });
@@ -268,61 +535,19 @@ export const acpCommand = new Command('acp')
                     }
 
                     case 'session/prompt': {
-                        const sessionId = request.params?.sessionId as string;
-                        const content = request.params?.content as unknown[];
-                        if (!sessionId || !Array.isArray(content)) {
-                            sendResponse({ id, error: { code: -32602, message: 'Missing sessionId or content' } });
-                            break;
-                        }
-                        const cwd = (request.params?.cwd as string) || baseCwd;
-                        const resolvedCwd = path.resolve(cwd);
-                        const prompt = contentBlocksToPrompt(content);
-                        if (!prompt.trim()) {
-                            sendResponse({ id, error: { code: -32602, message: 'Empty prompt content' } });
-                            break;
-                        }
-                        const loadedConfig = configManager.load({ cwd: resolvedCwd });
-                        const { config } = resolveConfigWithEnvOverrides(loadedConfig);
-                        const sandbox = config.sandbox ?? { mode: 'project', allowedPaths: [] };
-                        const store = new SQLiteSessionStore(getSessionDbPath(resolvedCwd));
-                        const session = store.getSession(sessionId);
-                        if (!session) {
-                            store.close();
-                            sendResponse({ id, error: { code: -32602, message: `Session not found: ${sessionId}` } });
-                            break;
-                        }
-                        const agentConfig = buildAgentConfigFromXQoderConfig(config, {
-                            cwd: resolvedCwd,
-                            projectRoot: resolvedCwd,
-                            promptAppendix: buildChatSystemPrompt(sandbox),
-                            session,
-                        });
-                        const agent = new XQoderAgent(agentConfig);
                         try {
-                            await agent.run(prompt, {
-                                onToken: (token: string) => {
-                                    sendNotification({
-                                        method: 'session/update',
-                                        params: {
-                                            sessionId,
-                                            update: {
-                                                sessionUpdate: 'agent_message_chunk',
-                                                content: { type: 'text', text: token },
-                                            },
-                                        },
-                                    });
-                                },
+                            const result = await runAcpSessionPrompt(request.params, baseCwd, {
+                                emitUpdate: sendNotification,
                             });
-                            store.saveSession({
-                                session: agent.getSession(),
-                                projectRoot: resolvedCwd,
-                                cwd: resolvedCwd,
-                                model: agentConfig.llmConfig.model,
-                            });
-                            sendResponse({ id, result: { stopReason: 'complete' } });
-                        } finally {
-                            store.close();
-                            await agent.dispose?.();
+                            sendResponse({ id, result });
+                        } catch (error) {
+                            const message = error instanceof Error ? error.message : String(error);
+                            const code = message.startsWith('Missing sessionId or content')
+                                || message.startsWith('Empty prompt content')
+                                || message.startsWith('Session not found:')
+                                ? -32602
+                                : -32000;
+                            sendResponse({ id, error: { code, message } });
                         }
                         break;
                     }
@@ -406,32 +631,21 @@ export const acpCommand = new Command('acp')
 
                     // 兼容旧版单轮 chat（无 session）
                     case 'chat': {
-                        const message = String(request.params?.message ?? '');
-                        if (!message.trim()) {
-                            sendResponse({ id, error: { code: -32602, message: 'Missing message param' } });
-                            break;
+                        try {
+                            const result = await runAcpChat(request.params, baseCwd, {
+                                emitToken: (token) => {
+                                    process.stdout.write(JSON.stringify({
+                                        id,
+                                        result: { type: 'token', content: token },
+                                    }) + '\n');
+                                },
+                            });
+                            sendResponse({ id, result });
+                        } catch (error) {
+                            const message = error instanceof Error ? error.message : String(error);
+                            const code = message.startsWith('Missing message param') ? -32602 : -32000;
+                            sendResponse({ id, error: { code, message } });
                         }
-                        const loadedConfig = configManager.load({ cwd: baseCwd });
-                        const { config } = resolveConfigWithEnvOverrides(loadedConfig);
-                        const sandbox = config.sandbox ?? { mode: 'project', allowedPaths: [] };
-                        const agentConfig = buildAgentConfigFromXQoderConfig(config, {
-                            cwd: baseCwd,
-                            projectRoot: baseCwd,
-                            promptAppendix: buildChatSystemPrompt(sandbox),
-                        });
-                        const agent = new XQoderAgent(agentConfig);
-                        const tokens: string[] = [];
-                        const response = await agent.run(message, {
-                            onToken: (token: string) => {
-                                tokens.push(token);
-                                process.stdout.write(JSON.stringify({
-                                    id,
-                                    result: { type: 'token', content: token },
-                                }) + '\n');
-                            },
-                        });
-                        await agent.dispose?.();
-                        sendResponse({ id, result: { type: 'complete', content: response } });
                         break;
                     }
 

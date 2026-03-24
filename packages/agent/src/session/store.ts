@@ -1,14 +1,17 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import type { LLMMessage } from '@xqoder/shared';
 import {
     AgentSession,
     normalizeSessionMetadataSnapshot,
+    type AgentSessionSnapshot,
     type AgentSessionMetadataSnapshot,
     type AgentSessionUsage,
 } from './session.js';
 import { requireNodeSqlite } from './sqlite.js';
 import { runMigrations } from './migrations.js';
+import { syncProjectMemoryFromSession } from '../project-memory.js';
 import { sanitizeForPersistence, sanitizeMessageForPersistence } from './sanitize.js';
 
 export interface PersistedSessionSummary {
@@ -42,17 +45,41 @@ export interface SaveSessionInput {
     options?: SaveSessionOptions;
 }
 
-export interface AgentSessionStore {
-    getSession(sessionId: string): AgentSession | null;
+export interface AppendSessionMessageInput {
+    sessionId: string;
+    message: LLMMessage;
+    projectRoot: string;
+    cwd: string;
+    model: string;
+    title?: string;
+    options?: SaveSessionOptions;
+}
+
+/** 只读 session 视图，供 export/share/session show/stats 等链路使用。 */
+export interface SessionReadStore {
+    getSessionSnapshot(sessionId: string): AgentSessionSnapshot | null;
     getSessionSummary(sessionId: string): PersistedSessionSummary | null;
-    findLatestSession(projectRoot: string): AgentSession | null;
     listSessions(projectRoot?: string, limit?: number): PersistedSessionSummary[];
-    saveSession(input: SaveSessionInput): PersistedSessionSummary;
-    updateSessionTitle(sessionId: string, title: string): PersistedSessionSummary;
-    createEmptySession(projectRoot: string, model: string, title?: string): PersistedSessionSummary;
+}
+
+/** Runtime / kernel 真实依赖的最小 session 能力面。 */
+export interface RuntimeAgentSessionStore extends Pick<SessionReadStore, 'getSessionSnapshot' | 'getSessionSummary' | 'listSessions'> {
+    /** RuntimeKernel 唯一会话快照写入口 */
+    saveSessionSnapshot(input: SaveSessionInput): PersistedSessionSummary;
+    /** RuntimeKernel 唯一增量消息写入口 */
+    appendSessionMessage(input: AppendSessionMessageInput): PersistedSessionSummary;
+}
+
+export interface SessionAdminStore {
     deleteSession(sessionId: string): void;
+}
+
+export interface ClosableSessionStore {
     close(): void;
 }
+
+export interface AgentSessionStore
+    extends SessionReadStore, RuntimeAgentSessionStore, SessionAdminStore, ClosableSessionStore {}
 
 export class SQLiteSessionStore implements AgentSessionStore {
     private readonly db: DatabaseSync;
@@ -72,7 +99,7 @@ export class SQLiteSessionStore implements AgentSessionStore {
         runMigrations(this.db);
     }
 
-    getSession(sessionId: string): AgentSession | null {
+    getSessionSnapshot(sessionId: string): AgentSessionSnapshot | null {
         const row = this.getSessionRow(sessionId);
         if (!row) {
             return null;
@@ -86,7 +113,7 @@ export class SQLiteSessionStore implements AgentSessionStore {
         `).all(sessionId) as Array<{ message_json: string }>;
         const parsed = parseSessionRow(row);
 
-        return AgentSession.fromSnapshot({
+        return {
             id: parsed.summary.id,
             title: parsed.summary.title,
             createdAt: parsed.summary.createdAt,
@@ -94,7 +121,7 @@ export class SQLiteSessionStore implements AgentSessionStore {
             messages: rows.map((entry) => JSON.parse(entry.message_json)),
             usage: parsed.summary.usage,
             metadata: parsed.metadata,
-        });
+        };
     }
 
     getSessionSummary(sessionId: string): PersistedSessionSummary | null {
@@ -104,22 +131,6 @@ export class SQLiteSessionStore implements AgentSessionStore {
         }
 
         return parseSessionRow(row).summary;
-    }
-
-    findLatestSession(projectRoot: string): AgentSession | null {
-        const row = this.db.prepare(`
-            SELECT id
-            FROM sessions
-            WHERE project_root = ?
-            ORDER BY updated_at DESC, rowid DESC
-            LIMIT 1
-        `).get(path.resolve(projectRoot)) as { id: string } | undefined;
-
-        if (!row) {
-            return null;
-        }
-
-        return this.getSession(row.id);
     }
 
     listSessions(projectRoot?: string, limit: number = 20): PersistedSessionSummary[] {
@@ -142,7 +153,35 @@ export class SQLiteSessionStore implements AgentSessionStore {
         return (rows as SessionRow[]).map((row) => parseSessionRow(row).summary);
     }
 
-    saveSession(input: SaveSessionInput): PersistedSessionSummary {
+    saveSessionSnapshot(input: SaveSessionInput): PersistedSessionSummary {
+        return this.persistSessionSnapshot(input);
+    }
+
+    appendSessionMessage(input: AppendSessionMessageInput): PersistedSessionSummary {
+        const currentSnapshot = this.getSessionSnapshot(input.sessionId);
+        const next = currentSnapshot
+            ? AgentSession.fromSnapshot(currentSnapshot)
+            : new AgentSession({
+                id: input.sessionId,
+                ...(input.title?.trim() ? { title: input.title.trim() } : {}),
+            });
+
+        next.addMessage(input.message);
+        if (input.title?.trim()) {
+            next.setTitle(input.title.trim());
+        }
+
+        return this.saveSessionSnapshot({
+            session: next,
+            projectRoot: input.projectRoot,
+            cwd: input.cwd,
+            model: input.model,
+            title: input.title,
+            options: input.options,
+        });
+    }
+
+    private persistSessionSnapshot(input: SaveSessionInput): PersistedSessionSummary {
         const snapshot = input.session.toSnapshot();
         const projectRoot = path.resolve(input.projectRoot);
         const cwd = path.resolve(input.cwd);
@@ -229,64 +268,9 @@ export class SQLiteSessionStore implements AgentSessionStore {
             throw new Error(`无法重新加载已保存的会话: ${snapshot.id}`);
         }
 
-        return summary;
-    }
-
-    updateSessionTitle(sessionId: string, title: string): PersistedSessionSummary {
-        const normalizedTitle = title.trim();
-        if (!normalizedTitle) {
-            throw new Error('session title cannot be empty');
-        }
-
-        const existing = this.getSessionRow(sessionId);
-        if (!existing) {
-            throw new Error(`未找到指定 session: ${sessionId}`);
-        }
-
-        this.db.prepare(`
-            UPDATE sessions
-            SET title = ?, updated_at = ?
-            WHERE id = ?
-        `).run(normalizedTitle, new Date().toISOString(), sessionId);
-
-        const summary = this.getSessionSummary(sessionId);
-        if (!summary) {
-            throw new Error(`无法重新加载已更新标题的会话: ${sessionId}`);
-        }
+        syncProjectMemoryFromSession(projectRoot, input.session, new Date(now));
 
         return summary;
-    }
-
-    createEmptySession(projectRoot: string, model: string, title?: string): PersistedSessionSummary {
-        const id = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const now = new Date().toISOString();
-        const resolvedRoot = path.resolve(projectRoot);
-        const sessionTitle = title ?? 'New Session';
-
-        this.db.prepare(`
-            INSERT INTO sessions
-                (id, project_root, cwd, model, title, created_at, updated_at,
-                 max_messages, message_count, prompt_tokens, completion_tokens,
-                 total_tokens, last_user_message, session_metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 100, 0, 0, 0, 0, NULL, '{}')
-        `).run(id, resolvedRoot, resolvedRoot, model, sessionTitle, now, now);
-
-        const nowDate = new Date(now);
-        return {
-            id,
-            projectRoot: resolvedRoot,
-            cwd: resolvedRoot,
-            model,
-            title: sessionTitle,
-            createdAt: nowDate,
-            updatedAt: nowDate,
-            maxMessages: 100,
-            messageCount: 0,
-            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-            compactionCount: 0,
-            commandCount: 0,
-            fileChangeCount: 0,
-        };
     }
 
     deleteSession(sessionId: string): void {
