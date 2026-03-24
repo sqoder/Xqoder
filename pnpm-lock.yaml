@@ -275,6 +275,15 @@ importers:
 
   packages/runtime:
     dependencies:
+      '@xqoder/permissions':
+        specifier: workspace:*
+        version: link:../permissions
+      '@xqoder/plugin-sdk':
+        specifier: workspace:*
+        version: link:../plugin-sdk
+      '@xqoder/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@xqoder/shared':
         specifier: workspace:*
         version: link:../shared
