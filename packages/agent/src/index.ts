@@ -20,8 +20,7 @@ export {
     type ResolvedAgentRuntimeConfig,
 } from './agents.js';
 export { type ILLMProvider, BaseLLMProvider, type CompletionRequest, type CompletionResponse } from './llm/provider.js';
-export { OpenAIProvider } from '@xqoder/provider-openai';
-export { AnthropicProvider } from '@xqoder/provider-anthropic';
+export { OpenAIProvider, AnthropicProvider } from './llm/providers/index.js';
 export { DashScopeProvider } from './llm/dashscope.js';
 export { GeminiProvider } from './llm/gemini.js';
 export { AzureOpenAIProvider } from './llm/azure.js';
@@ -91,15 +90,27 @@ export {
     type AgentCommandHistoryEntry,
     type AgentFileChangeEntry,
     type AgentSessionCompaction,
+    type AgentSessionFixHistorySnapshot,
+    type AgentSessionFixHistoryWindow,
     type AgentSessionMetadataSnapshot,
+    type AgentSessionFixRun,
     type AgentSessionSnapshot,
     type AgentSessionUsage,
     type AgentToolExecution,
 } from './session/session.js';
 export {
+    createProjectMemorySessionSummary,
+    syncProjectMemoryFromSession,
+} from './project-memory.js';
+export {
     SQLiteSessionStore,
+    type AppendSessionMessageInput,
     type AgentSessionStore,
+    type ClosableSessionStore,
     type PersistedSessionSummary,
+    type RuntimeAgentSessionStore,
+    type SessionAdminStore,
+    type SessionReadStore,
     type SaveSessionInput,
     type SaveSessionOptions,
 } from './session/store.js';
@@ -134,3 +145,4 @@ export {
     type FileVersion,
     type FileHistoryStore,
 } from './session/file-history.js';
+export * from './deploy/index.js';

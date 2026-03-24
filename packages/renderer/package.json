@@ -1,0 +1,22 @@
+{
+  "name": "@xqoder/renderer",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "index.*.node"
+  ],
+  "scripts": {
+    "build": "napi build --platform --release && node ../../scripts/postbuild-renderer.mjs",
+    "build:debug": "napi build --platform && node ../../scripts/postbuild-renderer.mjs"
+  },
+  "dependencies": {
+    "@node-rs/helper": "^1.3.3"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4"
+  }
+}

@@ -1,29 +1,14 @@
-import * as http from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { RemoteTuiAgentService, type TuiAgentSettings } from './agent-service.js';
+import { createInMemoryFetch } from '../server/in-memory-client.js';
 
-async function readBody(req: http.IncomingMessage): Promise<string> {
+async function readBody(req: import('node:http').IncomingMessage): Promise<string> {
     return new Promise((resolve, reject) => {
         const chunks: Buffer[] = [];
         req.on('data', (chunk) => chunks.push(chunk));
         req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
         req.on('error', reject);
     });
-}
-
-async function listen(server: http.Server): Promise<{ baseUrl: string; close: () => Promise<void> }> {
-    await new Promise<void>((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(0, '127.0.0.1', () => resolve());
-    });
-    const address = server.address();
-    if (!address || typeof address === 'string') {
-        throw new Error('Unexpected server address');
-    }
-    return {
-        baseUrl: `http://127.0.0.1:${address.port}`,
-        close: () => new Promise<void>((resolve) => server.close(() => resolve())),
-    };
 }
 
 function defaultSettings(): TuiAgentSettings {
@@ -36,20 +21,13 @@ function defaultSettings(): TuiAgentSettings {
 }
 
 describe('RemoteTuiAgentService reliability', () => {
-    const cleanup: Array<() => Promise<void>> = [];
-
-    afterEach(async () => {
-        while (cleanup.length > 0) {
-            const fn = cleanup.pop();
-            if (fn) await fn();
-        }
-    });
+    afterEach(async () => {});
 
     it('reconnects with streamId/cursor after network drop', async () => {
         const requestBodies: Array<Record<string, unknown>> = [];
         let callCount = 0;
 
-        const server = http.createServer(async (req, res) => {
+        const fetchImpl = createInMemoryFetch(async (req, res) => {
             const url = req.url ?? '/';
             if (req.method === 'POST' && url === '/session/s1/message/stream') {
                 const body = JSON.parse(await readBody(req)) as Record<string, unknown>;
@@ -103,11 +81,7 @@ describe('RemoteTuiAgentService reliability', () => {
             res.statusCode = 404;
             res.end('not found');
         });
-
-        const { baseUrl, close } = await listen(server);
-        cleanup.push(close);
-
-        const service = new RemoteTuiAgentService(baseUrl);
+        const service = new RemoteTuiAgentService('http://in-memory.test', undefined, { fetchImpl });
         await service.sendMessage('hello', 's1', defaultSettings(), [], {
             onEvent: () => {},
         });
@@ -122,7 +96,7 @@ describe('RemoteTuiAgentService reliability', () => {
         let resolved = false;
         let resolveCalled = false;
 
-        const server = http.createServer(async (req, res) => {
+        const fetchImpl = createInMemoryFetch(async (req, res) => {
             const url = req.url ?? '/';
             if (req.method === 'POST' && url === '/session/s1/message/stream') {
                 const body = JSON.parse(await readBody(req)) as Record<string, unknown>;
@@ -191,11 +165,7 @@ describe('RemoteTuiAgentService reliability', () => {
             res.statusCode = 404;
             res.end('not found');
         });
-
-        const { baseUrl, close } = await listen(server);
-        cleanup.push(close);
-
-        const service = new RemoteTuiAgentService(baseUrl);
+        const service = new RemoteTuiAgentService('http://in-memory.test', undefined, { fetchImpl });
         let releaseAnswer: ((value: { requestId: string; selected: string[] }) => void) | null = null;
 
         const sendPromise = service.sendMessage('hello', 's1', defaultSettings(), [], {
@@ -219,5 +189,49 @@ describe('RemoteTuiAgentService reliability', () => {
         answerResolver({ requestId: 'q1', selected: ['B'] });
         await sendPromise;
         expect(resolved).toBe(true);
+    });
+
+    it('fails gracefully after three reconnect attempts', async () => {
+        const requestBodies: Array<Record<string, unknown>> = [];
+        let callCount = 0;
+
+        const fetchImpl: typeof fetch = async (_input, init) => {
+            const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+            requestBodies.push(body);
+            callCount += 1;
+
+            if (callCount === 1) {
+                return new Response(`${JSON.stringify({
+                    type: 'event',
+                    streamId: 'stream-fail',
+                    seq: 1,
+                    cursor: 1,
+                    event: {
+                        type: 'status.changed',
+                        sessionId: 's1',
+                        timestamp: Date.now(),
+                        source: 'agent',
+                        status: 'thinking',
+                    },
+                })}\n`, {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8' },
+                });
+            }
+
+            throw new Error(`simulated reconnect drop #${callCount - 1}`);
+        };
+
+        const service = new RemoteTuiAgentService('http://in-memory.test', undefined, { fetchImpl });
+
+        await expect(service.sendMessage('hello', 's1', defaultSettings(), [], {
+            onEvent: () => {},
+        })).rejects.toThrow('Remote stream reconnection failed after 3 attempts');
+
+        expect(callCount).toBe(4);
+        expect(requestBodies[0]?.['message']).toBe('hello');
+        expect(requestBodies[1]).toMatchObject({ streamId: 'stream-fail', cursor: 1 });
+        expect(requestBodies[2]).toMatchObject({ streamId: 'stream-fail', cursor: 1 });
+        expect(requestBodies[3]).toMatchObject({ streamId: 'stream-fail', cursor: 1 });
     });
 });

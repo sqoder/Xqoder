@@ -1,6 +1,6 @@
 import type { LLMProviderConfig } from '@xqoder/shared';
 import { normalizeLLMConfig } from '@xqoder/shared';
-import { OpenAIProvider } from '@xqoder/provider-openai';
+import { OpenAIProvider } from './providers/index.js';
 
 export class DashScopeProvider extends OpenAIProvider {
     readonly name = 'dashscope';

@@ -13,8 +13,8 @@ describe('sessions command', () => {
         consoleLog.mockRestore();
     });
 
-    it('lists persisted sessions for the current project', () => {
-        runListSessionsCommand({
+    it('lists persisted sessions for the current project', async () => {
+        await runListSessionsCommand({
             dir: '/workspace/demo',
             limit: '5',
         }, {
@@ -40,8 +40,7 @@ describe('sessions command', () => {
                         fileChangeCount: 1,
                     },
                 ]),
-                findLatestSession: vi.fn(),
-                getSession: vi.fn(),
+                getSessionSnapshot: vi.fn(),
                 getSessionSummary: vi.fn(),
             },
         });
@@ -50,7 +49,7 @@ describe('sessions command', () => {
         expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('commands=2'));
     });
 
-    it('shows transcript and histories for a selected session', () => {
+    it('shows transcript and histories for a selected session', async () => {
         const session = new AgentSession({
             id: 'session_2',
             createdAt: new Date('2026-03-08T00:00:00.000Z'),
@@ -90,13 +89,13 @@ describe('sessions command', () => {
             },
         });
 
-        runShowSessionCommand('session_2', {
+        await runShowSessionCommand('session_2', {
             dir: '/workspace/demo',
             transcriptLimit: '10',
             historyLimit: '10',
         }, {
             sessionStore: {
-                getSession: vi.fn().mockReturnValue(session),
+                getSessionSnapshot: vi.fn().mockReturnValue(session.toSnapshot()),
                 getSessionSummary: vi.fn().mockReturnValue({
                     id: 'session_2',
                     projectRoot: '/workspace/demo',
@@ -118,7 +117,6 @@ describe('sessions command', () => {
                     lastUserMessage: '先运行测试',
                 }),
                 listSessions: vi.fn(),
-                findLatestSession: vi.fn(),
             },
         });
 

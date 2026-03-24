@@ -20,6 +20,33 @@ describe('input parser', () => {
         expect(parseInputChunk('\u001b[A')[0]).toMatchObject({ type: 'key', key: 'up' });
     });
 
+    it('parses Ctrl+letter shortcuts as key events with ctrl flag', () => {
+        expect(parseInputChunk('\u0005')).toEqual([
+            { type: 'key', key: 'e', ctrl: true, raw: '\u0005' },
+        ]);
+    });
+
+    it('parses modified Enter escape sequences', () => {
+        expect(parseInputChunk('\u001b[13;2u')).toEqual([
+            { type: 'key', key: 'enter', shift: true, raw: '\u001b[13;2u' },
+        ]);
+        expect(parseInputChunk('\u001b[13;5u')).toEqual([
+            { type: 'key', key: 'enter', ctrl: true, raw: '\u001b[13;5u' },
+        ]);
+        expect(parseInputChunk('\u001b\r')).toEqual([
+            { type: 'key', key: 'enter', alt: true, raw: '\u001b\r' },
+        ]);
+    });
+
+    it('parses alt+ctrl letter chords from ESC-prefixed control chars', () => {
+        expect(parseInputChunk('\u001b\u0007')).toEqual([
+            { type: 'key', key: 'g', ctrl: true, alt: true, raw: '\u001b\u0007' },
+        ]);
+        expect(parseInputChunk('\u001b\u0015')).toEqual([
+            { type: 'key', key: 'u', ctrl: true, alt: true, raw: '\u001b\u0015' },
+        ]);
+    });
+
     it('parses legacy mouse format (\\x1b[M + 3 bytes) for wheel', () => {
         const legacyWheelUp = '\u001b[M\x60\x20\x20';
         const events = parseInputChunk(legacyWheelUp);

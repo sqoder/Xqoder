@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import * as fs from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { Command } from 'commander';
 import {
@@ -154,6 +155,33 @@ export async function runRestoreRollbackCommand(
 }
 
 export const rollbacksCommand = createRollbacksCommand();
+
+/**
+ * TUI / UI 专用：无交互确认地恢复 rollback point，并返回恢复结果。
+ * 这能保证所有 rollback 入口逻辑统一走 rollbacks.ts。
+ */
+export function restoreRollbackPointUi(
+    rollbackId: string,
+    dependencies: RollbacksCommandDependencies = {},
+): RollbackPoint {
+    const rollbackStore = dependencies.rollbackStore ?? createDefaultRollbackStore();
+    return rollbackStore.restorePoint(rollbackId);
+}
+
+/**
+ * TUI / UI 专用：保留改动（丢弃 rollback 快照文件）。
+ * 由于当前 RollbackStore 接口没有 delete 方法，这里直接按 FileRollbackStore 的落盘规则删 JSON。
+ */
+export function keepRollbackPointUi(
+    rollbackId: string,
+): void {
+    const filePath = path.join(getXQoderPaths().rollbackDir, `${rollbackId}.json`);
+    try {
+        fs.unlinkSync(filePath);
+    } catch {
+        // ignore: 快照可能已不存在或已被其它逻辑清理
+    }
+}
 
 function createDefaultRollbackStore(): RollbackStore {
     return new FileRollbackStore(getXQoderPaths().rollbackDir);

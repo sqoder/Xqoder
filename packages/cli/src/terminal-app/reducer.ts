@@ -1,33 +1,89 @@
+import type { AppEvent } from '@xqoder/protocol';
 import type { TerminalAppState } from '../terminal-core/app-state.js';
 import { reduceEditorModel } from '../terminal-core/editor-model.js';
-import { getTranscriptHeight, reduceTerminalRuntimeResize, reduceProtocolEventToTerminalState, restoreTerminalHistory } from '../terminal-core/runtime-bridge.js';
-import { moveViewportModelToBottom, moveViewportModelToTop, pageViewportModel, scrollViewportModel, setViewportTopLine, syncViewportModel } from '../terminal-core/viewport-model.js';
+import { reduceTerminalRuntimeResize, reduceProtocolEventToTerminalState, reduceUiToolFeedbackToTerminalState, restoreTerminalHistory } from '../terminal-core/runtime-bridge.js';
 import { withDerivedChrome } from '../terminal-core/runtime-bridge.js';
 import type { TerminalCoreEvent } from '../terminal-core/types.js';
+import {
+    applyChatViewportIntent,
+    applyLogViewportScrollbar,
+    getChatViewportHeight,
+    getCompleteOverlayVisibleRowsForState,
+    moveChatViewportToBottom,
+    moveChatViewportToTop,
+    moveLogViewportEnd,
+    moveLogViewportHome,
+    pageChatViewport,
+    pageLogViewport,
+    scrollChatViewport,
+    scrollLogViewport,
+    setChatViewportTopLine,
+    setLogViewportTopLineIntent,
+    syncLogViewport,
+    syncTranscriptViewport,
+    withChatViewportProjection,
+    withLogViewportProjection,
+} from './reducer-viewport.js';
+import {
+    advanceArgumentsOverlay,
+    closeOverlay,
+    closeOverlayWithSelect,
+    collapseCompleteOverlay,
+    editArgumentsOverlay,
+    editFilepickerPath,
+    enterFilepickerDir,
+    expandCompleteOverlay,
+    filterCommandsOverlay,
+    goFilepickerParent,
+    moveOverlaySelection,
+    openOverlay,
+    scrollCompleteOverlayAt,
+    setCompleteOverlaySelected,
+    setFilepickerInputMode,
+    setOverlayModelProvider,
+} from './reducer-overlay.js';
 
 const VIEWPORT_SCROLL_STEP = 3;
 
+function applyRuntimeEvent(state: TerminalAppState, runtimeEvent: AppEvent): TerminalAppState {
+    let next = reduceProtocolEventToTerminalState(state, runtimeEvent);
+    if (runtimeEvent.type === 'tool.called') {
+        const args = runtimeEvent.args as Record<string, unknown> | undefined;
+        const pathVal = args?.path ?? args?.file_path ?? args?.filePath;
+        const pathStr = typeof pathVal === 'string' ? pathVal : undefined;
+        const fileTools = ['write_file', 'search_replace', 'patch_file', 'edit_file'];
+        if (pathStr && fileTools.includes(runtimeEvent.tool)) {
+            next = { ...next, modifiedFiles: next.modifiedFiles.includes(pathStr) ? next.modifiedFiles : [...next.modifiedFiles, pathStr] };
+        }
+    }
+    return syncTranscriptViewport(next);
+}
+
 export function reduceTerminalAppState(state: TerminalAppState, event: TerminalCoreEvent): TerminalAppState {
     switch (event.type) {
+        case 'viewport.sync':
+            return withChatViewportProjection(state);
+        case 'logViewport.sync':
+            return withLogViewportProjection(state);
         case 'approval.menu.move':
             return withDerivedChrome({
                 ...state,
-                pendingApproval: state.pendingApproval
-                    ? { ...state.pendingApproval, selectedIndex: event.selectedIndex }
-                    : state.pendingApproval,
+                approvalInput: state.pendingApproval
+                    ? { selectedIndex: event.selectedIndex }
+                    : state.approvalInput,
             });
         case 'question.menu.move':
             return withDerivedChrome({
                 ...state,
-                pendingQuestion: state.pendingQuestion
-                    ? { ...state.pendingQuestion, selectedIndex: event.selectedIndex }
-                    : state.pendingQuestion,
+                questionInput: state.pendingQuestion && state.questionInput
+                    ? { ...state.questionInput, selectedIndex: event.selectedIndex }
+                    : state.questionInput,
             });
         case 'question.toggle-option': {
-            if (!state.pendingQuestion) {
+            if (!state.pendingQuestion || !state.questionInput) {
                 return state;
             }
-            const selectedSet = new Set(state.pendingQuestion.selected);
+            const selectedSet = new Set(state.questionInput.selected);
             if (selectedSet.has(event.optionLabel)) {
                 selectedSet.delete(event.optionLabel);
             } else if (state.pendingQuestion.multiple) {
@@ -38,8 +94,8 @@ export function reduceTerminalAppState(state: TerminalAppState, event: TerminalC
             }
             return withDerivedChrome({
                 ...state,
-                pendingQuestion: {
-                    ...state.pendingQuestion,
+                questionInput: {
+                    ...state.questionInput,
                     selected: Array.from(selectedSet),
                 },
             });
@@ -47,67 +103,64 @@ export function reduceTerminalAppState(state: TerminalAppState, event: TerminalC
         case 'question.custom.append':
             return withDerivedChrome({
                 ...state,
-                pendingQuestion: state.pendingQuestion
-                    ? { ...state.pendingQuestion, customText: state.pendingQuestion.customText + event.text }
-                    : state.pendingQuestion,
+                questionInput: state.pendingQuestion && state.questionInput
+                    ? { ...state.questionInput, customText: state.questionInput.customText + event.text }
+                    : state.questionInput,
             });
         case 'question.custom.backspace':
             return withDerivedChrome({
                 ...state,
-                pendingQuestion: state.pendingQuestion
-                    ? { ...state.pendingQuestion, customText: state.pendingQuestion.customText.slice(0, -1) }
-                    : state.pendingQuestion,
+                questionInput: state.pendingQuestion && state.questionInput
+                    ? { ...state.questionInput, customText: state.questionInput.customText.slice(0, -1) }
+                    : state.questionInput,
             });
-        case 'resize': {
-            const th = getTranscriptHeight({ ...state, size: event.size });
-            const next = reduceTerminalRuntimeResize({
+        case 'diff.context.toggle':
+            {
+            const expanded = state.diffExpandedBlockIds.includes(event.blockId);
+            const nextExpanded = expanded
+                ? state.diffExpandedBlockIds.filter((id) => id !== event.blockId)
+                : [...state.diffExpandedBlockIds, event.blockId];
+            return withDerivedChrome({
                 ...state,
-                viewport: syncViewportModel(state.viewport, {
-                    lineCount: state.transcriptLines.length,
-                    previousLineCount: state.transcriptLines.length,
-                    height: th,
-                }),
-                logViewport: syncViewportModel(state.logViewport, {
-                    lineCount: state.logLines.length,
-                    previousLineCount: state.logLines.length,
-                    height: th,
-                }),
-            }, event.size);
-            const editorContentWidth = Math.max(10, event.size.width - 6);
-            return { ...next, editor: reduceEditorModel(next.editor, { type: 'set-content-width', width: editorContentWidth }) };
-        }
-        case 'runtime': {
-            let next = reduceProtocolEventToTerminalState(state, event.event);
-            if (event.event.type === 'tool.called') {
-                const ev = event.event;
-                const args = ev.args as Record<string, unknown> | undefined;
-                const pathVal = args?.path ?? args?.file_path ?? args?.filePath;
-                const pathStr = typeof pathVal === 'string' ? pathVal : undefined;
-                const fileTools = ['write_file', 'search_replace', 'patch_file', 'edit_file'];
-                if (pathStr && fileTools.includes(ev.tool)) {
-                    next = { ...next, modifiedFiles: next.modifiedFiles.includes(pathStr) ? next.modifiedFiles : [...next.modifiedFiles, pathStr] };
-                }
+                diffExpandedBlockIds: nextExpanded,
+                uiNotice: expanded ? 'Diff context folded' : 'Diff context expanded',
+            });
             }
-            const th = getTranscriptHeight(next);
-            return {
-                ...next,
-                viewport: syncViewportModel(next.viewport, {
-                    lineCount: next.transcriptLines.length,
-                    previousLineCount: state.transcriptLines.length,
-                    height: th,
-                }),
-            };
+        case 'context.group.toggle': {
+            const expanded = state.expandedContextGroupIds.includes(event.entryId);
+            const nextExpanded = expanded
+                ? state.expandedContextGroupIds.filter((id) => id !== event.entryId)
+                : [...state.expandedContextGroupIds, event.entryId];
+            return withDerivedChrome({
+                ...state,
+                expandedContextGroupIds: nextExpanded,
+                uiNotice: expanded ? 'Context group collapsed' : 'Context group expanded',
+            });
         }
+        case 'resize': {
+            const innerWidth = Math.max(20, event.size.width - 2);
+            const sidebarWidth = state.sidebar.length > 0
+                ? Math.max(22, Math.min(46, Math.round(innerWidth * 0.30)))
+                : 0;
+            const mainWidth = Math.max(20, innerWidth - sidebarWidth);
+            const editorContentWidth = Math.max(10, mainWidth - 8);
+            const next = reduceTerminalRuntimeResize(state, event.size);
+            const nextWithEditor = {
+                ...next,
+                editor: reduceEditorModel(next.editor, { type: 'set-content-width', width: editorContentWidth }),
+            };
+            return syncTranscriptViewport(syncLogViewport(nextWithEditor));
+        }
+        case 'runtime':
+            return applyRuntimeEvent(state, event.event);
+        case 'ui.tool.feedback.called':
+        case 'ui.tool.feedback.output':
+        case 'ui.tool.feedback.completed':
+            return syncTranscriptViewport(reduceUiToolFeedbackToTerminalState(state, event));
         case 'shell': {
             const newLogLines = event.chunk.split(/\n/);
             const logLines = [...state.logLines, ...newLogLines];
-            const th = getTranscriptHeight(state);
-            const nextLogViewport = syncViewportModel(state.logViewport, {
-                lineCount: logLines.length,
-                previousLineCount: state.logLines.length,
-                height: th,
-            });
-            return reduceProtocolEventToTerminalState({
+            const nextState = reduceProtocolEventToTerminalState({
                 ...state,
                 transcriptEntries: [...state.transcriptEntries, {
                     id: `shell:${event.commandId ?? 'default'}:${Date.now()}`,
@@ -115,7 +168,6 @@ export function reduceTerminalAppState(state: TerminalAppState, event: TerminalC
                     content: event.chunk,
                 }],
                 logLines,
-                logViewport: nextLogViewport,
             }, {
                 type: 'status.changed',
                 sessionId: state.activeSessionId ?? 'shell-session',
@@ -123,34 +175,71 @@ export function reduceTerminalAppState(state: TerminalAppState, event: TerminalC
                 source: 'runtime',
                 status: 'done',
             });
+            return syncLogViewport(nextState);
         }
         case 'viewport.scroll': {
-            const th = getTranscriptHeight(state);
-            return { ...state, viewport: scrollViewportModel(state.viewport, event.delta, state.transcriptLines.length, th) };
+            if (state.page === 'chat') {
+                return scrollChatViewport(state, event.delta);
+            }
+            return scrollLogViewport(state, event.delta);
         }
         case 'viewport.page': {
-            const th = getTranscriptHeight(state);
-            return { ...state, viewport: pageViewportModel(state.viewport, event.direction, state.transcriptLines.length, th) };
+            if (state.page === 'chat') {
+                return pageChatViewport(state, event.direction);
+            }
+            return pageLogViewport(state, event.direction);
         }
         case 'viewport.home':
-            return { ...state, viewport: moveViewportModelToTop(state.viewport) };
+            if (state.page === 'chat') {
+                return moveChatViewportToTop(state);
+            }
+            return moveLogViewportHome(state);
         case 'viewport.end': {
-            const th = getTranscriptHeight(state);
-            return { ...state, viewport: moveViewportModelToBottom(state.viewport, state.transcriptLines.length, th) };
+            if (state.page === 'chat') {
+                return moveChatViewportToBottom(state);
+            }
+            return moveLogViewportEnd(state);
         }
-        case 'viewport.topLine.set': {
-            const th = getTranscriptHeight(state);
-            return { ...state, viewport: setViewportTopLine(state.viewport, event.topLine, state.transcriptLines.length, th) };
+        case 'viewport.intent.setTopLine': {
+            if (state.page === 'chat') {
+                return setChatViewportTopLine(state, event.topLine);
+            }
+            return setLogViewportTopLineIntent(state, event.topLine);
+        }
+        case 'viewport.intent.scrollbar': {
+            if (state.page === 'chat') {
+                return applyChatViewportIntent(state, {
+                    kind: 'scrollbar',
+                    lineCount: state.transcriptLines.length,
+                    height: getChatViewportHeight(state),
+                    pointerRow: event.pointerRow,
+                    dragOffset: event.dragOffset ?? 0,
+                });
+            }
+            return applyLogViewportScrollbar(state, event.pointerRow, event.dragOffset ?? 0);
+        }
+        case 'viewport.intent.jump': {
+            if (state.page === 'chat') {
+                return applyChatViewportIntent(state, {
+                    kind: 'jump',
+                    lineCount: state.transcriptLines.length,
+                    height: getChatViewportHeight(state),
+                    targetLine: event.targetLine,
+                    anchorNumerator: event.anchorNumerator ?? 1,
+                    anchorDenominator: event.anchorDenominator ?? 3,
+                });
+            }
+            return state;
         }
         case 'viewport.selection.set':
             return {
                 ...state,
-                viewport: { ...state.viewport, selection: event.selection },
+                viewport: { ...state.viewport, selectedRange: event.selection },
             };
         case 'viewport.focusLine.set':
             return {
                 ...state,
-                viewport: { ...state.viewport, focusLine: event.line },
+                viewport: { ...state.viewport, anchorMessageId: event.line },
             };
         case 'input': {
             const input = event.input;
@@ -165,46 +254,158 @@ export function reduceTerminalAppState(state: TerminalAppState, event: TerminalC
                 return { ...state, editor: reduceEditorModel(state.editor, action) };
             }
             if (input.type === 'mouse') {
-                const th = getTranscriptHeight(state);
                 if (input.button === 'wheelUp') {
-                    return { ...state, viewport: scrollViewportModel(state.viewport, -VIEWPORT_SCROLL_STEP, state.transcriptLines.length, th) };
+                    if (state.page === 'chat') {
+                        return scrollChatViewport(state, -VIEWPORT_SCROLL_STEP);
+                    }
+                    return scrollLogViewport(state, -VIEWPORT_SCROLL_STEP);
                 }
                 if (input.button === 'wheelDown') {
-                    return { ...state, viewport: scrollViewportModel(state.viewport, VIEWPORT_SCROLL_STEP, state.transcriptLines.length, th) };
+                    if (state.page === 'chat') {
+                        return scrollChatViewport(state, VIEWPORT_SCROLL_STEP);
+                    }
+                    return scrollLogViewport(state, VIEWPORT_SCROLL_STEP);
                 }
                 return state;
             }
 
-            const transcriptHeight = getTranscriptHeight(state);
+            if (input.type === 'key' && input.ctrl && !input.alt) {
             switch (input.key) {
+                    case 'a':
+                        return { ...state, editor: reduceEditorModel(state.editor, { type: 'move-part-boundary', edge: 'start' }) };
+                    case 'e':
+                        return { ...state, editor: reduceEditorModel(state.editor, { type: 'move-part-boundary', edge: 'end' }) };
+                    case 'b':
+                        return { ...state, editor: reduceEditorModel(state.editor, { type: 'move-horizontal', delta: -1 }) };
+                    case 'f':
+                        return { ...state, editor: reduceEditorModel(state.editor, { type: 'move-horizontal', delta: 1 }) };
+                    case 'd':
+                        return { ...state, editor: reduceEditorModel(state.editor, { type: 'delete-part-forward' }) };
+                    case 'j':
+                        return { ...state, editor: reduceEditorModel(state.editor, { type: 'insert-text', text: '\n' }) };
+                    case 'k':
+                        return { ...state, editor: reduceEditorModel(state.editor, { type: 'delete-to-line-end' }) };
+                    case 'w':
+                        return { ...state, editor: reduceEditorModel(state.editor, { type: 'delete-word-backward' }) };
+                    case 'up': {
+                        const starts = state.transcriptEntryLineStarts ?? [];
+                        if (starts.length === 0) return state;
+                        const currentTopLine = state.viewport.scrollOffset;
+
+                        const currentLine = typeof state.viewport.anchorMessageId === 'number'
+                            ? state.viewport.anchorMessageId
+                            : currentTopLine;
+                        let currentIdx = -1;
+                        for (let i = 0; i < starts.length; i += 1) {
+                            if (starts[i]! <= currentLine) currentIdx = i;
+                            else break;
+                        }
+
+                        const targetIdx = Math.max(0, currentIdx - 1);
+                        const targetLine = starts[targetIdx] ?? 0;
+                        if (state.page === 'chat') {
+                            const nextState = setChatViewportTopLine(state, targetLine);
+                            return { ...nextState, viewport: { ...nextState.viewport, anchorMessageId: targetLine } };
+                        }
+                        const nextState = setLogViewportTopLineIntent(state, Math.max(0, state.logViewport.scrollOffset - 1));
+                        return { ...nextState, logViewport: { ...nextState.logViewport, anchorMessageId: nextState.logViewport.scrollOffset } };
+                    }
+                    case 'down': {
+                        const starts = state.transcriptEntryLineStarts ?? [];
+                        if (starts.length === 0) return state;
+                        const currentTopLine = state.viewport.scrollOffset;
+
+                        const currentLine = typeof state.viewport.anchorMessageId === 'number'
+                            ? state.viewport.anchorMessageId
+                            : currentTopLine;
+                        let currentIdx = -1;
+                        for (let i = 0; i < starts.length; i += 1) {
+                            if (starts[i]! <= currentLine) currentIdx = i;
+                            else break;
+                        }
+
+                        const nextIdx = currentIdx < 0 ? 0 : Math.min(starts.length - 1, currentIdx + 1);
+                        const targetLine = starts[nextIdx] ?? 0;
+                        if (state.page === 'chat') {
+                            const nextState = setChatViewportTopLine(state, targetLine);
+                            return { ...nextState, viewport: { ...nextState.viewport, anchorMessageId: targetLine } };
+                        }
+                        const nextState = setLogViewportTopLineIntent(state, state.logViewport.scrollOffset + 1);
+                        return { ...nextState, logViewport: { ...nextState.logViewport, anchorMessageId: nextState.logViewport.scrollOffset } };
+                    }
+                    default:
+                        break;
+                }
+            }
+
+            if (input.type === 'key' && input.alt && !input.ctrl) {
+                switch (input.key) {
+                    case 'b':
+                        return { ...state, editor: reduceEditorModel(state.editor, { type: 'move-word', direction: 'backward' }) };
+                    case 'f':
+                        return { ...state, editor: reduceEditorModel(state.editor, { type: 'move-word', direction: 'forward' }) };
+                    default:
+                        break;
+                }
+            }
+
+                switch (input.key) {
+                case 'g': {
+                    if (state.page === 'chat') {
+                        const nextState = moveChatViewportToTop(state);
+                        return { ...nextState, viewport: { ...nextState.viewport, anchorMessageId: 0 } };
+                    }
+                    const nextState = moveLogViewportHome(state);
+                    return { ...nextState, logViewport: { ...nextState.logViewport, anchorMessageId: 0 } };
+                }
+                case 'G': {
+                    if (state.page === 'chat') {
+                        const nextState = moveChatViewportToBottom(state);
+                        return { ...nextState, viewport: { ...nextState.viewport, anchorMessageId: nextState.viewport.scrollOffset } };
+                    }
+                    const nextState = moveLogViewportEnd(state);
+                    return { ...nextState, logViewport: { ...nextState.logViewport, anchorMessageId: nextState.logViewport.scrollOffset } };
+                }
                 case 'backspace':
-                    return { ...state, editor: reduceEditorModel(state.editor, { type: 'delete-backward' }) };
+                    return { ...state, editor: reduceEditorModel(state.editor, { type: 'delete-part-backward' }) };
                 case 'delete':
-                    return { ...state, editor: reduceEditorModel(state.editor, { type: 'delete-forward' }) };
+                    return { ...state, editor: reduceEditorModel(state.editor, { type: 'delete-part-forward' }) };
                 case 'delete-to-line-start':
                     return { ...state, editor: reduceEditorModel(state.editor, { type: 'delete-to-line-start' }) };
                 case 'left':
-                    return { ...state, editor: reduceEditorModel(state.editor, { type: 'move-horizontal', delta: -1 }) };
+                    return { ...state, editor: reduceEditorModel(state.editor, { type: 'move-part-horizontal', delta: -1 }) };
                 case 'right':
-                    return { ...state, editor: reduceEditorModel(state.editor, { type: 'move-horizontal', delta: 1 }) };
+                    return { ...state, editor: reduceEditorModel(state.editor, { type: 'move-part-horizontal', delta: 1 }) };
                 case 'up':
                     if (input.shift) {
-                        return { ...state, viewport: scrollViewportModel(state.viewport, -VIEWPORT_SCROLL_STEP, state.transcriptLines.length, transcriptHeight) };
+                        if (state.page === 'chat') {
+                            return scrollChatViewport(state, -VIEWPORT_SCROLL_STEP);
+                        }
+                        return scrollLogViewport(state, -VIEWPORT_SCROLL_STEP);
                     }
                     return { ...state, editor: reduceEditorModel(state.editor, { type: 'move-vertical', delta: -1 }) };
                 case 'down':
                     if (input.shift) {
-                        return { ...state, viewport: scrollViewportModel(state.viewport, VIEWPORT_SCROLL_STEP, state.transcriptLines.length, transcriptHeight) };
+                        if (state.page === 'chat') {
+                            return scrollChatViewport(state, VIEWPORT_SCROLL_STEP);
+                        }
+                        return scrollLogViewport(state, VIEWPORT_SCROLL_STEP);
                     }
                     return { ...state, editor: reduceEditorModel(state.editor, { type: 'move-vertical', delta: 1 }) };
                 case 'home':
-                    return { ...state, viewport: moveViewportModelToTop(state.viewport) };
+                    return { ...state, editor: reduceEditorModel(state.editor, { type: 'move-part-boundary', edge: 'start' }) };
                 case 'end':
-                    return { ...state, viewport: moveViewportModelToBottom(state.viewport, state.transcriptLines.length, transcriptHeight) };
+                    return { ...state, editor: reduceEditorModel(state.editor, { type: 'move-part-boundary', edge: 'end' }) };
                 case 'pageup':
-                    return { ...state, viewport: pageViewportModel(state.viewport, 'up', state.transcriptLines.length, transcriptHeight) };
+                    if (state.page === 'chat') {
+                        return pageChatViewport(state, 'up');
+                    }
+                    return pageLogViewport(state, 'up');
                 case 'pagedown':
-                    return { ...state, viewport: pageViewportModel(state.viewport, 'down', state.transcriptLines.length, transcriptHeight) };
+                    if (state.page === 'chat') {
+                        return pageChatViewport(state, 'down');
+                    }
+                    return pageLogViewport(state, 'down');
                 case 'tab':
                     return { ...state, editor: reduceEditorModel(state.editor, { type: 'insert-text', text: '    ' }) };
                 default:
@@ -242,10 +443,10 @@ export function reduceTerminalAppState(state: TerminalAppState, event: TerminalC
                 editor: reduceEditorModel(state.editor, { type: 'clear-attachments' }),
             };
         case 'notice.set':
-            return {
+            return withDerivedChrome({
                 ...state,
-                notice: event.notice,
-            };
+                uiNotice: event.notice,
+            });
         case 'session.attached':
             return {
                 ...state,
@@ -258,35 +459,27 @@ export function reduceTerminalAppState(state: TerminalAppState, event: TerminalC
                 cwd: event.cwd,
                 messages: event.messages,
             });
-            const th = getTranscriptHeight(next);
-            return {
+            return syncTranscriptViewport({
                 ...next,
                 modifiedFiles: [],
-                viewport: syncViewportModel(next.viewport, {
-                    lineCount: next.transcriptLines.length,
-                    previousLineCount: state.transcriptLines.length,
-                    height: th,
-                }),
-            };
+            });
         }
         case 'session.new': {
             const next = withDerivedChrome({
                 ...state,
                 activeSessionId: undefined,
+                runtimeStatus: 'idle',
+                runtimeNotice: undefined,
+                uiNotice: 'New session (send a message to start)',
+                pendingApproval: undefined,
+                approvalInput: undefined,
+                pendingQuestion: undefined,
+                questionInput: undefined,
                 transcriptEntries: [],
                 title: 'New Session',
-                notice: 'New session (send a message to start)',
                 modifiedFiles: [],
             });
-            const th = getTranscriptHeight(next);
-            return {
-                ...next,
-                viewport: syncViewportModel(next.viewport, {
-                    lineCount: next.transcriptLines.length,
-                    previousLineCount: state.transcriptLines.length,
-                    height: th,
-                }),
-            };
+            return syncTranscriptViewport(next);
         }
         case 'copy.code-block':
             return {
@@ -322,159 +515,74 @@ export function reduceTerminalAppState(state: TerminalAppState, event: TerminalC
                 toasts: state.toasts.filter((t) => t.id !== event.id),
             };
         case 'overlay.open':
-            if (event.kind === 'session') {
-                return { ...state, overlay: { type: 'session', items: event.items, selectedIndex: 0 } };
-            }
-            if (event.kind === 'commands') {
-                return { ...state, overlay: { type: 'commands', items: event.items, selectedIndex: 0 } };
-            }
-            if (event.kind === 'filepicker') {
-                return { ...state, overlay: { type: 'filepicker', currentDir: event.currentDir, items: event.items, selectedIndex: 0 } };
-            }
-            if (event.kind === 'complete') {
-                return {
-                    ...state,
-                    overlay: {
-                        type: 'complete',
-                        currentDir: event.currentDir,
-                        items: event.items.map((i) => ({ ...i, depth: 0 })),
-                        expandedDirs: [],
-                        selectedIndex: 0,
-                    },
-                };
-            }
-            if (event.kind === 'theme') {
-                return { ...state, overlay: { type: 'theme', items: event.items, selectedIndex: 0 } };
-            }
-            if (event.kind === 'init') {
-                return { ...state, overlay: { type: 'init', items: event.items, selectedIndex: 0 } };
-            }
-            if (event.kind === 'arguments') {
-                return {
-                    ...state,
-                    overlay: {
-                        type: 'arguments',
-                        commandName: event.commandName,
-                        variables: event.variables,
-                        values: {},
-                        selectedIndex: 0,
-                        editBuffer: '',
-                    },
-                };
-            }
-            if (event.kind === 'model') {
-                return {
-                    ...state,
-                    overlay: {
-                        type: 'model',
-                        providers: event.providers,
-                        providerIndex: event.providerIndex,
-                        items: event.items,
-                        selectedIndex: 0,
-                    },
-                };
-            }
-            return state;
-        case 'overlay.modelSetProvider': {
-            const ov = state.overlay;
-            if (!ov || ov.type !== 'model') return state;
-            return {
-                ...state,
-                overlay: {
-                    ...ov,
-                    providerIndex: event.providerIndex,
-                    items: event.items,
-                    selectedIndex: 0,
-                },
-            };
-        }
-        case 'overlay.filepickerNavigate':
-            if (!state.overlay || state.overlay.type !== 'filepicker') return state;
-            return {
-                ...state,
-                overlay: { ...state.overlay, currentDir: event.currentDir, items: event.items, selectedIndex: 0 },
-            };
-        case 'overlay.completeExpand': {
-            const ov = state.overlay;
-            if (!ov || ov.type !== 'complete') return state;
-            const idx = ov.items.findIndex((it) => it.path === event.path);
-            if (idx < 0) return state;
-            const depth = ov.items[idx]!.depth + 1;
-            const children = event.children.map((c) => ({ ...c, depth }));
-            const nextItems = [...ov.items.slice(0, idx + 1), ...children, ...ov.items.slice(idx + 1)];
-            const nextExpanded = ov.expandedDirs.includes(event.path) ? ov.expandedDirs : [...ov.expandedDirs, event.path];
-            return { ...state, overlay: { ...ov, items: nextItems, expandedDirs: nextExpanded } };
-        }
-        case 'overlay.completeCollapse': {
-            const ov = state.overlay;
-            if (!ov || ov.type !== 'complete') return state;
-            const path = event.path;
-            const pathPrefix = path + (path.endsWith('/') ? '' : '/');
-            const isUnder = (p: string) => p !== path && (p.startsWith(pathPrefix) || p.startsWith(path + '\\'));
-            const nextItems = ov.items.filter((it) => !isUnder(it.path));
-            const nextExpanded = ov.expandedDirs.filter((p) => p !== path && !isUnder(p));
-            return { ...state, overlay: { ...ov, items: nextItems, expandedDirs: nextExpanded } };
-        }
-        case 'overlay.move': {
-            const ov = state.overlay;
-            if (!ov) return state;
-            const len = ov.type === 'arguments' ? ov.variables.length : ov.items.length;
-            const next = Math.max(0, Math.min(len - 1, ov.selectedIndex + event.delta));
-            const nextEditBuffer = ov.type === 'arguments' ? (ov.values[ov.variables[next]!] ?? '') : undefined;
-            return {
-                ...state,
-                overlay: { ...ov, selectedIndex: next, ...(nextEditBuffer !== undefined ? { editBuffer: nextEditBuffer } : {}) },
-            };
-        }
-        case 'overlay.argumentsEdit': {
-            if (state.overlay?.type !== 'arguments') return state;
-            const ov = state.overlay;
-            const editBuffer = event.backspace
-                ? ov.editBuffer.slice(0, -1)
-                : ov.editBuffer + (event.append ?? '');
-            return { ...state, overlay: { ...ov, editBuffer } };
-        }
-        case 'overlay.argumentsAdvance': {
-            if (state.overlay?.type !== 'arguments') return state;
-            const ov = state.overlay;
-            const nextIndex = ov.selectedIndex + 1;
-            const editBuffer = nextIndex < ov.variables.length ? (event.values[ov.variables[nextIndex]!] ?? '') : '';
-            return { ...state, overlay: { ...ov, values: event.values, selectedIndex: nextIndex, editBuffer } };
-        }
+            return openOverlay(state, event);
+        case 'overlay.modelSetProvider':
+            return setOverlayModelProvider(state, event);
+        case 'overlay.commandsFilter':
+            return filterCommandsOverlay(state, event);
+        case 'overlay.filepickerEnterDir':
+            return enterFilepickerDir(state, event);
+        case 'overlay.filepickerGoParent':
+            return goFilepickerParent(state, event);
+        case 'overlay.filepickerInputMode':
+            return setFilepickerInputMode(state, event);
+        case 'overlay.filepickerPathEdit':
+            return editFilepickerPath(state, event);
+        case 'overlay.completeExpand':
+            return expandCompleteOverlay(state, event);
+        case 'overlay.completeCollapse':
+            return collapseCompleteOverlay(state, event);
+        case 'overlay.completeScrollAt':
+            return scrollCompleteOverlayAt(state, event);
+        case 'overlay.completeSetSelected':
+            return setCompleteOverlaySelected(state, event);
+        case 'overlay.move':
+            return moveOverlaySelection(state, event);
+        case 'overlay.argumentsEdit':
+            return editArgumentsOverlay(state, event);
+        case 'overlay.argumentsAdvance':
+            return advanceArgumentsOverlay(state, event);
         case 'overlay.close':
-            return { ...state, overlay: null };
+            return closeOverlay(state);
         case 'overlay.closeWithSelect':
-            return {
-                ...state,
-                overlay: null,
-                ...(event.kind === 'theme' ? { themeId: event.id } : {}),
-            };
+            return closeOverlayWithSelect(state, event);
         case 'model.set':
-            return { ...state, model: event.model };
+            return withDerivedChrome({ ...state, model: event.model });
         case 'page.toggle':
-            return { ...state, page: state.page === 'chat' ? 'logs' : 'chat' };
-        case 'logViewport.scroll': {
-            const th = getTranscriptHeight(state);
-            return { ...state, logViewport: scrollViewportModel(state.logViewport, event.delta, state.logLines.length, th) };
-        }
-        case 'logViewport.page': {
-            const th = getTranscriptHeight(state);
-            return { ...state, logViewport: pageViewportModel(state.logViewport, event.direction, state.logLines.length, th) };
-        }
+            return syncTranscriptViewport(syncLogViewport({ ...state, page: state.page === 'chat' ? 'logs' : 'chat' }));
+        case 'logViewport.scroll':
+            return scrollLogViewport(state, event.delta);
+        case 'logViewport.page':
+            return pageLogViewport(state, event.direction);
         case 'logViewport.home':
-            return { ...state, logViewport: moveViewportModelToTop(state.logViewport) };
-        case 'logViewport.end': {
-            const th = getTranscriptHeight(state);
-            return { ...state, logViewport: moveViewportModelToBottom(state.logViewport, state.logLines.length, th) };
-        }
+            return moveLogViewportHome(state);
+        case 'logViewport.end':
+            return moveLogViewportEnd(state);
         case 'modifiedFiles.add': {
             const paths = state.modifiedFiles.includes(event.path) ? state.modifiedFiles : [...state.modifiedFiles, event.path];
             return { ...state, modifiedFiles: paths };
         }
         case 'modifiedFiles.clear':
             return { ...state, modifiedFiles: [] };
+        case 'interaction.mode.toggle': {
+            const nextMode = state.interactionMode === 'build' ? 'plan' : 'build';
+            return withDerivedChrome({
+                ...state,
+                interactionMode: nextMode,
+                uiNotice: nextMode === 'plan'
+                    ? 'Plan mode enabled'
+                    : 'Build mode enabled',
+            });
+        }
         case 'timer':
-            return state;
+            if (state.runtimeStatus !== 'thinking' && state.runtimeStatus !== 'running-tool') {
+                if (state.runtimePulseFrame === 0) return state;
+                return withDerivedChrome({ ...state, runtimePulseFrame: 0 });
+            }
+            return withDerivedChrome({
+                ...state,
+                runtimePulseFrame: (state.runtimePulseFrame + 1) % 4,
+            });
         default:
             return state;
     }

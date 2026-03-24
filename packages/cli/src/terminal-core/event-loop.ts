@@ -1,23 +1,20 @@
-import { ScreenBuffer, type TerminalSize } from './screen-buffer.js';
-import type { TerminalCoreEvent, TerminalRenderResult, TerminalSubscription, TerminalWriter } from './types.js';
+import type { TerminalSize } from './types.js';
+import type { TerminalCoreEvent, TerminalSubscription } from './types.js';
 
 export interface TerminalEventLoopOptions<State> {
     initialState: State;
     reduce(state: State, event: TerminalCoreEvent): State;
-    render(state: State): TerminalRenderResult;
-    writer: TerminalWriter;
+    render(state: State): void;
 }
 
 export class TerminalEventLoop<State> {
     private state: State;
-    private currentFrame: ScreenBuffer;
     private readonly listeners = new Set<(state: State) => void>();
     private renderScheduled = false;
 
     constructor(private readonly options: TerminalEventLoopOptions<State>) {
         this.state = options.initialState;
-        const initialFrame = options.render(options.initialState);
-        this.currentFrame = ScreenBuffer.empty({ width: initialFrame.buffer.width, height: initialFrame.buffer.height });
+        options.render(options.initialState);
     }
 
     getState(): State {
@@ -46,16 +43,8 @@ export class TerminalEventLoop<State> {
         this.dispatch({ type: 'resize', size });
     }
 
-    async renderNow(): Promise<TerminalRenderResult> {
-        const nextFrame = this.options.render(this.state);
-        const result = {
-            buffer: nextFrame.buffer,
-            patches: this.currentFrame.diff(nextFrame.buffer),
-            cursor: nextFrame.cursor,
-        };
-        this.currentFrame = nextFrame.buffer;
-        await this.options.writer.write(result);
-        return result;
+    async renderNow(): Promise<void> {
+        this.options.render(this.state);
     }
 
     private scheduleRender(): void {

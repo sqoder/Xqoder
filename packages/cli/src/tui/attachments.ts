@@ -49,18 +49,18 @@ export function appendEditorAttachment(
     };
 }
 
-function inferAttachmentType(filePath: string): { type: MessageAttachment['type']; mimeType: string } {
+function inferAttachmentType(filePath: string): { kind: MessageAttachment['kind']; mimeType: string } {
     const ext = path.extname(filePath).toLowerCase();
     const imageMimeType = IMAGE_MIME_TYPES[ext];
     if (imageMimeType) {
         return {
-            type: 'image',
+            kind: 'image',
             mimeType: imageMimeType,
         };
     }
 
     return {
-        type: 'file',
+        kind: 'file',
         mimeType: 'application/octet-stream',
     };
 }
@@ -83,7 +83,7 @@ export function buildMessageAttachments(filePaths: string[]): {
         }
 
         const inferred = inferAttachmentType(resolvedPath);
-        if (inferred.type === 'image') {
+        if (inferred.kind === 'image') {
             if (stat.size > MAX_BINARY_ATTACHMENT_BYTES) {
                 issues.push({ filePath: resolvedPath, reason: 'too_large' });
                 continue;
@@ -92,6 +92,7 @@ export function buildMessageAttachments(filePaths: string[]): {
             try {
                 const content = fs.readFileSync(resolvedPath);
                 attachments.push({
+                    kind: 'image',
                     type: 'image',
                     mimeType: inferred.mimeType,
                     data: content.toString('base64'),
@@ -105,6 +106,7 @@ export function buildMessageAttachments(filePaths: string[]): {
         }
 
         attachments.push({
+            kind: 'file',
             type: 'file',
             mimeType: inferred.mimeType,
             filePath: resolvedPath,

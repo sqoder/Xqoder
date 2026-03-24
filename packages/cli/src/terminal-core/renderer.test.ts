@@ -1,22 +1,56 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialTerminalAppState } from './app-state.js';
-import { reduceEditorModel } from './editor-model.js';
-import { renderTerminalFrame } from './renderer.js';
+import { mapAppStateToTUIState } from './renderer.js';
 
-describe('terminal renderer', () => {
-    it('renders transcript editor sidebar and status bar into a frame buffer', () => {
-        const state = createInitialTerminalAppState({ width: 80, height: 24 });
-        state.transcriptLines = ['hello from transcript'];
-        state.editor = reduceEditorModel(state.editor, { type: 'insert-text', text: 'draft' });
-        state.statusItems = [{ text: 'ready' }, { text: 'gpt-4.1' }];
+describe('renderer bridge', () => {
+    it('uses renderer-facing status view model instead of runtime fields directly', () => {
+        const base = createInitialTerminalAppState(
+            { width: 100, height: 30 },
+            { cwd: '/repo', model: 'gpt-4o', agent: 'general' },
+        );
+        const state = {
+            ...base,
+            runtimeStatus: 'thinking' as const,
+            rendererStatus: {
+                thinking: false,
+                text: 'Awaiting approval',
+                contextUsed: 321,
+                contextMax: 128000,
+            },
+        };
 
-        const result = renderTerminalFrame(state);
-        const lines = result.buffer.toLines();
+        const tuiState = mapAppStateToTUIState(state);
 
-        // 标题在 titleRow=1；第 0 行为外框阴影。当前布局无侧栏 (SIDEBAR_WIDTH=0)，不渲染 sidebar
-        expect(lines.join('\n')).toContain('XQoder');
-        expect(lines.join('\n')).toContain('hello from transcript');
-        expect(lines.join('\n')).toContain('draft');
-        expect(lines.join('\n')).toContain('ready');
+        expect(tuiState.status).toEqual({
+            thinking: false,
+            text: 'Awaiting approval',
+        });
+        expect(tuiState.sidebar.contextUsed).toBe(321);
+        expect(tuiState.sidebar.contextMax).toBe(128000);
+    });
+
+    it('reuses mapped transcript messages when only viewport state changes', () => {
+        const base = createInitialTerminalAppState(
+            { width: 100, height: 30 },
+            { cwd: '/repo', model: 'gpt-4o', agent: 'general' },
+        );
+        const firstState = {
+            ...base,
+            transcriptEntries: [
+                { id: 'u-1', role: 'user' as const, content: 'hello' },
+                { id: 'a-1', role: 'assistant' as const, content: 'world' },
+            ],
+        };
+
+        const first = mapAppStateToTUIState(firstState);
+        const second = mapAppStateToTUIState({
+            ...firstState,
+            viewport: {
+                ...firstState.viewport,
+                scrollOffset: 12,
+            },
+        });
+
+        expect(second.messages).toBe(first.messages);
     });
 });

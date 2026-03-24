@@ -1,4 +1,5 @@
 import {
+    RuntimeErrorType,
     RuntimeStatus,
     TestStatus,
     WorkflowStatus,
@@ -7,7 +8,7 @@ import {
     type StepResult,
     type TestReport,
 } from '@xqoder/shared';
-import { WorkflowEngine } from '../engine.js';
+import { WorkflowEngine, deriveDefaultFailureBucket, findLastFailedStep } from '../engine.js';
 import { createBuildProjectSteps } from '../templates/build-project.js';
 
 export interface BuildProjectFlowRuntime {
@@ -33,6 +34,9 @@ export interface BuildProjectFlowResult {
     testReport?: TestReport;
     stepResults: StepResult[];
     totalDuration: number;
+    attemptCount: number;
+    failureBucket?: string;
+    resultLabel?: string;
     error?: string;
 }
 
@@ -106,6 +110,84 @@ export async function runBuildProjectFlow(
         testReport,
         stepResults: workflowResult.stepResults,
         totalDuration: workflowResult.totalDuration,
+        attemptCount: 1,
+        ...(workflowResult.status === WorkflowStatus.Failed
+            ? { failureBucket: deriveBuildFailureBucket(runReport, testReport, workflowResult.stepResults) }
+            : {}),
+        ...((runReport ?? testReport)
+            ? { resultLabel: resolveBuildResultLabel(runReport, testReport) }
+            : {}),
         error: workflowResult.error,
     };
+}
+
+function resolveBuildResultLabel(
+    runReport: RunReport | undefined,
+    testReport: TestReport | undefined,
+): string {
+    if (testReport?.status === TestStatus.Passed) {
+        return `${testReport.passed} passed`;
+    }
+    if (testReport?.status === TestStatus.Skipped) {
+        return 'tests skipped';
+    }
+    if (testReport?.status === TestStatus.Failed) {
+        return `${testReport.failed} failed`;
+    }
+    if (runReport?.url) {
+        return runReport.url;
+    }
+    return runReport?.status ?? 'build_pending';
+}
+
+function deriveBuildFailureBucket(
+    runReport: RunReport | undefined,
+    testReport: TestReport | undefined,
+    stepResults: StepResult[],
+): string {
+    const failedStep = findLastFailedStep(stepResults)?.stepName;
+    if (failedStep === 'run_project') {
+        return resolveRuntimeFailureBucket(runReport);
+    }
+    if (failedStep === 'run_tests') {
+        return resolveTestFailureBucket(testReport);
+    }
+    return deriveDefaultFailureBucket(stepResults) ?? 'build_failed';
+}
+
+function resolveRuntimeFailureBucket(runReport: RunReport | undefined): string {
+    const runtimeErrorType = runReport?.errors[0]?.type;
+    switch (runtimeErrorType) {
+        case RuntimeErrorType.DependencyMissing:
+            return 'runtime_dependency_missing';
+        case RuntimeErrorType.CompileError:
+            return 'runtime_compile_error';
+        case RuntimeErrorType.PortConflict:
+            return 'runtime_port_conflict';
+        case RuntimeErrorType.ConfigError:
+            return 'runtime_config_error';
+        case RuntimeErrorType.PermissionDenied:
+            return 'runtime_permission_denied';
+        case RuntimeErrorType.RuntimeException:
+            return 'runtime_exception';
+        default:
+            return 'runtime_failed';
+    }
+}
+
+function resolveTestFailureBucket(testReport: TestReport | undefined): string {
+    if (!testReport) {
+        return 'test_failed';
+    }
+    const failureText = [
+        testReport.output,
+        ...testReport.failures.map((failure) => failure.message),
+    ].join('\n').toLowerCase();
+    if (failureText.includes('超时') || failureText.includes('timeout')) {
+        return 'test_timeout';
+    }
+    if (failureText.includes('package.json')) {
+        return 'test_setup_failed';
+    }
+    return 'test_failed';
 }

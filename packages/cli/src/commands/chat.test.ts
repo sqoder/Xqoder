@@ -1,12 +1,23 @@
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentSession } from '@xqoder/agent';
+import { openInMemoryRuntimeSessionKernel } from '../services/runtime-session-kernel.js';
 import { createChatCommand, runChatCommand } from './chat.js';
 
 describe('chat command', () => {
     const stdoutWrite = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const handles: Array<{ close(): void }> = [];
+
+    function openSessionKernel(projectRoot: string, model: string) {
+        const handle = openInMemoryRuntimeSessionKernel({ projectRoot, model });
+        handles.push(handle);
+        return handle;
+    }
 
     afterEach(() => {
         stdoutWrite.mockClear();
+        while (handles.length > 0) {
+            handles.pop()?.close();
+        }
     });
 
     afterAll(() => {
@@ -15,7 +26,7 @@ describe('chat command', () => {
 
     it('sends the user message to the agent with the resolved model and directory', async () => {
         const run = vi.fn().mockResolvedValue('你好');
-        const session = new AgentSession('system prompt');
+        const handle = openSessionKernel('/workspace/demo', 'qwen-plus');
 
         await runChatCommand('你好', {
             dir: '/workspace/demo',
@@ -36,24 +47,20 @@ describe('chat command', () => {
                     recentProjects: [],
                 }),
             },
-            sessionStore: {
-                findLatestSession: vi.fn().mockReturnValue(null),
-                getSession: vi.fn().mockReturnValue(null),
-                saveSession: vi.fn(),
-            },
+            sessionKernelHandle: handle,
             agentFactory: (config) => {
                 expect(config.cwd).toBe('/workspace/demo');
                 expect(config.projectRoot).toBe('/workspace/demo');
                 expect(config.llmConfig.model).toBe('qwen-plus');
-                expect(config.session).toBeUndefined();
-                return { run, getSession: () => session };
+                expect(config.session).toBeDefined();
+                return { run };
             },
         });
 
         expect(run).toHaveBeenCalledWith('你好', expect.any(Object), expect.any(Array));
     });
 
-    it('resumes the latest persisted session for the current project by default', async () => {
+    it('prefers latest session snapshots when resuming the current project by default', async () => {
         const run = vi.fn().mockResolvedValue('继续');
         const persistedSession = new AgentSession({
             id: 'session_saved',
@@ -64,8 +71,17 @@ describe('chat command', () => {
                 { role: 'assistant', content: '上一轮回答' },
             ],
         });
-        const saveSession = vi.fn();
-        const findLatestSession = vi.fn().mockReturnValue(persistedSession);
+        const handle = openSessionKernel('/workspace/demo', 'gpt-4o');
+        handle.store.saveSessionSnapshot({
+            session: persistedSession,
+            projectRoot: '/workspace/demo',
+            cwd: '/workspace/demo',
+            model: 'gpt-4o',
+            title: 'Session',
+        });
+        const listSessions = vi.spyOn(handle.kernel, 'listSessions');
+        const getSessionSnapshot = vi.spyOn(handle.kernel, 'loadSessionSnapshot');
+        const appendSessionMessage = vi.spyOn(handle.store, 'appendSessionMessage');
 
         await runChatCommand('继续', {
             dir: '/workspace/demo',
@@ -89,31 +105,33 @@ describe('chat command', () => {
                     recentProjects: [],
                 }),
             },
-            sessionStore: {
-                findLatestSession,
-                getSession: vi.fn(),
-                saveSession,
-            },
+            sessionKernelHandle: handle,
             agentFactory: (config) => {
                 expect(config.session?.id).toBe('session_saved');
-                return { run, getSession: () => persistedSession };
+                return { run };
             },
         });
 
-        expect(findLatestSession).toHaveBeenCalledWith('/workspace/demo');
-        expect(saveSession).toHaveBeenCalledWith(expect.objectContaining({
-            session: persistedSession,
+        expect(listSessions).toHaveBeenCalledWith({
             projectRoot: '/workspace/demo',
-            cwd: '/workspace/demo',
-            model: 'gpt-4o',
-        }));
+            limit: 1,
+        });
+        expect(getSessionSnapshot).toHaveBeenCalledWith('session_saved');
+        expect(appendSessionMessage).toHaveBeenCalledTimes(2);
+        expect(appendSessionMessage.mock.calls[0]?.[0].message).toMatchObject({
+            role: 'user',
+            content: '继续',
+        });
+        expect(appendSessionMessage.mock.calls[1]?.[0].message).toMatchObject({
+            role: 'assistant',
+            content: '继续',
+        });
     });
 
     it('skips session resume when the caller explicitly requests a new session', async () => {
         const run = vi.fn().mockResolvedValue('新的会话');
-        const saveSession = vi.fn();
-        const findLatestSession = vi.fn();
-        const session = new AgentSession('system prompt');
+        const handle = openSessionKernel('/workspace/demo', 'gpt-4o');
+        const appendSessionMessage = vi.spyOn(handle.store, 'appendSessionMessage');
 
         await runChatCommand('新的会话', {
             dir: '/workspace/demo',
@@ -138,27 +156,27 @@ describe('chat command', () => {
                     recentProjects: [],
                 }),
             },
-            sessionStore: {
-                findLatestSession,
-                getSession: vi.fn(),
-                saveSession,
-            },
+            sessionKernelHandle: handle,
             agentFactory: (config) => {
-                expect(config.session).toBeUndefined();
-                return { run, getSession: () => session };
+                expect(config.session).toBeDefined();
+                return { run };
             },
         });
 
-        expect(findLatestSession).not.toHaveBeenCalled();
-        expect(saveSession).toHaveBeenCalledWith(expect.objectContaining({
-            session,
-            projectRoot: '/workspace/demo',
-        }));
+        expect(appendSessionMessage).toHaveBeenCalledTimes(2);
+        expect(appendSessionMessage.mock.calls[0]?.[0].message).toMatchObject({
+            role: 'user',
+            content: '新的会话',
+        });
+        expect(appendSessionMessage.mock.calls[1]?.[0].message).toMatchObject({
+            role: 'assistant',
+            content: '新的会话',
+        });
     });
 
     it('parses --dir and --new-session before the chat message', async () => {
         const run = vi.fn().mockResolvedValue('ok');
-        const session = new AgentSession('system prompt');
+        const handle = openSessionKernel('/tmp/xqoder-tui-smoke', 'qwen-plus');
         const command = createChatCommand({
             configManager: {
                 load: () => ({
@@ -178,16 +196,12 @@ describe('chat command', () => {
                     recentProjects: [],
                 }),
             },
-            sessionStore: {
-                findLatestSession: vi.fn(),
-                getSession: vi.fn(),
-                saveSession: vi.fn(),
-            },
+            sessionKernelHandle: handle,
             agentFactory: (config) => {
                 expect(config.cwd).toBe('/tmp/xqoder-tui-smoke');
                 expect(config.projectRoot).toBe('/tmp/xqoder-tui-smoke');
-                expect(config.session).toBeUndefined();
-                return { run, getSession: () => session };
+                expect(config.session).toBeDefined();
+                return { run };
             },
         });
 
@@ -212,6 +226,14 @@ describe('chat command', () => {
                 { role: 'assistant', content: '已记住标记 A-123。' },
             ],
         });
+        const handle = openSessionKernel('/tmp/xqoder-tui-smoke', 'qwen-plus');
+        handle.store.saveSessionSnapshot({
+            session: resumedSession,
+            projectRoot: '/tmp/xqoder-tui-smoke',
+            cwd: '/tmp/xqoder-tui-smoke',
+            model: 'qwen-plus',
+            title: resumedSession.getTitle(),
+        });
         const command = createChatCommand({
             configManager: {
                 load: () => ({
@@ -231,18 +253,12 @@ describe('chat command', () => {
                     recentProjects: [],
                 }),
             },
-            sessionStore: {
-                findLatestSession: vi.fn(),
-                getSession: vi.fn((sessionId: string) => (
-                    sessionId === 'session_A123' ? resumedSession : null
-                )),
-                saveSession: vi.fn(),
-            },
+            sessionKernelHandle: handle,
             agentFactory: (config) => {
                 expect(config.cwd).toBe('/tmp/xqoder-tui-smoke');
                 expect(config.projectRoot).toBe('/tmp/xqoder-tui-smoke');
                 expect(config.session?.id).toBe('session_A123');
-                return { run, getSession: () => resumedSession };
+                return { run };
             },
         });
 
@@ -255,5 +271,61 @@ describe('chat command', () => {
         ], { from: 'user' });
 
         expect(run).toHaveBeenCalledWith('继续，重复当前会话里的标记。', expect.any(Object), expect.any(Array));
+    });
+
+    it('prefers session snapshots when resolving an explicit session id', async () => {
+        const run = vi.fn().mockResolvedValue('ok');
+        const resumedSession = new AgentSession({
+            id: 'snapshot_session',
+            createdAt: new Date('2026-03-08T00:00:00.000Z'),
+            messages: [
+                { role: 'system', content: 'system prompt' },
+                { role: 'user', content: 'snapshot question' },
+                { role: 'assistant', content: 'snapshot answer' },
+            ],
+        });
+        const handle = openSessionKernel('/workspace/demo', 'qwen-plus');
+        handle.store.saveSessionSnapshot({
+            session: resumedSession,
+            projectRoot: '/workspace/demo',
+            cwd: '/workspace/demo',
+            model: 'qwen-plus',
+            title: resumedSession.getTitle(),
+        });
+        const getSessionSnapshot = vi.spyOn(handle.kernel, 'loadSessionSnapshot');
+
+        await runChatCommand('continue from snapshot', {
+            dir: '/workspace/demo',
+            model: 'qwen-plus',
+            session: 'snapshot_session',
+        }, {
+            configManager: {
+                load: () => ({
+                    llm: {
+                        provider: 'dashscope',
+                        model: 'qwen-plus',
+                        apiKey: 'test-key',
+                        temperature: 0,
+                        maxTokens: 4096,
+                    },
+                    vercel: {},
+                    sandbox: {
+                        mode: 'project',
+                        allowedPaths: [],
+                    },
+                    debug: false,
+                    recentProjects: [],
+                }),
+            },
+            sessionKernelHandle: handle,
+            agentFactory: (config) => {
+                expect(config.session?.id).toBe('snapshot_session');
+                expect(config.session?.getMessages()).toEqual(resumedSession.getMessages());
+                return { run };
+            },
+        });
+
+        expect(getSessionSnapshot).toHaveBeenCalledWith('snapshot_session');
+        expect(run).toHaveBeenCalledWith('continue from snapshot', expect.any(Object), expect.any(Array));
     });
 });

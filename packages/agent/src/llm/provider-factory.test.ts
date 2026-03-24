@@ -1,14 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import { createLLMProvider } from '../agent.js';
 import { DashScopeProvider } from './dashscope.js';
-import { OpenAIProvider } from '@xqoder/provider-openai';
-import { AnthropicProvider } from '@xqoder/provider-anthropic';
+import { OpenAIProvider } from './providers/index.js';
+import { AnthropicProvider } from './providers/index.js';
 import { GroqProvider } from './groq.js';
 import { OpenRouterProvider } from './openrouter.js';
 import { LocalProvider } from './local.js';
 import { XAIProvider } from './xai.js';
+import { ZhipuProvider } from './zhipu.js';
 
 describe('createLLMProvider', () => {
+    it('creates a Zhipu provider for zhipu configs', () => {
+        const provider = createLLMProvider({
+            provider: 'zhipu',
+            model: 'glm-4-flash',
+            apiKey: 'test-key',
+        });
+
+        expect(provider).toBeInstanceOf(ZhipuProvider);
+        expect(provider.name).toBe('zhipu');
+    });
+
     it('creates a DashScope provider for dashscope configs', () => {
         const provider = createLLMProvider({
             provider: 'dashscope',

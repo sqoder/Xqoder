@@ -1,6 +1,8 @@
 import type { AgentSession } from './session/session.js';
 import type { AgentConfig } from './agent.js';
 import {
+    readProjectMemoryFile,
+    type ProjectMemorySnapshot,
     resolveAgentLLMConfig,
     resolveDefaultAgentName,
     resolveSmallModelConfig,
@@ -193,15 +195,20 @@ export function buildAgentConfigFromXQoderConfig(
         {
             modelOverride: options.modelOverride,
             promptOverride: options.promptOverride,
-            promptAppendix: options.promptAppendix,
         },
+    );
+    const projectRoot = options.projectRoot ?? options.cwd ?? runtime.cwd;
+    const promptAppendix = joinPromptSections(
+        options.promptAppendix,
+        buildSessionMemoryPrompt(options.session),
+        buildCrossSessionProjectMemoryPrompt(projectRoot, options.session),
     );
 
     return {
         llmConfig: runtime.llmConfig,
-        systemPrompt: runtime.systemPrompt,
+        systemPrompt: joinPromptSections(runtime.systemPrompt, promptAppendix),
         cwd: options.cwd ?? runtime.cwd,
-        projectRoot: options.projectRoot,
+        projectRoot,
         sandboxMode: config.sandbox?.mode,
         allowedPaths: config.sandbox?.allowedPaths,
         shell: config.shell,
@@ -213,6 +220,174 @@ export function buildAgentConfigFromXQoderConfig(
         permissions: config.permissions,
         compaction: config.compaction,
     };
+}
+
+function buildSessionMemoryPrompt(session: AgentSession | undefined): string | undefined {
+    if (!session) {
+        return undefined;
+    }
+
+    const sections: string[] = [];
+    const compactSummary = session.getCompactSummary()?.trim();
+    if (compactSummary) {
+        sections.push([
+            'Recent Session Summary:',
+            compactSummary,
+        ].join('\n'));
+    }
+
+    const recentCommands = session.getCommandHistory()
+        .slice(-4)
+        .map((entry) => `- ${truncateText(entry.command, 120)} (${entry.success ? 'ok' : 'failed'})`);
+    if (recentCommands.length > 0) {
+        sections.push([
+            'Recent Commands:',
+            ...recentCommands,
+        ].join('\n'));
+    }
+
+    const recentFiles = session.getFileChanges()
+        .slice(-6)
+        .map((entry) => `- ${truncateText(entry.path, 120)} [${entry.changeType}]`);
+    if (recentFiles.length > 0) {
+        sections.push([
+            'Recent File Changes:',
+            ...recentFiles,
+        ].join('\n'));
+    }
+
+    const recentTools = session.getToolHistory()
+        .slice(-6)
+        .map((entry) => `- ${entry.name} (${entry.success ? 'ok' : 'failed'})`);
+    if (recentTools.length > 0) {
+        sections.push([
+            'Recent Tool Usage:',
+            ...recentTools,
+        ].join('\n'));
+    }
+
+    if (sections.length === 0) {
+        return undefined;
+    }
+
+    return [
+        'Project Memory:',
+        'Use this persisted session context to stay consistent with prior work in this project.',
+        ...sections,
+    ].join('\n\n');
+}
+
+function buildCrossSessionProjectMemoryPrompt(
+    projectRoot: string | undefined,
+    currentSession: AgentSession | undefined,
+): string | undefined {
+    if (!projectRoot) {
+        return undefined;
+    }
+
+    const memory = readProjectMemoryFile(projectRoot);
+    if (!memory) {
+        return undefined;
+    }
+
+    const sections: string[] = [];
+    const sessionSection = buildCrossSessionProjectMemorySessionSection(memory, currentSession);
+    if (sessionSection) {
+        sections.push(sessionSection);
+    }
+
+    const workflowSection = buildCrossSessionProjectMemoryWorkflowSection(memory.workflow);
+    if (workflowSection) {
+        sections.push(workflowSection);
+    }
+
+    if (sections.length === 0) {
+        return undefined;
+    }
+
+    return [
+        'Cross-Session Project Memory:',
+        'Use this project-level memory when it helps continue prior work without re-discovering the same context.',
+        ...sections,
+    ].join('\n\n');
+}
+
+function buildCrossSessionProjectMemorySessionSection(
+    memory: ProjectMemorySnapshot,
+    currentSession: AgentSession | undefined,
+): string | undefined {
+    const session = memory.session;
+    if (!session || session.sessionId === currentSession?.id) {
+        return undefined;
+    }
+
+    const sections: string[] = [];
+    if (session.compactSummary?.trim()) {
+        sections.push([
+            'Latest Session Summary:',
+            session.compactSummary.trim(),
+        ].join('\n'));
+    }
+
+    if (session.recentCommands.length > 0) {
+        sections.push([
+            'Latest Session Commands:',
+            ...session.recentCommands.map((entry) => `- ${truncateText(entry.command, 120)} (${entry.success ? 'ok' : 'failed'})`),
+        ].join('\n'));
+    }
+
+    if (session.recentFileChanges.length > 0) {
+        sections.push([
+            'Latest Session File Changes:',
+            ...session.recentFileChanges.map((entry) => `- ${truncateText(entry.path, 120)} [${entry.changeType}]`),
+        ].join('\n'));
+    }
+
+    if (session.recentTools.length > 0) {
+        sections.push([
+            'Latest Session Tool Usage:',
+            ...session.recentTools.map((entry) => `- ${entry.name} (${entry.success ? 'ok' : 'failed'})`),
+        ].join('\n'));
+    }
+
+    if (sections.length === 0) {
+        return undefined;
+    }
+
+    return sections.join('\n\n');
+}
+
+function buildCrossSessionProjectMemoryWorkflowSection(
+    workflow: ProjectMemorySnapshot['workflow'],
+): string | undefined {
+    if (!workflow) {
+        return undefined;
+    }
+
+    const lines = [
+        `- Total workflow runs: ${workflow.totalRuns}`,
+        `- Workflow success rate: ${(workflow.successRate * 100).toFixed(1)}%`,
+        ...(workflow.failureBuckets.length > 0
+            ? workflow.failureBuckets.map((entry) => `- Failure bucket: ${entry.bucket} (${entry.count})`)
+            : []),
+        ...(workflow.byFlow.length > 0
+            ? workflow.byFlow.map((entry) => `- Flow ${entry.flow}: count=${entry.count} success=${(entry.successRate * 100).toFixed(1)}%`)
+            : []),
+        ...(workflow.automaticActionPromotionCandidates.length > 0
+            ? workflow.automaticActionPromotionCandidates.map((entry) => (
+                `- Promotion candidate: ${entry.actionId} on ${entry.bucket} (${entry.count} runs, ${(entry.successRate * 100).toFixed(1)}%)`
+            ))
+            : []),
+    ];
+
+    if (lines.length === 0) {
+        return undefined;
+    }
+
+    return [
+        'Workflow Signals:',
+        ...lines,
+    ].join('\n');
 }
 
 function buildSystemPrompt(options: {
@@ -234,6 +409,18 @@ function buildSystemPrompt(options: {
     return sections.join('\n\n');
 }
 
+function joinPromptSections(...sections: Array<string | undefined>): string | undefined {
+    const normalized = sections
+        .map((section) => section?.trim())
+        .filter((section): section is string => Boolean(section));
+
+    if (normalized.length === 0) {
+        return undefined;
+    }
+
+    return normalized.join('\n\n');
+}
+
 function formatInstructions(title: string, instructions: string[]): string | undefined {
     if (instructions.length === 0) {
         return undefined;
@@ -243,4 +430,13 @@ function formatInstructions(title: string, instructions: string[]): string | und
         `${title}:`,
         ...instructions.map((entry) => `- ${entry}`),
     ].join('\n');
+}
+
+function truncateText(value: string, maxLength: number): string {
+    const trimmed = value.trim();
+    if (trimmed.length <= maxLength) {
+        return trimmed;
+    }
+
+    return `${trimmed.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }

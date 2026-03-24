@@ -16,13 +16,18 @@ import type {
     AgentPermissionMode,
     CompactionConfig,
 } from '@xqoder/shared';
-import { AgentError, logger as defaultLogger, Logger, calculateCost, getContextWindow } from '@xqoder/shared';
+import {
+    AgentError,
+    logger as defaultLogger,
+    Logger,
+    calculateCost,
+    getContextWindow,
+    resolveToolPermissionMode,
+} from '@xqoder/shared';
 import { getXQoderPaths } from '@xqoder/shared';
 import * as path from 'node:path';
-import type { ILLMProvider } from './llm/provider.js';
-import type { CompletionRequest } from './llm/provider.js';
-import { OpenAIProvider } from '@xqoder/provider-openai';
-import { AnthropicProvider } from '@xqoder/provider-anthropic';
+import type { ILLMProvider, CompletionRequest } from './llm/provider.js';
+import { OpenAIProvider, AnthropicProvider } from './llm/providers/index.js';
 import { DashScopeProvider } from './llm/dashscope.js';
 import { GeminiProvider } from './llm/gemini.js';
 import { AzureOpenAIProvider } from './llm/azure.js';
@@ -33,6 +38,7 @@ import { GroqProvider } from './llm/groq.js';
 import { OpenRouterProvider } from './llm/openrouter.js';
 import { LocalProvider } from './llm/local.js';
 import { XAIProvider } from './llm/xai.js';
+import { ZhipuProvider } from './llm/zhipu.js';
 import { ExternalLanguageServerManager } from './lsp.js';
 import { McpServerManager } from './mcp.js';
 import { ToolRegistry, type QuestionAnswer, type QuestionPrompt, type ToolApprovalRequest, type ToolContext } from './tools/tool.js';
@@ -47,43 +53,7 @@ import { FetchUrlTool, WebSearchTool } from './tools/fetch-tool.js';
 import { DiagnosticsTool } from './tools/diagnostics-tool.js';
 import { DelegateTaskTool } from './tools/agent-tool.js';
 import { FileRollbackStore, type RollbackStore } from './tools/rollback-store.js';
-import { AgentSession } from './session/session.js';
-
-/** OpenCode 风格：工具名 → 权限键（用于 permissions.tools 查找） */
-const TOOL_TO_PERMISSION_KEY: Record<string, string> = {
-    read_file: 'read',
-    write_file: 'edit',
-    preview_diff: 'edit',
-    apply_patch: 'edit',
-    restore_rollback_point: 'edit',
-    run_command: 'bash',
-    install_package: 'bash',
-    grep_content: 'grep',
-    search_code: 'grep',
-    glob_files: 'glob',
-    list_files: 'list',
-    fetch_url: 'webfetch',
-    websearch: 'websearch',
-    delegate_task: 'task',
-    diagnostics: 'read',
-    sourcegraph: 'read',
-    skill: 'skill',
-    todowrite: 'todowrite',
-    todoread: 'todoread',
-    question: 'question',
-};
-const LSP_TOOL_PREFIX = 'lsp_';
-function getPermissionKeyForTool(toolName: string): string {
-    if (toolName.startsWith(LSP_TOOL_PREFIX)) return 'lsp';
-    return TOOL_TO_PERMISSION_KEY[toolName] ?? toolName;
-}
-
-function resolveToolPermission(toolName: string, permissions: PermissionSettings | undefined): AgentPermissionMode {
-    if (!permissions) return 'ask';
-    const key = getPermissionKeyForTool(toolName);
-    const mode = permissions.tools?.[key] ?? permissions.defaultMode ?? 'ask';
-    return mode === 'allow' || mode === 'ask' || mode === 'deny' ? mode : 'ask';
-}
+import { AgentSession, type AgentSessionSnapshot } from './session/session.js';
 
 /** Agent 配置 */
 export interface AgentConfig {
@@ -112,7 +82,7 @@ export interface AgentCallbacks extends StreamCallbacks {
     /** 工具执行开始 */
     onToolStart?: (name: string, args: Record<string, unknown>) => void;
     /** 工具执行完成 */
-    onToolEnd?: (name: string, result: string, success: boolean) => void;
+    onToolEnd?: (name: string, result: string, success: boolean, metadata?: Record<string, unknown>) => void;
     /** 工具执行过程中的流式输出 */
     onToolStream?: (name: string, chunk: string, stream: 'stdout' | 'stderr') => void;
     /** 工具执行前审批 */
@@ -180,6 +150,8 @@ export function createLLMProvider(config: LLMProviderConfig): ILLMProvider {
             return new LocalProvider(config);
         case 'xai':
             return new XAIProvider(config);
+        case 'zhipu':
+            return new ZhipuProvider(config);
         default:
             throw new AgentError(`不支持的 LLM Provider: ${String(config.provider)}`);
     }
@@ -219,10 +191,12 @@ export class XQoderAgent {
         this.toolRegistry = new ToolRegistry();
 
         // 初始化会话
-        this.session = config.session ?? new AgentSession({
-            systemPrompt: config.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
-            title: config.sessionTitle,
-        });
+        this.session = config.session
+            ? AgentSession.fromSnapshot(config.session.toSnapshot())
+            : new AgentSession({
+                systemPrompt: config.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
+                title: config.sessionTitle,
+            });
         if (!config.session && config.sessionTitle) {
             this.session.setTitle(config.sessionTitle);
         }
@@ -231,6 +205,7 @@ export class XQoderAgent {
         this.autoApproveTools = config.autoApproveTools ?? false;
         this.permissions = config.permissions;
         this.compaction = config.compaction;
+        this.session.setCompactionReservedMessages(this.compaction?.reserved);
         const projectRoot = path.resolve(config.projectRoot ?? config.cwd ?? process.cwd());
         this.rollbackStore = config.rollbackStore ?? new FileRollbackStore(getXQoderPaths().rollbackDir);
         this.toolContext = {
@@ -329,11 +304,23 @@ export class XQoderAgent {
             if (this.compaction?.auto !== false && ctxWindow && response.usage.promptTokens >= ctxWindow * 0.85) {
                 this.logger.warn(`Context usage at ${Math.round(response.usage.promptTokens / ctxWindow * 100)}%, triggering auto-compact`);
                 try {
-                    const messages = this.session.getMessages().filter(m => m.role !== 'system');
+                    const plan = this.session.createCompactionPlan({
+                        reservedMessages: this.compaction?.reserved,
+                    });
+                    if (plan.compactedMessages.length === 0) {
+                        this.logger.warn('Auto-compact skipped because no historical messages were eligible for summarization');
+                    } else {
                     const summaryAgent = new (await import('./sub-agents.js')).SummarizerAgent(this.llmConfig);
-                    const summary = await summaryAgent.summarize(messages);
-                    this.session.performCompaction(summary);
-                    try { callbacks?.onToolEnd?.('auto_compact', summary, true); } catch { /* ignore */ }
+                        const summary = await summaryAgent.summarizeForCompaction({
+                            priorSummary: plan.priorSummary,
+                            compactedMessages: plan.compactedMessages,
+                            recentMessages: plan.recentMessages,
+                        });
+                        this.session.performCompaction(summary, {
+                            reservedMessages: this.compaction?.reserved,
+                        });
+                        try { callbacks?.onToolEnd?.('auto_compact', summary, true); } catch { /* ignore */ }
+                    }
                 } catch (err) {
                     this.logger.error(`Auto-compact failed: ${err instanceof Error ? err.message : String(err)}`);
                 }
@@ -365,7 +352,16 @@ export class XQoderAgent {
         toolCalls: ToolCall[],
         callbacks?: AgentCallbacks,
     ): Promise<void> {
-        for (const tc of toolCalls) {
+        const PARALLEL_TOOLS = new Set([
+            'read_file',
+            'search_code',
+            'grep_content',
+            'glob_files',
+            'fetch_url',
+            'websearch',
+        ]);
+
+        const parsed = toolCalls.map((tc) => {
             let args: Record<string, unknown>;
             try {
                 args = (tc.arguments ? JSON.parse(tc.arguments) : {}) as Record<string, unknown>;
@@ -373,30 +369,30 @@ export class XQoderAgent {
                 args = {};
                 this.logger.warn(`工具 ${tc.name} 参数解析失败: ${tc.arguments?.slice(0, 100)}`);
             }
+            const perm = resolveToolPermissionMode(tc.name, this.permissions);
+            const canAutoApprove = perm === 'allow' || this.autoApproveTools;
+            const parallelizable = canAutoApprove && PARALLEL_TOOLS.has(tc.name);
+            return { tc, args, perm, parallelizable };
+        });
+
+        const executeOne = async (tc: ToolCall, args: Record<string, unknown>, perm: AgentPermissionMode) => {
             this.logger.info(`调用工具: ${tc.name}`);
 
-            const perm = resolveToolPermission(tc.name, this.permissions);
             if (perm === 'deny') {
-                const result = {
-                    toolCallId: tc.id,
-                    success: false,
-                    output: '',
-                    error: `工具 "${tc.name}" 已被权限配置拒绝 (permission: deny)`,
-                };
+                const error = `工具 "${tc.name}" 已被权限配置拒绝 (permission: deny)`;
                 try { callbacks?.onToolStart?.(tc.name, args); } catch { /* noop */ }
-                try { callbacks?.onToolEnd?.(tc.name, result.output, false); } catch { /* noop */ }
+                try { callbacks?.onToolEnd?.(tc.name, '', false); } catch { /* noop */ }
                 this.session.recordToolExecution({
                     id: tc.id,
                     name: tc.name,
                     args,
                     success: false,
-                    output: result.output,
-                    error: result.error,
+                    output: '',
+                    error,
                     startedAt: new Date(),
                     completedAt: new Date(),
                 });
-                this.session.addToolResult(tc.id, `错误: ${result.error}`);
-                continue;
+                return { toolCallId: tc.id, resultContent: `错误: ${error}` };
             }
 
             const requestToolApproval =
@@ -431,7 +427,18 @@ export class XQoderAgent {
             );
             const completedAt = new Date();
 
-            try { callbacks?.onToolEnd?.(tc.name, result.output, result.success); } catch { /* UI callback must not crash agent */ }
+            // metadata 可选（用于 TUI diff/rollback 等交互）
+            try {
+                callbacks?.onToolEnd?.(
+                    tc.name,
+                    result.output,
+                    result.success,
+                    {
+                        ...(result.metadata as Record<string, unknown> | undefined),
+                        toolCallId: tc.id,
+                    },
+                );
+            } catch { /* UI callback must not crash agent */ }
             this.session.recordToolExecution({
                 id: tc.id,
                 name: tc.name,
@@ -444,11 +451,34 @@ export class XQoderAgent {
                 metadata: result.metadata,
             });
 
-            // 将工具结果添加到会话
-            const resultContent = result.success
-                ? result.output
-                : `错误: ${result.error}`;
-            this.session.addToolResult(tc.id, resultContent);
+            const resultContent = result.success ? result.output : `错误: ${result.error}`;
+            return { toolCallId: tc.id, resultContent };
+        };
+
+        // 以“连续可并行段”为单位做 Promise.all；其余保持串行，保证副作用与审批行为稳定
+        let index = 0;
+        while (index < parsed.length) {
+            const start = index;
+            const isParallelSegment = parsed[index]!.parallelizable;
+            while (index < parsed.length && parsed[index]!.parallelizable === isParallelSegment) {
+                index += 1;
+            }
+            const segment = parsed.slice(start, index);
+
+            if (isParallelSegment) {
+                const results = await Promise.all(
+                    segment.map((item) => executeOne(item.tc, item.args, item.perm)),
+                );
+                for (const r of results) {
+                    this.session.addToolResult(r.toolCallId, r.resultContent);
+                }
+                continue;
+            }
+
+            for (const item of segment) {
+                const r = await executeOne(item.tc, item.args, item.perm);
+                this.session.addToolResult(r.toolCallId, r.resultContent);
+            }
         }
     }
 
@@ -499,9 +529,9 @@ export class XQoderAgent {
         return this.toolRegistry;
     }
 
-    /** 获取当前会话 */
-    getSession(): AgentSession {
-        return this.session;
+    /** 获取当前会话快照（用于持久化/调试，不暴露内部可变实例） */
+    getSessionSnapshot(): AgentSessionSnapshot {
+        return this.session.toSnapshot();
     }
 
     /** 清理外部资源 */

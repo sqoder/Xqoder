@@ -6,7 +6,7 @@
 import type { LLMProviderConfig, LLMProviderName } from '@xqoder/shared';
 import { normalizeLLMConfig } from '@xqoder/shared';
 import { GROQ_BASE_URL } from '@xqoder/shared';
-import { OpenAIProvider } from '@xqoder/provider-openai';
+import { OpenAIProvider } from './providers/index.js';
 
 const GROQ_DEFAULT_MODEL = 'llama-3.3-70b-versatile';
 

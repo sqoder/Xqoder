@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer';
 import type { AgentProvider, AgentTask, QuestionAnswer, QuestionPrompt, RuntimeDescriptor, ToolApprovalPrompt } from '@xqoder/plugin-sdk';
 import type { AppEvent, CoreMessage, JsonValue, MessageAttachment as ProtocolAttachment } from '@xqoder/protocol';
-import type { LLMMessage, MessageAttachment as SharedAttachment } from '@xqoder/shared';
+import { getMessageAttachmentKind, type LLMMessage, type MessageAttachment as SharedAttachment } from '@xqoder/shared';
 import { AgentSession } from './session/session.js';
 import { DEFAULT_SYSTEM_PROMPT, XQoderAgent, type AgentCallbacks, type AgentConfig } from './agent.js';
 import type { ToolApprovalRequest } from './tools/tool.js';
@@ -70,6 +70,7 @@ class AsyncEventQueue<T> implements AsyncIterable<T> {
 function toSharedAttachment(attachment: ProtocolAttachment): SharedAttachment {
   if (attachment.kind === 'image') {
     return {
+      kind: 'image',
       type: 'image',
       mimeType: attachment.mimeType ?? 'image/png',
       data: attachment.data,
@@ -80,6 +81,7 @@ function toSharedAttachment(attachment: ProtocolAttachment): SharedAttachment {
 
   if (attachment.kind === 'text') {
     return {
+      kind: 'file',
       type: 'file',
       mimeType: attachment.mimeType ?? 'text/plain',
       data: attachment.data ?? Buffer.from(attachment.text ?? '', 'utf8').toString('base64'),
@@ -89,6 +91,7 @@ function toSharedAttachment(attachment: ProtocolAttachment): SharedAttachment {
   }
 
   return {
+    kind: 'file',
     type: 'file',
     mimeType: attachment.mimeType ?? 'application/octet-stream',
     data: attachment.data,
@@ -98,8 +101,9 @@ function toSharedAttachment(attachment: ProtocolAttachment): SharedAttachment {
 }
 
 function toProtocolAttachment(attachment: SharedAttachment): ProtocolAttachment {
+  const kind = getMessageAttachmentKind(attachment);
   return {
-    kind: attachment.type,
+    kind,
     mimeType: attachment.mimeType,
     data: attachment.data,
     fileName: attachment.fileName,
@@ -171,6 +175,11 @@ function createEventBase(type: AppEvent['type'], runtime: RuntimeDescriptor): Om
     timestamp: Date.now(),
     source: 'agent',
   } as AppEvent;
+}
+
+function readToolCallId(metadata: Record<string, unknown> | undefined): string | undefined {
+    const value = metadata?.['toolCallId'];
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 async function resolveApprovalDecision(
@@ -323,6 +332,7 @@ export class XQoderAgentProvider implements AgentProvider {
       let assistantStarted = false;
       let assistantText = '';
       let completedAssistantMessage: LLMMessage | null = null;
+      let toolMessageSeq = 0;
 
       const ensureAssistantStarted = (): void => {
         if (assistantStarted) {
@@ -403,7 +413,9 @@ export class XQoderAgentProvider implements AgentProvider {
               partial: true,
             });
           },
-          onToolEnd: (name, result, success) => {
+          onToolEnd: (name, result, success, metadata) => {
+            const toolMetadata = metadata as Record<string, unknown> | undefined;
+            const toolCallId = readToolCallId(toolMetadata);
             events.push({
               ...createEventBase('tool.output', runtime),
               type: 'tool.output',
@@ -417,6 +429,19 @@ export class XQoderAgentProvider implements AgentProvider {
               provider: this.name,
               tool: name,
               success,
+              ...(toolMetadata ? { metadata: toolMetadata as any } : {}),
+            });
+            events.push({
+              ...createEventBase('message.completed', runtime),
+              type: 'message.completed',
+              message: {
+                id: `${runtime.sessionId}:tool:${Date.now()}:${toolMessageSeq++}`,
+                sessionId: runtime.sessionId,
+                role: 'tool',
+                content: success ? result : `错误: ${result}`,
+                createdAt: Date.now(),
+                ...(toolCallId ? { toolCallId } : {}),
+              },
             });
             events.push({
               ...createEventBase('status.changed', runtime),

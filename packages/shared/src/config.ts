@@ -5,34 +5,47 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { detectProviderFromEnv as detectProviderFromEnvSync } from './provider-detect.js';
+import { DeployTarget } from './deploy-types.js';
+import type { LLMProviderConfig, LLMProviderName } from './llm-types.js';
 import {
-    DeployTarget,
-    type XQoderConfig,
-    type ProviderSettings,
-    type ProviderSettingsMap,
-    type LLMProviderConfig,
-    type LLMProviderName,
-    type LLMModelReference,
+    DEFAULT_CONTEXT_PATHS,
+    createDefaultShellConfig,
+    normalizeCompactionConfig,
+    normalizeContextPaths,
+    normalizeFormatterConfig,
+    normalizeLSPSettings,
+    normalizeMCPSettings,
+    normalizePluginPreferences,
+    normalizeSandboxSettings,
+    normalizeShellConfig,
+    normalizeTuiSettings,
+    normalizeWatcherConfig,
+} from './config-normalization.js';
+import {
     type AgentSettings,
     type AgentSettingsMap,
     type CommandTemplateSettings,
-    type PermissionSettings,
+    type CompactionConfig,
+    type FormatterConfig,
+    type LLMModelReference,
     type LSPServerConfig,
     type LSPSettings,
     type MCPServerConfig,
     type MCPSettings,
+    type PermissionSettings,
+    type PluginPreferences,
+    type ProviderSettings,
+    type ProviderSettingsMap,
     type SandboxMode,
     type SandboxSettings,
+    type ShellConfig,
+    type TuiConfig,
     type TuiMouseMode,
     type TuiPreferences,
-    type TuiConfig,
-    type FormatterConfig,
     type WatcherConfig,
-    type CompactionConfig,
-    type ShellConfig,
-    type PluginPreferences,
-} from './types.js';
+    type XQoderConfig,
+} from './config-types.js';
+import { detectProviderFromEnv as detectProviderFromEnvSync } from './provider-detect.js';
 import { ConfigError } from './errors.js';
 import { getDefaultModelForProvider, normalizeLLMConfig, SUPPORTED_LLM_PROVIDERS } from './llm.js';
 import { getXQoderPaths } from './paths.js';
@@ -45,28 +58,14 @@ const DEFAULT_LLM_CONFIG: LLMProviderConfig = normalizeLLMConfig({
     provider: 'openai',
 });
 
-const DEFAULT_CONTEXT_PATHS = [
-    '.github/copilot-instructions.md',
-    '.cursorrules',
-    '.cursor/rules/',
-    'CLAUDE.md',
-    'CLAUDE.local.md',
-    'opencode.md',
-    'opencode.local.md',
-    'OpenCode.md',
-    'OpenCode.local.md',
-    'OPENCODE.md',
-    'OPENCODE.local.md',
-];
-
 function createDefaultConfig(env: NodeJS.ProcessEnv = process.env): XQoderConfig {
-    const shellPath = env['SHELL']?.trim() || '/bin/bash';
-
     return {
         theme: 'default',
         tui: {
             mouseMode: 'terminal',
             scrollStep: 3,
+            inertiaDecayThreshold: 0.3,
+            inertiaMaxStep: 20,
         },
         llm: DEFAULT_LLM_CONFIG,
         providers: {
@@ -89,7 +88,7 @@ function createDefaultConfig(env: NodeJS.ProcessEnv = process.env): XQoderConfig
         },
         vercel: {},
         sandbox: {
-            mode: 'project',
+            mode: 'full-access',
             allowedPaths: [],
         },
         mcp: {
@@ -105,10 +104,7 @@ function createDefaultConfig(env: NodeJS.ProcessEnv = process.env): XQoderConfig
         debug: false,
         recentProjects: [],
         contextPaths: DEFAULT_CONTEXT_PATHS,
-        shell: {
-            path: shellPath,
-            args: ['-l'],
-        },
+        shell: createDefaultShellConfig(env),
         plugins: {
             enabled: [],
             disabled: [],
@@ -330,14 +326,14 @@ export class ConfigManager {
             llm: {
                 ...this.config.llm,
                 model,
-                ...(provider ? { provider: provider as import('./types.js').LLMProviderName } : {}),
+                ...(provider ? { provider: provider as LLMProviderName } : {}),
             },
         };
         this.save();
     }
 
     /** 设置特定 agent 的 model 并持久化 */
-    setModelForAgent(agentName: string, model: string, provider?: import('./types.js').LLMProviderName): void {
+    setModelForAgent(agentName: string, model: string, provider?: LLMProviderName): void {
         const agents = { ...(this.config.agents ?? {}) };
         agents[agentName] = {
             ...(agents[agentName] ?? {}),
@@ -543,15 +539,6 @@ export function normalizeXQoderConfig(input: Partial<XQoderConfig>): XQoderConfi
         contextPaths: normalizeContextPaths(input.contextPaths),
         shell: normalizeShellConfig(input.shell),
         plugins: normalizePluginPreferences(input.plugins),
-    };
-}
-
-function normalizePluginPreferences(input: PluginPreferences | undefined): PluginPreferences {
-    return {
-        enabled: Array.isArray(input?.enabled) ? input.enabled.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0) : [],
-        disabled: Array.isArray(input?.disabled) ? input.disabled.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0) : [],
-        paths: Array.isArray(input?.paths) ? input.paths.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0) : [],
-        allowIncompatible: input?.allowIncompatible ?? false,
     };
 }
 
@@ -820,137 +807,6 @@ function parseBooleanEnv(value: string | undefined): boolean | undefined {
         return false;
     }
     return undefined;
-}
-
-function normalizeSandboxSettings(settings: Partial<SandboxSettings> = {}): SandboxSettings {
-    return {
-        mode: settings.mode ?? 'project',
-        allowedPaths: (settings.allowedPaths ?? [])
-            .map((value) => value.trim())
-            .filter(Boolean),
-    };
-}
-
-function normalizeTuiSettings(settings: Partial<TuiPreferences> | undefined): TuiPreferences {
-    return {
-        mouseMode: settings?.mouseMode === 'app' ? 'app' : 'terminal',
-        scrollStep: normalizeScrollStep(settings?.scrollStep),
-    };
-}
-
-function normalizeMCPSettings(settings: Partial<MCPSettings> | undefined): MCPSettings {
-    return {
-        servers: (settings?.servers ?? []).map((server) => normalizeMCPServerConfig(server)),
-    };
-}
-
-function normalizeLSPSettings(settings: Partial<LSPSettings> | undefined): LSPSettings {
-    return {
-        servers: (settings?.servers ?? []).map((server) => normalizeLSPServerConfig(server)),
-    };
-}
-
-function normalizeMCPServerConfig(server: MCPServerConfig): MCPServerConfig {
-    const normalizedEnv = Object.fromEntries(
-        Object.entries(server.env ?? {})
-            .map(([key, value]) => [key.trim(), value])
-            .filter(([key, value]) => key.length > 0 && typeof value === 'string'),
-    );
-    const normalizedArgs = (server.args ?? [])
-        .map((value) => value.trim())
-        .filter(Boolean);
-    const normalizedHeaders = Object.fromEntries(
-        Object.entries(server.headers ?? {})
-            .map(([key, value]) => [key.trim(), value])
-            .filter(([key, value]) => key.length > 0 && typeof value === 'string'),
-    );
-    const transport = server.transport === 'http' || server.transport === 'sse'
-        ? server.transport
-        : 'stdio';
-
-    return {
-        name: server.name?.trim() || '',
-        transport,
-        ...(server.command?.trim() ? { command: server.command.trim() } : {}),
-        args: normalizedArgs,
-        env: normalizedEnv,
-        cwd: server.cwd?.trim() || undefined,
-        ...(server.url?.trim() ? { url: server.url.trim() } : {}),
-        ...(Object.keys(normalizedHeaders).length > 0 ? { headers: normalizedHeaders } : {}),
-        enabled: server.enabled ?? true,
-        timeoutMs: normalizeTimeout(server.timeoutMs),
-    };
-}
-
-function normalizeLSPServerConfig(server: LSPServerConfig): LSPServerConfig {
-    const normalizedEnv = Object.fromEntries(
-        Object.entries(server.env ?? {})
-            .map(([key, value]) => [key.trim(), value])
-            .filter(([key, value]) => key.length > 0 && typeof value === 'string'),
-    );
-    const normalizedArgs = (server.args ?? [])
-        .map((value) => value.trim())
-        .filter(Boolean);
-    const normalizedExtensions = (server.extensions ?? [])
-        .map((value) => normalizeExtension(value))
-        .filter(Boolean);
-    const normalizedBase = {
-        name: server.name?.trim() || '',
-        extensions: Array.from(new Set(normalizedExtensions)),
-        languageId: server.languageId?.trim() || undefined,
-        env: normalizedEnv,
-        cwd: server.cwd?.trim() || undefined,
-        enabled: server.enabled ?? true,
-        timeoutMs: normalizeTimeout(server.timeoutMs),
-        initializationOptions: server.initializationOptions ?? undefined,
-    };
-
-    if (server.transport === 'tcp') {
-        return {
-            ...normalizedBase,
-            transport: 'tcp',
-            host: server.host?.trim() || '127.0.0.1',
-            port: normalizePort(server.port),
-            ...(server.command?.trim() ? { command: server.command.trim() } : {}),
-            args: normalizedArgs,
-        };
-    }
-
-    return {
-        ...normalizedBase,
-        transport: 'stdio',
-        command: server.command?.trim() || '',
-        args: normalizedArgs,
-    };
-}
-
-function normalizeTimeout(value: number | undefined): number {
-    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-        return 15_000;
-    }
-    return Math.trunc(value);
-}
-
-function normalizeScrollStep(value: number | undefined): number {
-    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-        return 3;
-    }
-    return Math.max(1, Math.trunc(value));
-}
-
-function normalizePort(value: number | undefined): number {
-    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-        return 0;
-    }
-    return Math.trunc(value);
-}
-
-function normalizeExtension(value: string): string {
-    const normalized = value.trim();
-    if (!normalized) {
-        return '';
-    }
-    return normalized.startsWith('.') ? normalized : `.${normalized}`;
 }
 
 function parseSandboxModeEnv(value: string | undefined): SandboxMode | undefined {
@@ -1379,66 +1235,6 @@ export function substituteConfigVars<T>(obj: T, env?: NodeJS.ProcessEnv): T {
         return result as T;
     }
     return obj;
-}
-
-function normalizeFormatterConfig(config: FormatterConfig | undefined): FormatterConfig | undefined {
-    if (!config?.command?.trim()) {
-        return undefined;
-    }
-
-    return {
-        command: config.command.trim(),
-        args: (config.args ?? []).map(a => a.trim()).filter(Boolean),
-        extensions: (config.extensions ?? []).map(e => normalizeExtension(e)).filter(Boolean),
-    };
-}
-
-function normalizeWatcherConfig(config: WatcherConfig | undefined): WatcherConfig | undefined {
-    if (!config?.ignore?.length) {
-        return undefined;
-    }
-
-    return {
-        ignore: config.ignore.map(p => p.trim()).filter(Boolean),
-    };
-}
-
-function normalizeCompactionConfig(
-    config: CompactionConfig | undefined,
-    autoCompact: boolean | undefined,
-): CompactionConfig | undefined {
-    if (!config && autoCompact === undefined) {
-        return undefined;
-    }
-
-    return {
-        auto: autoCompact ?? config?.auto ?? true,
-        prune: config?.prune ?? false,
-        reserved: typeof config?.reserved === 'number' && Number.isFinite(config.reserved)
-            ? Math.max(1, Math.trunc(config.reserved))
-            : undefined,
-    };
-}
-
-function normalizeContextPaths(paths: string[] | undefined): string[] | undefined {
-    if (!paths?.length) {
-        return [...DEFAULT_CONTEXT_PATHS];
-    }
-
-    return paths.map(p => p.trim()).filter(Boolean);
-}
-
-function normalizeShellConfig(config: ShellConfig | undefined): ShellConfig | undefined {
-    if (!config) {
-        return createDefaultConfig().shell;
-    }
-
-    const fallbackShell = createDefaultConfig().shell;
-
-    return {
-        path: config.path?.trim() || fallbackShell?.path,
-        args: (config.args !== undefined ? config.args : fallbackShell?.args ?? []).map(a => a.trim()).filter(Boolean),
-    };
 }
 
 function normalizeLoadedConfigShape(input: Partial<XQoderConfig>): Partial<XQoderConfig> {

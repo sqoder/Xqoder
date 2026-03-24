@@ -1,0 +1,21 @@
+[package]
+name = "xqoder-renderer"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["napi-bindings"]
+napi-bindings = ["dep:napi", "dep:napi-derive"]
+
+[lib]
+name = "xqoder_renderer"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+napi = { version = "2", features = ["async"], optional = true }
+napi-derive = { version = "2", optional = true }
+crossterm = "0.28"
+unicode-width = "0.2"
+
+[build-dependencies]
+napi-build = "2"

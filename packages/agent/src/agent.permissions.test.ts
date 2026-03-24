@@ -123,7 +123,7 @@ describe('XQoderAgent permission behavior without approval callback', () => {
         await agent.run('try write file');
 
         expect(fs.existsSync(target)).toBe(false);
-        const toolResult = agent.getSession().getMessages().find((message) => message.role === 'tool');
+        const toolResult = agent.getSessionSnapshot().messages.find((message) => message.role === 'tool');
         expect(toolResult?.content).toContain('审批被拒绝');
         await agent.dispose();
     });
@@ -152,7 +152,7 @@ describe('XQoderAgent permission behavior without approval callback', () => {
         await agent.run('try write file');
 
         expect(fs.existsSync(target)).toBe(false);
-        const toolResult = agent.getSession().getMessages().find((message) => message.role === 'tool');
+        const toolResult = agent.getSessionSnapshot().messages.find((message) => message.role === 'tool');
         expect(toolResult?.content).toContain('permission: deny');
         await agent.dispose();
     });

@@ -3,7 +3,7 @@
 // 参考 OpenCode: cmd/schema/main.go
 // ============================================================
 
-import type { XQoderConfig } from './types.js';
+import type { XQoderConfig } from './config-types.js';
 
 type JsonSchemaType = 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null';
 
@@ -51,6 +51,8 @@ export function generateConfigSchema(): JsonSchema {
                 properties: {
                     mouseMode: { type: 'string', enum: ['terminal', 'app'], default: 'terminal' },
                     scrollStep: { type: 'number', default: 3 },
+                    inertiaDecayThreshold: { type: 'number', default: 0.3 },
+                    inertiaMaxStep: { type: 'number', default: 20 },
                 },
             },
             llm: {
