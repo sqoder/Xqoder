@@ -1,0 +1,42 @@
+name: Session Recovery
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+concurrency:
+  group: session-recovery-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  session-recovery:
+    name: Session Recovery Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared and agent packages
+        run: |
+          pnpm --filter @xqoder/shared build
+          pnpm --filter @xqoder/agent build
+
+      - name: Verify session recovery
+        run: pnpm verify:session:recovery

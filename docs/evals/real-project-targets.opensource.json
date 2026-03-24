@@ -1,0 +1,79 @@
+{
+  "projects": [
+    {
+      "id": "openclaw-monorepo",
+      "label": "OpenClaw Monorepo",
+      "checkoutRoot": "/Users/wangxinglin/Desktop/code/openclaw",
+      "repo": "https://github.com/openclaw/openclaw",
+      "prepareCommand": "pnpm install --frozen-lockfile",
+      "testCommand": "pnpm vitest run --config vitest.unit.config.ts src/logger.test.ts",
+      "requiredCommands": ["pnpm"],
+      "enabled": true,
+      "notes": "Local external OSS target with validated build/test/fix/deploy drill coverage."
+    },
+    {
+      "id": "opencode-core-package",
+      "label": "OpenCode Core Package",
+      "checkoutRoot": "/Users/wangxinglin/Desktop/code/opencode-dev",
+      "projectPath": "packages/opencode",
+      "repo": "https://github.com/anomalyco/opencode",
+      "prepareCommand": "cd ../.. && bun install",
+      "testCommand": "bun test --timeout 30000",
+      "scenarios": ["test", "fix", "build", "deploy"],
+      "requiredCommands": ["bun"],
+      "commandEnv": {
+        "OPENCODE_CHANNEL": "latest"
+      },
+      "deployBuildCommand": "bun run build --single",
+      "deployOutputDir": "dist/opencode-darwin-arm64/bin",
+      "enabled": true,
+      "notes": "Validated local OpenCode core target for test/fix/build/deploy drill coverage. Snapshot deploy uses OPENCODE_CHANNEL=latest plus a single-platform build override."
+    },
+    {
+      "id": "opencode-app-package",
+      "label": "OpenCode App Package",
+      "checkoutRoot": "/Users/wangxinglin/Desktop/code/opencode-dev",
+      "projectPath": "packages/app",
+      "repo": "https://github.com/anomalyco/opencode",
+      "prepareCommand": "cd ../.. && bun install",
+      "testCommand": "bun run test:unit",
+      "scenarios": ["test", "fix", "build", "deploy"],
+      "requiredCommands": ["bun"],
+      "enabled": true,
+      "notes": "Validated OpenCode frontend target for external real-project test/fix/build/deploy coverage."
+    },
+    {
+      "id": "directus-monorepo",
+      "label": "Directus Monorepo",
+      "checkoutRoot": "/Users/wangxinglin/Desktop/code/directus",
+      "projectPath": "packages/schema-builder",
+      "repo": "https://github.com/directus/directus",
+      "prepareCommand": "cd .. && pnpm install --frozen-lockfile",
+      "testCommand": "pnpm test",
+      "scenarios": ["test", "fix", "build", "deploy"],
+      "requiredCommands": ["pnpm"],
+      "enabled": true,
+      "notes": "Directus external package target using packages/schema-builder. Stable workspace package with real build/test/dist output for deploy drill coverage."
+    },
+    {
+      "id": "fastapi-template",
+      "label": "Full Stack FastAPI Template",
+      "checkoutRoot": "/Users/wangxinglin/Desktop/code/full-stack-fastapi-template",
+      "projectPath": "backend",
+      "repo": "https://github.com/fastapi/full-stack-fastapi-template",
+      "prepareCommand": "uv sync && (docker info >/dev/null 2>&1 || colima start) && docker-compose -f ../compose.yml -f ../compose.override.yml up -d db && uv run alembic upgrade head",
+      "testCommand": "uv run bash scripts/test.sh",
+      "scenarios": ["test"],
+      "requiredCommands": ["uv", "python3", "docker-compose"],
+      "requiredPaths": ["../.env"],
+      "readinessChecks": [
+        {
+          "label": "postgres@localhost:5432",
+          "command": "python3 -c \"import socket; socket.create_connection(('localhost', 5432), 1).close()\""
+        }
+      ],
+      "enabled": true,
+      "notes": "Python backend sample with docker-compose-backed local Postgres preparation. Default coverage is test-only for now; deploy/build/fix stay out of scope until the Python workflow drills are promoted."
+    }
+  ]
+}

@@ -1,40 +1,55 @@
 # Release Artifact Index
 
-Generated: 2026-03-23T04:21:18Z
+Generated: 2026-03-24T14:59:08.339Z
 
-## Current RC
+> Workflow parity and release state below are point-in-time snapshots from `origin`.
+> Refresh with `pnpm capture:release:plans` before using this page for PR or release decisions.
 
-| Field | Value |
-|---|---|
-| Version | `0.1.0-rc.202603230340` |
-| Tag | `v0.1.0-rc.202603230340` |
-| Tag Commit | `25d1e27231826891f6d45bdda907b8f544930b8e` |
-| Release PR | [#5](https://github.com/sqoder/Xqoder/pull/5) |
-| Release Docs Sync PRs | [#6](https://github.com/sqoder/Xqoder/pull/6), [#7](https://github.com/sqoder/Xqoder/pull/7) |
+## Release Plans
 
-## Verification Evidence
+| Channel | Strict | File | SHA-256 |
+|---|---|---|---|
+| rc | no | docs/artifacts/release/prepare-rc.txt | 928ad4b30ccf524240c98bdda75a2d8d01dd2d9431e5bf1964c08d7b5f4080e7 |
+| rc | yes | docs/artifacts/release/prepare-rc-strict.txt | c3833d32bf794f8704644ef350ae7aa0eeba4d18a59bd7c3ff6aa4ee506f417e |
+| beta | no | docs/artifacts/release/prepare-beta.txt | 29086eb557872a2b50e8a9b4d7b8419f056a855b772587bd583455c05c9cd34a |
+| beta | yes | docs/artifacts/release/prepare-beta-strict.txt | ad348366216fb66a5a7297463a55165fba5e3043311e4f179933bb7c405c3a5e |
+| stable | no | docs/artifacts/release/prepare-stable.txt | feadff1a169a8eb546c6104e578d94c58235c2b001bd088875d21885f0ea9a91 |
+| stable | yes | docs/artifacts/release/prepare-stable-strict.txt | c53d0e6d0d6e5c4fa0bf20ba67211e02d36e2b5811735fc73501f84ebe14aa81 |
 
-| Scope | Reference | Status |
-|---|---|---|
-| PR #5 CI | run `23420474138` | success |
-| PR #5 Platform Matrix | run `23420474134` | success |
-| Main CI (post PR #5) | run `23420551339` | success |
-| Main Platform Matrix (post PR #5) | run `23420551345` | success |
-| Main CI (post PR #6) | run `23420733092` | success |
-| Main Platform Matrix (post PR #6) | run `23420733073` | success |
-| Main CI (post PR #7) | run `23420936267` | success |
-| Main Platform Matrix (post PR #7) | run `23420936268` | success |
+## Workflow Parity
 
-## Release Artifacts
+- file: docs/artifacts/release/workflow-parity.json
+- sha256: 96ddc3f84bf1ca9f2325393fbe7c7ef7485380e45dc122aafb82fbfb5e61b4a0
+- snapshot generated: 2026-03-24T14:59:05.074Z
+- missing on remote: 4
+- names: Benchmark Gates, Release Gate, Renderer Mode (rust) Tests, Session Recovery
+- remote only: 1
+- names: Manual E2E
 
-| Artifact | File | SHA-256 |
-|---|---|---|
-| RC strict prepare output | `docs/artifacts/release/prepare-rc-strict.txt` | `dbedb6c14a91998e2ff05601cd1791e4d2abeafc1c1b61277290e852f963c4b7` |
-| Phase 4 gate review | `docs/artifacts/release/phase4-gate-review-2026-03-23.md` | `c77cee7b4876788f24198d2a1decc85d7965ae4f61c4989de6ce84a6dc8db7f5` |
-| RC announcement | `docs/artifacts/release/rc-announcement-2026-03-23.md` | `7f846af7e1f6ed92dcb1db35af5c8a9f04a8e7dc8975026086c9713a7c941687` |
-| Rollout checklist (10/30/100) | `docs/artifacts/release/rollout/0.1.0-rc.202603230340/checklist.md` | `f65fbbb2f3a37c6c93a66d588a0e5b8b7ae89c8cc6a3efc626d2fa1956b81c9b` |
-| Rollout metrics (10%, current) | `docs/artifacts/release/rollout/0.1.0-rc.202603230340/metrics-stage10.json` | `2ffe64e90eae3a9dba695dd88f87e7a4181c492be2e67f41298b68eb050cde4a` |
-| Rollout gate report (10%) | `docs/artifacts/release/rollout/0.1.0-rc.202603230340/report-stage10.json` | `3e403a3ec9122d402e742605a5fc784ae7a9a51b9b57f5735d3eb2ff6083c4d9` |
-| Rollout status summary (10%) | `docs/artifacts/release/rollout/0.1.0-rc.202603230340/status-stage10.md` | `009f9f2ab0ba34d9188af6c5849828c82079f50c4f25a7ffbdbdcd6a4221b10f` |
-| Rollout metrics template (30%) | `docs/artifacts/release/rollout/0.1.0-rc.202603230340/metrics-stage30.json` | `d1ed2bff5865f5a18aaf6ada9ce0413d5da4a48c98497664da6bf7df14e16564` |
-| Rollout metrics template (100%) | `docs/artifacts/release/rollout/0.1.0-rc.202603230340/metrics-stage100.json` | `c103f4af00662c8733d9f0ba9a8b456daca3400aa2acc24e5897b0b1fc702443` |
+## Release State
+
+- file: docs/artifacts/release/release-state.json
+- sha256: c4752c6accc4f7020c2a786b3876aedefc6312d73ae3217d0cc048fcca5058dc
+- snapshot generated: 2026-03-24T14:59:07.938Z
+- reference: origin/main
+- reference commit: c9b233b6d4e23223370ad7d22cf2c43cbab41d8f
+- local workspace version: 0.1.0
+- current version on reference: 0.1.0-rc.202603230340
+- expected stable tag: v0.1.0
+- stable tag present on origin: no
+- latest rc tag on origin: v0.1.0-rc.202603230340
+- strict release gate available on reference: no
+- strict dry-run available on reference: no
+- strict gate ready on reference: no
+- missing gate scripts on reference: release:check:strict, release:check:strict:dry-run, capture:release:plans, verify:contracts, verify:session:recovery, verify:terminal:main-path, verify:release:blockers
+
+## Theme PR Plan
+
+- file: docs/artifacts/release/theme-pr-plan.md
+- sha256: ec856a0cad758dfa6f99c6bf02c90e93c3df278823a7c3f44f095a50656f2b16
+
+## Week6 Stability Report
+
+- file: docs/artifacts/week6/stability-report.md
+- sha256: d95e132fb1292edbbf5cd84f68348f7b35da674bd9192c2c001bfda8ce986e7c
+

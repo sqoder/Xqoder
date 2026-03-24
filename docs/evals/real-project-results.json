@@ -1,0 +1,933 @@
+{
+  "slug": "real-project-results",
+  "title": "Real Project Workflow Eval",
+  "generatedAt": "2026-03-24T14:59:11.401Z",
+  "summary": "Aggregates workflow-history records for non-fixture projects and tracks progress toward the roadmap goal of publishing reproducible real-project build/test/fix/deploy coverage.",
+  "meta": {
+    "workflowHistoryPath": "/Users/wangxinglin/.xqoder/data/workflow-history.jsonl",
+    "targetsPath": "/Users/wangxinglin/Desktop/code/Xqoder/docs/evals/real-project-targets.json",
+    "selectionMode": "targets",
+    "totalProjects": 10,
+    "totalRuns": 129,
+    "declaredTargets": 10,
+    "readyTargets": 9,
+    "syncNeededTargets": 0,
+    "blockedTargets": 1,
+    "disabledTargets": 0,
+    "roadmapTargetProjects": 5,
+    "roadmapTargetRuns": 15,
+    "roadmapTargetBuildProjects": 5,
+    "roadmapTargetFixProjects": 5,
+    "roadmapTargetDeployProjects": 5
+  },
+  "sections": [
+    {
+      "title": "Overview",
+      "metrics": {
+        "totalProjects": 10,
+        "totalRuns": 129,
+        "successfulRuns": 128,
+        "failedRuns": 1,
+        "overallSuccessRate": 0.9922
+      }
+    },
+    {
+      "title": "Flow Success Rate",
+      "metrics": {
+        "buildSuccessRate": 1,
+        "fixSuccessRate": 1,
+        "testSuccessRate": 1,
+        "deploySuccessRate": 0.9744
+      }
+    },
+    {
+      "title": "Coverage",
+      "metrics": {
+        "projectsWithBuildCoverage": 9,
+        "projectsWithFixCoverage": 9,
+        "projectsWithTestCoverage": 10,
+        "projectsWithDeployCoverage": 9
+      }
+    },
+    {
+      "title": "Target Readiness",
+      "metrics": {
+        "declaredTargets": 10,
+        "readyTargets": 9,
+        "syncNeededTargets": 0,
+        "blockedTargets": 1,
+        "disabledTargets": 0
+      }
+    }
+  ],
+  "targets": [
+    {
+      "id": "agent-package",
+      "label": "XQoder Agent Package",
+      "enabled": true,
+      "readiness": "ready",
+      "blockers": [],
+      "projectRoot": "/Users/wangxinglin/Desktop/code/Xqoder/packages/agent",
+      "notes": "Stable workspace package used as a deterministic real-project build/test/fix drill target.",
+      "runs": 21,
+      "coverage": {
+        "build": 2,
+        "fix": 4,
+        "test": 10,
+        "deploy": 5
+      }
+    },
+    {
+      "id": "protocol-package",
+      "label": "XQoder Protocol Package",
+      "enabled": true,
+      "readiness": "ready",
+      "blockers": [],
+      "projectRoot": "/Users/wangxinglin/Desktop/code/Xqoder/packages/protocol",
+      "notes": "Small protocol package with deterministic build/test/fix drill coverage.",
+      "runs": 21,
+      "coverage": {
+        "build": 3,
+        "fix": 3,
+        "test": 10,
+        "deploy": 5
+      }
+    },
+    {
+      "id": "shared-package",
+      "label": "XQoder Shared Package",
+      "enabled": true,
+      "readiness": "ready",
+      "blockers": [],
+      "projectRoot": "/Users/wangxinglin/Desktop/code/Xqoder/packages/shared",
+      "notes": "Shared utilities package used for repeatable local build/test/fix drill evaluation.",
+      "runs": 20,
+      "coverage": {
+        "build": 2,
+        "fix": 3,
+        "test": 10,
+        "deploy": 5
+      }
+    },
+    {
+      "id": "plugin-sdk-package",
+      "label": "XQoder Plugin SDK Package",
+      "enabled": true,
+      "readiness": "ready",
+      "blockers": [],
+      "projectRoot": "/Users/wangxinglin/Desktop/code/Xqoder/packages/plugin-sdk",
+      "notes": "Plugin SDK package with a focused Vitest suite and deterministic build/test/fix drill coverage.",
+      "runs": 20,
+      "coverage": {
+        "build": 2,
+        "fix": 3,
+        "test": 10,
+        "deploy": 5
+      }
+    },
+    {
+      "id": "permissions-package",
+      "label": "XQoder Permissions Package",
+      "enabled": true,
+      "readiness": "ready",
+      "blockers": [],
+      "projectRoot": "/Users/wangxinglin/Desktop/code/Xqoder/packages/permissions",
+      "notes": "Minimal package used to seed baseline real-project build/test/fix drill workflow history.",
+      "runs": 20,
+      "coverage": {
+        "build": 2,
+        "fix": 3,
+        "test": 10,
+        "deploy": 5
+      }
+    },
+    {
+      "id": "openclaw-monorepo",
+      "label": "OpenClaw Monorepo (Optional)",
+      "enabled": true,
+      "readiness": "ready",
+      "blockers": [],
+      "projectRoot": "/Users/wangxinglin/Desktop/code/openclaw",
+      "checkoutRoot": "/Users/wangxinglin/Desktop/code/openclaw",
+      "repo": "https://github.com/openclaw/openclaw",
+      "requiredCommands": [
+        "pnpm"
+      ],
+      "notes": "Validated external OSS target with build/test/fix/deploy drill coverage and default-run readiness.",
+      "runs": 7,
+      "coverage": {
+        "build": 1,
+        "fix": 1,
+        "test": 1,
+        "deploy": 4
+      }
+    },
+    {
+      "id": "opencode-core-package",
+      "label": "OpenCode Core Package (Optional)",
+      "enabled": true,
+      "readiness": "ready",
+      "blockers": [],
+      "projectRoot": "/Users/wangxinglin/Desktop/code/opencode-dev/packages/opencode",
+      "checkoutRoot": "/Users/wangxinglin/Desktop/code/opencode-dev",
+      "repo": "https://github.com/anomalyco/opencode",
+      "scenarios": [
+        "test",
+        "fix",
+        "build",
+        "deploy"
+      ],
+      "requiredCommands": [
+        "bun"
+      ],
+      "notes": "Validated external OpenCode core target for test/fix/build/deploy drill coverage. Snapshot deploy uses OPENCODE_CHANNEL=latest plus a single-platform build override.",
+      "runs": 6,
+      "coverage": {
+        "build": 1,
+        "fix": 1,
+        "test": 1,
+        "deploy": 3
+      }
+    },
+    {
+      "id": "opencode-app-package",
+      "label": "OpenCode App Package (Optional)",
+      "enabled": true,
+      "readiness": "ready",
+      "blockers": [],
+      "projectRoot": "/Users/wangxinglin/Desktop/code/opencode-dev/packages/app",
+      "checkoutRoot": "/Users/wangxinglin/Desktop/code/opencode-dev",
+      "repo": "https://github.com/anomalyco/opencode",
+      "scenarios": [
+        "test",
+        "fix",
+        "build",
+        "deploy"
+      ],
+      "requiredCommands": [
+        "bun"
+      ],
+      "notes": "Validated external OpenCode frontend target with test/fix/build/deploy drill coverage on the local snapshot checkout.",
+      "runs": 6,
+      "coverage": {
+        "build": 1,
+        "fix": 1,
+        "test": 1,
+        "deploy": 3
+      }
+    },
+    {
+      "id": "directus-monorepo",
+      "label": "Directus Monorepo (Optional)",
+      "enabled": true,
+      "readiness": "ready",
+      "blockers": [],
+      "projectRoot": "/Users/wangxinglin/Desktop/code/directus/packages/schema-builder",
+      "checkoutRoot": "/Users/wangxinglin/Desktop/code/directus",
+      "repo": "https://github.com/directus/directus",
+      "scenarios": [
+        "test",
+        "fix",
+        "build",
+        "deploy"
+      ],
+      "requiredCommands": [
+        "pnpm"
+      ],
+      "notes": "Validated Directus package target using packages/schema-builder with stable build/test/dist output for default external build/deploy drill coverage.",
+      "runs": 7,
+      "coverage": {
+        "build": 1,
+        "fix": 1,
+        "test": 1,
+        "deploy": 4
+      }
+    },
+    {
+      "id": "fastapi-template",
+      "label": "Full Stack FastAPI Template (Optional)",
+      "enabled": true,
+      "readiness": "blocked",
+      "blockers": [
+        "failed readiness checks: postgres@localhost:5432"
+      ],
+      "projectRoot": "/Users/wangxinglin/Desktop/code/full-stack-fastapi-template/backend",
+      "checkoutRoot": "/Users/wangxinglin/Desktop/code/full-stack-fastapi-template",
+      "repo": "https://github.com/fastapi/full-stack-fastapi-template",
+      "scenarios": [
+        "test"
+      ],
+      "requiredCommands": [
+        "uv",
+        "python3",
+        "docker-compose"
+      ],
+      "requiredPaths": [
+        "/Users/wangxinglin/Desktop/code/full-stack-fastapi-template/.env"
+      ],
+      "readinessChecks": [
+        {
+          "label": "postgres@localhost:5432",
+          "command": "python3 -c \"import socket; socket.create_connection(('localhost', 5432), 1).close()\""
+        }
+      ],
+      "notes": "Optional Python backend target with docker-compose-backed local Postgres preparation. Default coverage is test-only for now; deploy/build/fix stay out of scope until the Python workflow drills are promoted.",
+      "runs": 1,
+      "coverage": {
+        "build": 0,
+        "fix": 0,
+        "test": 1,
+        "deploy": 0
+      }
+    }
+  ],
+  "projects": [
+    {
+      "id": "protocol-package",
+      "label": "XQoder Protocol Package",
+      "projectRoot": "/Users/wangxinglin/Desktop/code/Xqoder/packages/protocol",
+      "notes": "Small protocol package with deterministic build/test/fix drill coverage.",
+      "runs": 21,
+      "successfulRuns": 21,
+      "failedRuns": 0,
+      "successRate": 1,
+      "firstRunAt": "2026-03-23T01:55:16.407Z",
+      "lastRunAt": "2026-03-23T15:44:22.191Z",
+      "flowCoverage": [
+        {
+          "flow": "build",
+          "runs": 3,
+          "successfulRuns": 3,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 523.7
+        },
+        {
+          "flow": "fix",
+          "runs": 3,
+          "successfulRuns": 3,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 1
+        },
+        {
+          "flow": "test",
+          "runs": 10,
+          "successfulRuns": 10,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 529
+        },
+        {
+          "flow": "deploy",
+          "runs": 5,
+          "successfulRuns": 5,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 537.2
+        }
+      ],
+      "failureBuckets": [],
+      "models": [
+        "deterministic-build-drill",
+        "deterministic-fix-drill"
+      ],
+      "agents": [
+        "eval-drill"
+      ],
+      "commands": [
+        "npm run build",
+        "npm run test",
+        "xqoder eval:real-projects --scenario build-drill --phase verify",
+        "xqoder eval:real-projects --scenario fix-drill --phase verify"
+      ]
+    },
+    {
+      "id": "agent-package",
+      "label": "XQoder Agent Package",
+      "projectRoot": "/Users/wangxinglin/Desktop/code/Xqoder/packages/agent",
+      "notes": "Stable workspace package used as a deterministic real-project build/test/fix drill target.",
+      "runs": 21,
+      "successfulRuns": 21,
+      "failedRuns": 0,
+      "successRate": 1,
+      "firstRunAt": "2026-03-23T01:55:15.466Z",
+      "lastRunAt": "2026-03-23T15:44:21.364Z",
+      "flowCoverage": [
+        {
+          "flow": "build",
+          "runs": 2,
+          "successfulRuns": 2,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 2369.5
+        },
+        {
+          "flow": "fix",
+          "runs": 4,
+          "successfulRuns": 4,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 1.5
+        },
+        {
+          "flow": "test",
+          "runs": 10,
+          "successfulRuns": 10,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 2294.2
+        },
+        {
+          "flow": "deploy",
+          "runs": 5,
+          "successfulRuns": 5,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 1347.4
+        }
+      ],
+      "failureBuckets": [],
+      "models": [
+        "deterministic-build-drill",
+        "deterministic-fix-drill"
+      ],
+      "agents": [
+        "eval-drill"
+      ],
+      "commands": [
+        "npm run build",
+        "npm run test",
+        "xqoder eval:real-projects --scenario build-drill --phase verify",
+        "xqoder eval:real-projects --scenario fix-drill --phase verify"
+      ]
+    },
+    {
+      "id": "permissions-package",
+      "label": "XQoder Permissions Package",
+      "projectRoot": "/Users/wangxinglin/Desktop/code/Xqoder/packages/permissions",
+      "notes": "Minimal package used to seed baseline real-project build/test/fix drill workflow history.",
+      "runs": 20,
+      "successfulRuns": 20,
+      "failedRuns": 0,
+      "successRate": 1,
+      "firstRunAt": "2026-03-23T01:55:19.009Z",
+      "lastRunAt": "2026-03-23T15:44:24.778Z",
+      "flowCoverage": [
+        {
+          "flow": "build",
+          "runs": 2,
+          "successfulRuns": 2,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 130.5
+        },
+        {
+          "flow": "fix",
+          "runs": 3,
+          "successfulRuns": 3,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 1
+        },
+        {
+          "flow": "test",
+          "runs": 10,
+          "successfulRuns": 10,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 133.4
+        },
+        {
+          "flow": "deploy",
+          "runs": 5,
+          "successfulRuns": 5,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 430.4
+        }
+      ],
+      "failureBuckets": [],
+      "models": [
+        "deterministic-build-drill",
+        "deterministic-fix-drill"
+      ],
+      "agents": [
+        "eval-drill"
+      ],
+      "commands": [
+        "npm run build",
+        "npm run test",
+        "xqoder eval:real-projects --scenario build-drill --phase verify",
+        "xqoder eval:real-projects --scenario fix-drill --phase verify"
+      ]
+    },
+    {
+      "id": "plugin-sdk-package",
+      "label": "XQoder Plugin SDK Package",
+      "projectRoot": "/Users/wangxinglin/Desktop/code/Xqoder/packages/plugin-sdk",
+      "notes": "Plugin SDK package with a focused Vitest suite and deterministic build/test/fix drill coverage.",
+      "runs": 20,
+      "successfulRuns": 20,
+      "failedRuns": 0,
+      "successRate": 1,
+      "firstRunAt": "2026-03-23T01:55:18.484Z",
+      "lastRunAt": "2026-03-23T15:44:24.077Z",
+      "flowCoverage": [
+        {
+          "flow": "build",
+          "runs": 2,
+          "successfulRuns": 2,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 520
+        },
+        {
+          "flow": "fix",
+          "runs": 3,
+          "successfulRuns": 3,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 1
+        },
+        {
+          "flow": "test",
+          "runs": 10,
+          "successfulRuns": 10,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 531.4
+        },
+        {
+          "flow": "deploy",
+          "runs": 5,
+          "successfulRuns": 5,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 528.4
+        }
+      ],
+      "failureBuckets": [],
+      "models": [
+        "deterministic-build-drill",
+        "deterministic-fix-drill"
+      ],
+      "agents": [
+        "eval-drill"
+      ],
+      "commands": [
+        "npm run build",
+        "npm run test",
+        "xqoder eval:real-projects --scenario build-drill --phase verify",
+        "xqoder eval:real-projects --scenario fix-drill --phase verify"
+      ]
+    },
+    {
+      "id": "shared-package",
+      "label": "XQoder Shared Package",
+      "projectRoot": "/Users/wangxinglin/Desktop/code/Xqoder/packages/shared",
+      "notes": "Shared utilities package used for repeatable local build/test/fix drill evaluation.",
+      "runs": 20,
+      "successfulRuns": 20,
+      "failedRuns": 0,
+      "successRate": 1,
+      "firstRunAt": "2026-03-23T01:55:17.557Z",
+      "lastRunAt": "2026-03-23T15:44:23.286Z",
+      "flowCoverage": [
+        {
+          "flow": "build",
+          "runs": 2,
+          "successfulRuns": 2,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 624
+        },
+        {
+          "flow": "fix",
+          "runs": 3,
+          "successfulRuns": 3,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 1
+        },
+        {
+          "flow": "test",
+          "runs": 10,
+          "successfulRuns": 10,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 648.3
+        },
+        {
+          "flow": "deploy",
+          "runs": 5,
+          "successfulRuns": 5,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 807
+        }
+      ],
+      "failureBuckets": [],
+      "models": [
+        "deterministic-build-drill",
+        "deterministic-fix-drill"
+      ],
+      "agents": [
+        "eval-drill"
+      ],
+      "commands": [
+        "npm run build",
+        "npm run test",
+        "xqoder eval:real-projects --scenario build-drill --phase verify",
+        "xqoder eval:real-projects --scenario fix-drill --phase verify"
+      ]
+    },
+    {
+      "id": "directus-monorepo",
+      "label": "Directus Monorepo (Optional)",
+      "projectRoot": "/Users/wangxinglin/Desktop/code/directus/packages/schema-builder",
+      "repo": "https://github.com/directus/directus",
+      "notes": "Validated Directus package target using packages/schema-builder with stable build/test/dist output for default external build/deploy drill coverage.",
+      "runs": 7,
+      "successfulRuns": 7,
+      "failedRuns": 0,
+      "successRate": 1,
+      "firstRunAt": "2026-03-23T14:30:00.772Z",
+      "lastRunAt": "2026-03-23T15:44:55.584Z",
+      "flowCoverage": [
+        {
+          "flow": "build",
+          "runs": 1,
+          "successfulRuns": 1,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 1040
+        },
+        {
+          "flow": "fix",
+          "runs": 1,
+          "successfulRuns": 1,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 2
+        },
+        {
+          "flow": "test",
+          "runs": 1,
+          "successfulRuns": 1,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 1125
+        },
+        {
+          "flow": "deploy",
+          "runs": 4,
+          "successfulRuns": 4,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 703.5
+        }
+      ],
+      "failureBuckets": [],
+      "models": [
+        "deterministic-build-drill",
+        "deterministic-fix-drill"
+      ],
+      "agents": [
+        "eval-drill"
+      ],
+      "commands": [
+        "npm run build",
+        "pnpm test",
+        "xqoder eval:real-projects --scenario build-drill --phase verify",
+        "xqoder eval:real-projects --scenario fix-drill --phase verify"
+      ]
+    },
+    {
+      "id": "openclaw-monorepo",
+      "label": "OpenClaw Monorepo (Optional)",
+      "projectRoot": "/Users/wangxinglin/Desktop/code/openclaw",
+      "repo": "https://github.com/openclaw/openclaw",
+      "notes": "Validated external OSS target with build/test/fix/deploy drill coverage and default-run readiness.",
+      "runs": 7,
+      "successfulRuns": 7,
+      "failedRuns": 0,
+      "successRate": 1,
+      "firstRunAt": "2026-03-23T02:27:53.368Z",
+      "lastRunAt": "2026-03-23T15:44:39.048Z",
+      "flowCoverage": [
+        {
+          "flow": "build",
+          "runs": 1,
+          "successfulRuns": 1,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 794
+        },
+        {
+          "flow": "fix",
+          "runs": 1,
+          "successfulRuns": 1,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 1
+        },
+        {
+          "flow": "test",
+          "runs": 1,
+          "successfulRuns": 1,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 2195
+        },
+        {
+          "flow": "deploy",
+          "runs": 4,
+          "successfulRuns": 4,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 15567
+        }
+      ],
+      "failureBuckets": [],
+      "models": [
+        "deterministic-build-drill",
+        "deterministic-fix-drill"
+      ],
+      "agents": [
+        "eval-drill"
+      ],
+      "commands": [
+        "npm run build",
+        "pnpm vitest run --config vitest.unit.config.ts src/logger.test.ts",
+        "xqoder eval:real-projects --scenario build-drill --phase verify",
+        "xqoder eval:real-projects --scenario fix-drill --phase verify"
+      ]
+    },
+    {
+      "id": "opencode-app-package",
+      "label": "OpenCode App Package (Optional)",
+      "projectRoot": "/Users/wangxinglin/Desktop/code/opencode-dev/packages/app",
+      "repo": "https://github.com/anomalyco/opencode",
+      "notes": "Validated external OpenCode frontend target with test/fix/build/deploy drill coverage on the local snapshot checkout.",
+      "runs": 6,
+      "successfulRuns": 6,
+      "failedRuns": 0,
+      "successRate": 1,
+      "firstRunAt": "2026-03-23T15:26:36.096Z",
+      "lastRunAt": "2026-03-23T15:44:54.927Z",
+      "flowCoverage": [
+        {
+          "flow": "build",
+          "runs": 1,
+          "successfulRuns": 1,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 637
+        },
+        {
+          "flow": "fix",
+          "runs": 1,
+          "successfulRuns": 1,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 2
+        },
+        {
+          "flow": "test",
+          "runs": 1,
+          "successfulRuns": 1,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 672
+        },
+        {
+          "flow": "deploy",
+          "runs": 3,
+          "successfulRuns": 3,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 6552
+        }
+      ],
+      "failureBuckets": [],
+      "models": [
+        "deterministic-build-drill",
+        "deterministic-fix-drill"
+      ],
+      "agents": [
+        "eval-drill"
+      ],
+      "commands": [
+        "bun run test:unit",
+        "npm run build",
+        "xqoder eval:real-projects --scenario build-drill --phase verify",
+        "xqoder eval:real-projects --scenario fix-drill --phase verify"
+      ]
+    },
+    {
+      "id": "opencode-core-package",
+      "label": "OpenCode Core Package (Optional)",
+      "projectRoot": "/Users/wangxinglin/Desktop/code/opencode-dev/packages/opencode",
+      "repo": "https://github.com/anomalyco/opencode",
+      "notes": "Validated external OpenCode core target for test/fix/build/deploy drill coverage. Snapshot deploy uses OPENCODE_CHANNEL=latest plus a single-platform build override.",
+      "runs": 6,
+      "successfulRuns": 5,
+      "failedRuns": 1,
+      "successRate": 0.8333,
+      "firstRunAt": "2026-03-23T15:28:23.499Z",
+      "lastRunAt": "2026-03-23T15:44:48.695Z",
+      "flowCoverage": [
+        {
+          "flow": "build",
+          "runs": 1,
+          "successfulRuns": 1,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 89158
+        },
+        {
+          "flow": "fix",
+          "runs": 1,
+          "successfulRuns": 1,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 1
+        },
+        {
+          "flow": "test",
+          "runs": 1,
+          "successfulRuns": 1,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 108075
+        },
+        {
+          "flow": "deploy",
+          "runs": 3,
+          "successfulRuns": 2,
+          "failedRuns": 1,
+          "successRate": 0.6667,
+          "avgDurationMs": 6322.7
+        }
+      ],
+      "failureBuckets": [
+        {
+          "bucket": "deploy_build_failed",
+          "count": 1
+        }
+      ],
+      "models": [
+        "deterministic-build-drill",
+        "deterministic-fix-drill"
+      ],
+      "agents": [
+        "eval-drill"
+      ],
+      "commands": [
+        "bun run build --single",
+        "bun test --timeout 30000",
+        "npm run build",
+        "xqoder eval:real-projects --scenario build-drill --phase verify",
+        "xqoder eval:real-projects --scenario fix-drill --phase verify"
+      ]
+    },
+    {
+      "id": "fastapi-template",
+      "label": "Full Stack FastAPI Template (Optional)",
+      "projectRoot": "/Users/wangxinglin/Desktop/code/full-stack-fastapi-template/backend",
+      "repo": "https://github.com/fastapi/full-stack-fastapi-template",
+      "notes": "Optional Python backend target with docker-compose-backed local Postgres preparation. Default coverage is test-only for now; deploy/build/fix stay out of scope until the Python workflow drills are promoted.",
+      "runs": 1,
+      "successfulRuns": 1,
+      "failedRuns": 0,
+      "successRate": 1,
+      "firstRunAt": "2026-03-23T15:53:16.366Z",
+      "lastRunAt": "2026-03-23T15:53:16.366Z",
+      "flowCoverage": [
+        {
+          "flow": "build",
+          "runs": 0,
+          "successfulRuns": 0,
+          "failedRuns": 0,
+          "successRate": 0,
+          "avgDurationMs": 0
+        },
+        {
+          "flow": "fix",
+          "runs": 0,
+          "successfulRuns": 0,
+          "failedRuns": 0,
+          "successRate": 0,
+          "avgDurationMs": 0
+        },
+        {
+          "flow": "test",
+          "runs": 1,
+          "successfulRuns": 1,
+          "failedRuns": 0,
+          "successRate": 1,
+          "avgDurationMs": 5707
+        },
+        {
+          "flow": "deploy",
+          "runs": 0,
+          "successfulRuns": 0,
+          "failedRuns": 0,
+          "successRate": 0,
+          "avgDurationMs": 0
+        }
+      ],
+      "failureBuckets": [],
+      "models": [],
+      "agents": [],
+      "commands": [
+        "uv run bash scripts/test.sh"
+      ]
+    }
+  ],
+  "failures": [
+    {
+      "reason": "deploy_build_failed",
+      "count": 1
+    }
+  ],
+  "acceptance": [
+    {
+      "label": "Captured real projects",
+      "target": ">= 5",
+      "actual": "10",
+      "pass": true
+    },
+    {
+      "label": "Captured real-project workflow runs",
+      "target": ">= 15",
+      "actual": "129",
+      "pass": true
+    },
+    {
+      "label": "Projects with build coverage",
+      "target": ">= 5",
+      "actual": "9",
+      "pass": true
+    },
+    {
+      "label": "Projects with fix coverage",
+      "target": ">= 5",
+      "actual": "9",
+      "pass": true
+    },
+    {
+      "label": "Projects with deploy coverage",
+      "target": ">= 5",
+      "actual": "9",
+      "pass": true
+    },
+    {
+      "label": "Overall success rate",
+      "target": ">= 0.6",
+      "actual": "0.9922",
+      "pass": true
+    }
+  ]
+}

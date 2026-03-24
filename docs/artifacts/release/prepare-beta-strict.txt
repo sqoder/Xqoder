@@ -1,0 +1,15 @@
+Channel: beta
+Current Version: 0.1.0
+Base Version: 0.1.0
+Suggested Version: 0.1.0-beta.202603241459
+Branch: release/beta-0.1.0
+Strict: yes
+Commands:
+  1. git checkout -b release/beta-0.1.0
+  2. npm version 0.1.0-beta.202603241459 --no-git-tag-version
+  3. pnpm version:sync
+  4. pnpm release:check:strict
+  5. pnpm parity:test
+  6. git add package.json packages/*/package.json
+  7. git commit -m "release: prepare beta 0.1.0-beta.202603241459"
+  8. git tag v0.1.0-beta.202603241459

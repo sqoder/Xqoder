@@ -1,0 +1,350 @@
+{
+  "slug": "workflow-fixtures",
+  "title": "Workflow Fixture Eval",
+  "generatedAt": "2026-03-23T16:43:00.364Z",
+  "summary": "Evaluates deterministic build/fix/test/deploy workflow fixtures with focused evidence for dependency auto actions, compile-error repair, and deploy validation classification.",
+  "meta": {
+    "repeats": 3,
+    "fixtures": 16,
+    "totalRuns": 48,
+    "strictMode": true
+  },
+  "sections": [
+    {
+      "title": "Overview",
+      "metrics": {
+        "passedRuns": 48,
+        "failedRuns": 0,
+        "overallSuccessRate": 1,
+        "minFixtureSuccessRate": 1
+      }
+    },
+    {
+      "title": "Flow Success Rate",
+      "metrics": {
+        "buildSuccessRate": 1,
+        "fixSuccessRate": 1,
+        "testSuccessRate": 1,
+        "deploySuccessRate": 1
+      }
+    },
+    {
+      "title": "Automation Evidence",
+      "metrics": {
+        "dependencyAutoActionSuccessRate": 1,
+        "compileErrorRepairSuccessRate": 1,
+        "deployValidationClassificationRate": 1,
+        "dependencyAutoActionEvidenceRuns": 3,
+        "compileErrorRepairEvidenceRuns": 3,
+        "deployValidationEvidenceRuns": 3
+      }
+    },
+    {
+      "title": "Latency (ms)",
+      "metrics": {
+        "min": 0.006,
+        "p50": 0.046,
+        "p95": 0.366,
+        "avg": 0.086,
+        "max": 0.427
+      }
+    }
+  ],
+  "fixtures": [
+    {
+      "id": "build_success_tests_passed",
+      "flow": "build",
+      "description": "Build flow completes when runtime and tests are both healthy.",
+      "runs": 3,
+      "passed": 3,
+      "failed": 0,
+      "successRate": 1,
+      "latency": {
+        "min": 0.029,
+        "p50": 0.133,
+        "p95": 0.366,
+        "avg": 0.176,
+        "max": 0.366
+      }
+    },
+    {
+      "id": "build_runtime_failure",
+      "flow": "build",
+      "description": "Build flow fails fast when runtime startup reports errors.",
+      "runs": 3,
+      "passed": 3,
+      "failed": 0,
+      "successRate": 1,
+      "latency": {
+        "min": 0.025,
+        "p50": 0.051,
+        "p95": 0.151,
+        "avg": 0.076,
+        "max": 0.151
+      }
+    },
+    {
+      "id": "build_test_failure",
+      "flow": "build",
+      "description": "Build flow fails when tests return failed status.",
+      "runs": 3,
+      "passed": 3,
+      "failed": 0,
+      "successRate": 1,
+      "latency": {
+        "min": 0.022,
+        "p50": 0.096,
+        "p95": 0.106,
+        "avg": 0.075,
+        "max": 0.106
+      }
+    },
+    {
+      "id": "build_tests_skipped",
+      "flow": "build",
+      "description": "Build flow remains successful when tests are explicitly skipped.",
+      "runs": 3,
+      "passed": 3,
+      "failed": 0,
+      "successRate": 1,
+      "latency": {
+        "min": 0.014,
+        "p50": 0.021,
+        "p95": 0.097,
+        "avg": 0.044,
+        "max": 0.097
+      }
+    },
+    {
+      "id": "fix_dependency_missing_auto_action",
+      "flow": "fix",
+      "description": "Fix flow resolves runtime_dependency_missing via automatic action before any agent repair is needed.",
+      "runs": 3,
+      "passed": 3,
+      "failed": 0,
+      "successRate": 1,
+      "latency": {
+        "min": 0.02,
+        "p50": 0.05,
+        "p95": 0.408,
+        "avg": 0.159,
+        "max": 0.408
+      }
+    },
+    {
+      "id": "fix_immediate_healthy",
+      "flow": "fix",
+      "description": "Fix flow exits immediately when runtime state is already healthy.",
+      "runs": 3,
+      "passed": 3,
+      "failed": 0,
+      "successRate": 1,
+      "latency": {
+        "min": 0.008,
+        "p50": 0.009,
+        "p95": 0.031,
+        "avg": 0.016,
+        "max": 0.031
+      }
+    },
+    {
+      "id": "fix_compile_error_single_repair",
+      "flow": "fix",
+      "description": "Fix flow repairs runtime_compile_error in one attempt and records compile-error policy evidence.",
+      "runs": 3,
+      "passed": 3,
+      "failed": 0,
+      "successRate": 1,
+      "latency": {
+        "min": 0.051,
+        "p50": 0.077,
+        "p95": 0.264,
+        "avg": 0.131,
+        "max": 0.264
+      }
+    },
+    {
+      "id": "fix_success_on_second_attempt",
+      "flow": "fix",
+      "description": "Fix flow retries and succeeds on the second attempt.",
+      "runs": 3,
+      "passed": 3,
+      "failed": 0,
+      "successRate": 1,
+      "latency": {
+        "min": 0.129,
+        "p50": 0.216,
+        "p95": 0.293,
+        "avg": 0.213,
+        "max": 0.293
+      }
+    },
+    {
+      "id": "fix_exhausted_attempts",
+      "flow": "fix",
+      "description": "Fix flow returns failed when max attempts are exhausted.",
+      "runs": 3,
+      "passed": 3,
+      "failed": 0,
+      "successRate": 1,
+      "latency": {
+        "min": 0.037,
+        "p50": 0.041,
+        "p95": 0.124,
+        "avg": 0.067,
+        "max": 0.124
+      }
+    },
+    {
+      "id": "fix_repair_exception",
+      "flow": "fix",
+      "description": "Fix flow surfaces repair exceptions as workflow failure.",
+      "runs": 3,
+      "passed": 3,
+      "failed": 0,
+      "successRate": 1,
+      "latency": {
+        "min": 0.022,
+        "p50": 0.143,
+        "p95": 0.427,
+        "avg": 0.197,
+        "max": 0.427
+      }
+    },
+    {
+      "id": "test_success",
+      "flow": "test",
+      "description": "Test flow completes when the project test command passes.",
+      "runs": 3,
+      "passed": 3,
+      "failed": 0,
+      "successRate": 1,
+      "latency": {
+        "min": 0.006,
+        "p50": 0.009,
+        "p95": 0.105,
+        "avg": 0.04,
+        "max": 0.105
+      }
+    },
+    {
+      "id": "test_skipped",
+      "flow": "test",
+      "description": "Test flow remains successful when tests are explicitly skipped.",
+      "runs": 3,
+      "passed": 3,
+      "failed": 0,
+      "successRate": 1,
+      "latency": {
+        "min": 0.006,
+        "p50": 0.006,
+        "p95": 0.028,
+        "avg": 0.013,
+        "max": 0.028
+      }
+    },
+    {
+      "id": "test_failure",
+      "flow": "test",
+      "description": "Test flow returns failed when the test command reports a failure.",
+      "runs": 3,
+      "passed": 3,
+      "failed": 0,
+      "successRate": 1,
+      "latency": {
+        "min": 0.011,
+        "p50": 0.046,
+        "p95": 0.057,
+        "avg": 0.038,
+        "max": 0.057
+      }
+    },
+    {
+      "id": "deploy_success",
+      "flow": "deploy",
+      "description": "Deploy flow completes when config validation and deploy succeed.",
+      "runs": 3,
+      "passed": 3,
+      "failed": 0,
+      "successRate": 1,
+      "latency": {
+        "min": 0.012,
+        "p50": 0.015,
+        "p95": 0.148,
+        "avg": 0.058,
+        "max": 0.148
+      }
+    },
+    {
+      "id": "deploy_validation_failure",
+      "flow": "deploy",
+      "description": "Deploy flow fails when validation rejects the generated config.",
+      "runs": 3,
+      "passed": 3,
+      "failed": 0,
+      "successRate": 1,
+      "latency": {
+        "min": 0.011,
+        "p50": 0.014,
+        "p95": 0.095,
+        "avg": 0.04,
+        "max": 0.095
+      }
+    },
+    {
+      "id": "deploy_provider_failure",
+      "flow": "deploy",
+      "description": "Deploy flow classifies provider auth failures into a stable bucket.",
+      "runs": 3,
+      "passed": 3,
+      "failed": 0,
+      "successRate": 1,
+      "latency": {
+        "min": 0.015,
+        "p50": 0.043,
+        "p95": 0.055,
+        "avg": 0.038,
+        "max": 0.055
+      }
+    }
+  ],
+  "failures": [],
+  "acceptance": [
+    {
+      "label": "Overall success rate",
+      "target": ">= 1",
+      "actual": "1",
+      "pass": true
+    },
+    {
+      "label": "Per-fixture minimum success rate",
+      "target": ">= 1",
+      "actual": "1",
+      "pass": true
+    },
+    {
+      "label": "Dependency auto-action fixture success rate",
+      "target": ">= 1",
+      "actual": "1",
+      "pass": true
+    },
+    {
+      "label": "Compile-error repair fixture success rate",
+      "target": ">= 1",
+      "actual": "1",
+      "pass": true
+    },
+    {
+      "label": "Deploy validation classification rate",
+      "target": ">= 1",
+      "actual": "1",
+      "pass": true
+    },
+    {
+      "label": "No unexpected fixture failures",
+      "target": "0 failures",
+      "actual": "0",
+      "pass": true
+    }
+  ]
+}

@@ -1,0 +1,72 @@
+{
+  "projects": [
+    {
+      "id": "openclaw-monorepo",
+      "label": "OpenClaw Monorepo",
+      "checkoutRoot": "${HOME}/code/openclaw",
+      "repo": "https://github.com/openclaw/openclaw",
+      "prepareCommand": "pnpm install --frozen-lockfile",
+      "testCommand": "pnpm vitest run --config vitest.unit.config.ts",
+      "requiredCommands": ["pnpm"],
+      "enabled": false,
+      "notes": "Set enabled=true after local dependency install succeeds. This target can cover build/test/fix/deploy once prepared."
+    },
+    {
+      "id": "opencode-core-package",
+      "label": "OpenCode Core Package",
+      "checkoutRoot": "${HOME}/code/opencode",
+      "projectPath": "packages/opencode",
+      "repo": "https://github.com/anomalyco/opencode",
+      "prepareCommand": "cd ../.. && bun install",
+      "testCommand": "bun test --timeout 30000",
+      "requiredCommands": ["bun"],
+      "enabled": false,
+      "notes": "Useful for external bun-workspace coverage after local setup."
+    },
+    {
+      "id": "opencode-app-package",
+      "label": "OpenCode App Package",
+      "checkoutRoot": "${HOME}/code/opencode",
+      "projectPath": "packages/app",
+      "repo": "https://github.com/anomalyco/opencode",
+      "prepareCommand": "cd ../.. && bun install",
+      "testCommand": "bun run test:unit",
+      "requiredCommands": ["bun"],
+      "enabled": false,
+      "notes": "Frontend-oriented target for external deploy coverage."
+    },
+    {
+      "id": "directus-monorepo",
+      "label": "Directus Monorepo",
+      "checkoutRoot": "${HOME}/code/directus",
+      "projectPath": "packages/schema-builder",
+      "repo": "https://github.com/directus/directus",
+      "prepareCommand": "cd .. && pnpm install --frozen-lockfile",
+      "testCommand": "pnpm test",
+      "scenarios": ["test", "fix", "build", "deploy"],
+      "requiredCommands": ["pnpm"],
+      "enabled": false,
+      "notes": "Large pnpm monorepo sample using packages/schema-builder as a smaller, stable workspace package with real dist output."
+    },
+    {
+      "id": "fastapi-template",
+      "label": "Full Stack FastAPI Template",
+      "checkoutRoot": "${HOME}/code/full-stack-fastapi-template",
+      "projectPath": "backend",
+      "repo": "https://github.com/fastapi/full-stack-fastapi-template",
+      "prepareCommand": "uv sync && (docker info >/dev/null 2>&1 || colima start) && docker-compose -f ../compose.yml -f ../compose.override.yml up -d db && uv run alembic upgrade head",
+      "testCommand": "uv run bash scripts/test.sh",
+      "scenarios": ["test"],
+      "requiredCommands": ["uv", "python3", "docker-compose"],
+      "requiredPaths": ["../.env"],
+      "readinessChecks": [
+        {
+          "label": "postgres@localhost:5432",
+          "command": "python3 -c \"import socket; socket.create_connection(('localhost', 5432), 1).close()\""
+        }
+      ],
+      "enabled": false,
+      "notes": "Cross-language Python backend sample. Test coverage can be unlocked with docker-compose-backed local Postgres preparation; deploy/build/fix stay out of scope until a deterministic Python workflow drill is available."
+    }
+  ]
+}

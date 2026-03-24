@@ -3,12 +3,12 @@ Current Version: 0.1.0
 Base Version: 0.1.0
 Suggested Version: 0.1.0-rc.202603241459
 Branch: release/rc-0.1.0
-Strict: yes
+Strict: no
 Commands:
   1. git checkout -b release/rc-0.1.0
   2. npm version 0.1.0-rc.202603241459 --no-git-tag-version
   3. pnpm version:sync
-  4. pnpm release:check:strict
+  4. pnpm release:check
   5. pnpm parity:test
   6. git add package.json packages/*/package.json
   7. git commit -m "release: prepare rc 0.1.0-rc.202603241459"
