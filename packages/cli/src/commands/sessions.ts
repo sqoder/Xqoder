@@ -1,22 +1,21 @@
 import * as path from 'node:path';
 import { Command } from 'commander';
 import {
-    getXQoderPaths,
     logger,
 } from '@xqoder/shared';
 import {
-    SQLiteSessionStore,
-    type AgentSessionStore,
-    type PersistedSessionSummary,
     type AgentSession,
-} from '@xqoder/storage-sqlite';
-import { resolveSessionForExport } from '../services/session-resolve.js';
+    type PersistedSessionSummary,
+} from '@xqoder/agent';
+import {
+    listResolvedSessionSummaries,
+    resolveSessionForExport,
+    type SessionResolveStore,
+} from '../services/session-resolve.js';
+import { openDefaultRuntimeSessionKernel } from '../services/runtime-session-kernel.js';
 
 interface SessionsCommandDependencies {
-    sessionStore?: Pick<
-        AgentSessionStore,
-        'findLatestSession' | 'getSession' | 'getSessionSummary' | 'listSessions'
-    >;
+    sessionStore?: SessionResolveStore;
 }
 
 interface SessionsListOptions {
@@ -50,9 +49,9 @@ export function createSessionsCommand(
         .option('-n, --max-count <n>', '最多展示条数（OpenCode 风格）', '10')
         .option('-f, --format <format>', '输出格式: table | json', 'table')
         .option('-a, --all', '显示全部项目的 session')
-        .action((options: SessionsListOptions) => {
+        .action(async (options: SessionsListOptions) => {
             try {
-                runListSessionsCommand(options, dependencies);
+                await runListSessionsCommand(options, dependencies);
             } catch (err) {
                 logger.error(`读取 session 列表失败: ${err instanceof Error ? err.message : String(err)}`);
                 process.exit(1);
@@ -66,9 +65,9 @@ export function createSessionsCommand(
         .option('-d, --dir <dir>', '项目目录', '.')
         .option('--transcript-limit <limit>', '展示最近多少条消息', '12')
         .option('--history-limit <limit>', '展示最近多少条命令/文件/工具历史', '8')
-        .action((sessionId: string | undefined, options: SessionsShowOptions) => {
+        .action(async (sessionId: string | undefined, options: SessionsShowOptions) => {
             try {
-                runShowSessionCommand(sessionId, options, dependencies);
+                await runShowSessionCommand(sessionId, options, dependencies);
             } catch (err) {
                 logger.error(`读取 session 详情失败: ${err instanceof Error ? err.message : String(err)}`);
                 process.exit(1);
@@ -78,53 +77,79 @@ export function createSessionsCommand(
     return command;
 }
 
-export function runListSessionsCommand(
+export async function runListSessionsCommand(
     options: SessionsListOptions,
     dependencies: SessionsCommandDependencies = {},
-): void {
-    const sessionStore = dependencies.sessionStore ?? createDefaultSessionStore();
+): Promise<void> {
     const limit = parsePositiveInteger(options.maxCount ?? options.limit, 10);
     const resolvedDir = path.resolve(options.dir);
-    const sessions = sessionStore.listSessions(options.all ? undefined : resolvedDir, limit);
+    const kernelHandle = dependencies.sessionStore
+        ? null
+        : openDefaultRuntimeSessionKernel({
+            projectRoot: resolvedDir,
+            model: 'unknown',
+        });
 
-    if (sessions.length === 0) {
-        logger.info(options.all ? '还没有任何持久化 session。' : `项目 ${resolvedDir} 还没有持久化 session。`);
-        return;
-    }
+    try {
+        const sessionStore = dependencies.sessionStore ?? kernelHandle!.kernel;
+        const sessions = await listResolvedSessionSummaries(
+            sessionStore,
+            options.all ? undefined : resolvedDir,
+            limit,
+        );
 
-    const lines = sessions.map((session) => formatSessionListLine(session));
-    const format = options.format ?? 'table';
-    if (format === 'json') {
-        console.log(JSON.stringify(sessions.map(s => ({
-            id: s.id,
-            title: s.title,
-            projectRoot: s.projectRoot,
-            updatedAt: s.updatedAt.toISOString(),
-            model: s.model,
-            messageCount: s.messageCount,
-            totalTokens: s.usage.totalTokens,
-        })), null, 2));
-        return;
+        if (sessions.length === 0) {
+            logger.info(options.all ? '还没有任何持久化 session。' : `项目 ${resolvedDir} 还没有持久化 session。`);
+            return;
+        }
+
+        const lines = sessions.map((session) => formatSessionListLine(session));
+        const format = options.format ?? 'table';
+        if (format === 'json') {
+            console.log(JSON.stringify(sessions.map(s => ({
+                id: s.id,
+                title: s.title,
+                projectRoot: s.projectRoot,
+                updatedAt: s.updatedAt.toISOString(),
+                model: s.model,
+                messageCount: s.messageCount,
+                totalTokens: s.usage.totalTokens,
+            })), null, 2));
+            return;
+        }
+        console.log([
+            options.all
+                ? `已找到 ${sessions.length} 条 session:`
+                : `项目 ${resolvedDir} 的最近 ${sessions.length} 条 session:`,
+            ...lines,
+        ].join('\n'));
+    } finally {
+        kernelHandle?.close();
     }
-    console.log([
-        options.all
-            ? `已找到 ${sessions.length} 条 session:`
-            : `项目 ${resolvedDir} 的最近 ${sessions.length} 条 session:`,
-        ...lines,
-    ].join('\n'));
 }
 
-export function runShowSessionCommand(
+export async function runShowSessionCommand(
     sessionId: string | undefined,
     options: SessionsShowOptions,
     dependencies: SessionsCommandDependencies = {},
-): void {
-    const sessionStore = dependencies.sessionStore ?? createDefaultSessionStore();
+): Promise<void> {
     const resolvedDir = path.resolve(options.dir);
     const transcriptLimit = parsePositiveInteger(options.transcriptLimit, 12);
     const historyLimit = parsePositiveInteger(options.historyLimit, 8);
-    const resolved = resolveSessionForExport(sessionStore, sessionId, resolvedDir);
-    console.log(formatSessionDetail(resolved.summary, resolved.session, transcriptLimit, historyLimit));
+    const kernelHandle = dependencies.sessionStore
+        ? null
+        : openDefaultRuntimeSessionKernel({
+            projectRoot: resolvedDir,
+            model: 'unknown',
+        });
+
+    try {
+        const sessionStore = dependencies.sessionStore ?? kernelHandle!.kernel;
+        const resolved = await resolveSessionForExport(sessionStore, sessionId, resolvedDir);
+        console.log(formatSessionDetail(resolved.summary, resolved.session, transcriptLimit, historyLimit));
+    } finally {
+        kernelHandle?.close();
+    }
 }
 
 export function createSessionCommand(
@@ -135,10 +160,6 @@ export function createSessionCommand(
 
 export const sessionCommand = createSessionCommand();
 export const sessionsCommand = sessionCommand;
-
-function createDefaultSessionStore(): AgentSessionStore {
-    return new SQLiteSessionStore(getXQoderPaths().sessionDbFile);
-}
 
 function parsePositiveInteger(value: string, fallback: number): number {
     const parsed = Number.parseInt(value, 10);

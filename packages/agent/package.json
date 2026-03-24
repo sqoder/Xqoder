@@ -1,26 +1,33 @@
 {
     "name": "@xqoder/agent",
-    "version": "0.1.0-rc.202603230340",
+    "version": "0.1.0",
     "private": true,
     "type": "module",
     "description": "XQoder AI Agent Core - LLM + Tools engine",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+        }
+    },
     "scripts": {
         "build": "tsc",
         "dev": "tsc --watch",
         "clean": "rm -rf dist",
         "parity:test": "vitest run src/agent.permissions.test.ts",
         "test": "vitest run",
+        "typecheck": "tsc --noEmit",
         "lint": "tsc --noEmit"
     },
     "dependencies": {
-        "@xqoder/llm-api": "workspace:*",
+        "@anthropic-ai/sdk": "^0.30.0",
+        "@xqoder/permissions": "workspace:*",
         "@xqoder/plugin-sdk": "workspace:*",
         "@xqoder/protocol": "workspace:*",
-        "@xqoder/provider-anthropic": "workspace:*",
-        "@xqoder/provider-openai": "workspace:*",
         "@xqoder/shared": "workspace:*",
+        "openai": "^4.60.0",
         "typescript": "^5.4.0"
     },
     "devDependencies": {

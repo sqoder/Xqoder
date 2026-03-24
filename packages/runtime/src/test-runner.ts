@@ -28,36 +28,40 @@ export class ProjectTestRunner {
     ): Promise<TestReport> {
         const startedAt = new Date();
         const packageJsonPath = path.join(projectDir, 'package.json');
+        const packageJsonExists = fs.existsSync(packageJsonPath);
+        const packageManager = packageJsonExists
+            ? this.packageManagerDetector.detect(projectDir)
+            : undefined;
 
-        if (!fs.existsSync(packageJsonPath)) {
+        let command = options.command;
+        if (!command && packageJsonExists) {
+            const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as {
+                scripts?: Record<string, string>;
+            };
+            command = packageJson.scripts?.['test']
+                ? this.packageManagerDetector.buildScriptCommand('test', packageManager!)
+                : undefined;
+        }
+
+        if (!command && !packageJsonExists) {
             return {
                 status: TestStatus.Failed,
                 projectDir,
-                output: '未找到 package.json，无法运行测试。',
+                output: '未找到 package.json，且未提供 test command，无法运行测试。',
                 passed: 0,
                 failed: 1,
                 skipped: 0,
-                failures: [{ message: '未找到 package.json，无法运行测试。' }],
+                failures: [{ message: '未找到 package.json，且未提供 test command，无法运行测试。' }],
                 startedAt,
                 completedAt: new Date(),
             };
         }
 
-        const packageManager = this.packageManagerDetector.detect(projectDir);
-        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as {
-            scripts?: Record<string, string>;
-        };
-
-        const command = options.command
-            ?? (packageJson.scripts?.['test']
-                ? this.packageManagerDetector.buildScriptCommand('test', packageManager)
-                : undefined);
-
         if (!command) {
             return {
                 status: TestStatus.Skipped,
                 projectDir,
-                packageManager,
+                ...(packageManager ? { packageManager } : {}),
                 output: '未配置 test script，跳过测试验证。',
                 passed: 0,
                 failed: 0,
@@ -106,7 +110,7 @@ export class ProjectTestRunner {
                 resolve({
                     status,
                     projectDir,
-                    packageManager,
+                    ...(packageManager ? { packageManager } : {}),
                     command,
                     output: cleanedOutput.trim(),
                     passed: counts.passed > 0 ? counts.passed : status === TestStatus.Passed ? 1 : 0,
@@ -129,7 +133,7 @@ export class ProjectTestRunner {
                 resolve({
                     status: TestStatus.Failed,
                     projectDir,
-                    packageManager,
+                    ...(packageManager ? { packageManager } : {}),
                     command,
                     output: '',
                     passed: 0,

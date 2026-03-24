@@ -67,12 +67,52 @@ export interface AgentSessionCompaction {
     summary: string;
 }
 
+export interface AgentSessionCompactionPlan {
+    compactedMessages: LLMMessage[];
+    recentMessages: LLMMessage[];
+    priorSummary?: string;
+    reservedMessageCount: number;
+}
+
+export interface AgentSessionFixHistoryWindow {
+    label: '7d' | '30d';
+    totalRuns: number;
+    successfulRuns: number;
+    failedRuns: number;
+    successRate: number;
+}
+
+export interface AgentSessionFixRun {
+    id: string;
+    success: boolean;
+    attemptCount: number;
+    totalDurationMs: number;
+    startedAt: Date;
+    completedAt: Date;
+    failureBucket?: string;
+    resultLabel?: string;
+    remediationPolicyIds: string[];
+    suspectedFailureBuckets: string[];
+    automaticActionIds: string[];
+}
+
+export interface AgentSessionFixHistorySnapshot {
+    totalRuns: number;
+    successfulRuns: number;
+    failedRuns: number;
+    successRate: number;
+    updatedAt: Date;
+    rollingWindows: AgentSessionFixHistoryWindow[];
+    recentRuns: AgentSessionFixRun[];
+}
+
 export interface AgentSessionMetadataSnapshot {
     compactSummary?: string;
     compactions: AgentSessionCompaction[];
     toolHistory: AgentToolExecution[];
     commandHistory: AgentCommandHistoryEntry[];
     fileChanges: AgentFileChangeEntry[];
+    fixHistory?: AgentSessionFixHistorySnapshot;
 }
 
 export interface AgentSessionSnapshot {
@@ -90,6 +130,7 @@ interface AgentSessionOptions {
     title?: string;
     createdAt?: Date;
     maxMessages?: number;
+    reservedMessages?: number;
     systemPrompt?: string;
     messages?: LLMMessage[];
     usage?: Partial<AgentSessionUsage>;
@@ -123,6 +164,7 @@ export class AgentSession {
     private title?: string;
     private messages: LLMMessage[] = [];
     private readonly maxMessages: number;
+    private reservedMessages?: number;
     readonly createdAt: Date;
     private usage: AgentSessionUsage;
     private compactSummary?: string;
@@ -130,6 +172,7 @@ export class AgentSession {
     private toolHistory: AgentToolExecution[];
     private commandHistory: AgentCommandHistoryEntry[];
     private fileChanges: AgentFileChangeEntry[];
+    private fixHistory?: AgentSessionFixHistorySnapshot;
 
     constructor(systemPrompt?: string, maxMessages?: number);
     constructor(options: AgentSessionOptions);
@@ -148,6 +191,7 @@ export class AgentSession {
         this.id = options.id ?? generateSessionId();
         this.title = readString(options.title);
         this.maxMessages = options.maxMessages ?? 100;
+        this.reservedMessages = normalizeReservedMessages(options.reservedMessages);
         this.createdAt = normalizeDate(options.createdAt) ?? new Date();
         this.usage = {
             ...EMPTY_USAGE,
@@ -158,6 +202,7 @@ export class AgentSession {
         this.toolHistory = metadata.toolHistory;
         this.commandHistory = metadata.commandHistory;
         this.fileChanges = metadata.fileChanges;
+        this.fixHistory = metadata.fixHistory;
 
         if (options.messages && options.messages.length > 0) {
             this.messages = cloneMessages(options.messages);
@@ -306,6 +351,11 @@ export class AgentSession {
         return this.compactSummary;
     }
 
+    /** 配置压缩时保留的最近消息数量 */
+    setCompactionReservedMessages(reservedMessages: number | undefined): void {
+        this.reservedMessages = normalizeReservedMessages(reservedMessages);
+    }
+
     /** 获取压缩历史 */
     getCompactions(): AgentSessionCompaction[] {
         return this.compactions.map(cloneCompaction);
@@ -334,6 +384,7 @@ export class AgentSession {
             toolHistory: this.getToolHistory(),
             commandHistory: this.getCommandHistory(),
             fileChanges: this.getFileChanges(),
+            ...(this.fixHistory ? { fixHistory: cloneFixHistory(this.fixHistory) } : {}),
         };
     }
 
@@ -372,14 +423,56 @@ export class AgentSession {
         this.toolHistory = [];
         this.commandHistory = [];
         this.fileChanges = [];
+        this.fixHistory = undefined;
+    }
+
+    /**
+     * 更新「base system prompt」（即第一个非 auto-compact summary 的 system 消息）。
+     * 该操作不清空用户/助手/工具消息，只更新系统指令，避免 agent 切换导致上下文丢失。
+     */
+    setBaseSystemPrompt(systemPrompt: string): void {
+        const baseSystem = findBaseSystemMessage(this.messages);
+        if (baseSystem) {
+            baseSystem.content = systemPrompt;
+            return;
+        }
+
+        // 如果会话里没有 base system（理论上不应发生），则在最前插入一条。
+        this.messages.unshift({ role: 'system', content: systemPrompt });
+    }
+
+    /** 计算当前会话的压缩边界，保留最近 N 条消息原样存在 */
+    createCompactionPlan(options: { reservedMessages?: number } = {}): AgentSessionCompactionPlan {
+        const baseSystemMessage = findBaseSystemMessage(this.messages);
+        const conversationMessages = this.messages.filter((message) => {
+            if (message.role !== 'system') {
+                return true;
+            }
+
+            return !isAutoSummaryMessage(message) && message !== baseSystemMessage;
+        });
+        const reservedSlots = (baseSystemMessage ? 1 : 0) + 1;
+        const maxRecentCount = Math.max(1, this.maxMessages - reservedSlots);
+        const keepRecentCount = resolveReservedMessageCount(
+            conversationMessages.length,
+            maxRecentCount,
+            normalizeReservedMessages(options.reservedMessages) ?? this.reservedMessages,
+            this.maxMessages,
+        );
+        const compactBoundary = Math.max(0, conversationMessages.length - keepRecentCount);
+
+        return {
+            compactedMessages: cloneMessages(conversationMessages.slice(0, compactBoundary)),
+            recentMessages: cloneMessages(conversationMessages.slice(compactBoundary)),
+            ...(this.compactSummary?.trim() ? { priorSummary: this.compactSummary.trim() } : {}),
+            reservedMessageCount: keepRecentCount,
+        };
     }
 
     /** 使用外部提供的摘要强制压缩会话 */
-    performCompaction(summary: string): void {
+    performCompaction(summary: string, options: { reservedMessages?: number } = {}): void {
+        const plan = this.createCompactionPlan(options);
         const baseSystemMessage = findBaseSystemMessage(this.messages);
-        const conversationMessages = this.messages.filter(m => m !== baseSystemMessage);
-        const keepRecentCount = Math.max(4, Math.floor(conversationMessages.length * 0.2));
-        const recentMessages = conversationMessages.slice(-keepRecentCount);
 
         const nextMessages: LLMMessage[] = [];
         if (baseSystemMessage) {
@@ -389,7 +482,7 @@ export class AgentSession {
             role: 'system',
             content: `${AUTO_SUMMARY_PREFIX}\n${summary}`,
         });
-        nextMessages.push(...cloneMessages(recentMessages));
+        nextMessages.push(...cloneMessages(plan.recentMessages));
 
         const compaction: AgentSessionCompaction = {
             id: generateCompactionId(),
@@ -411,37 +504,20 @@ export class AgentSession {
         }
 
         const baseSystemMessage = findBaseSystemMessage(this.messages);
-        const conversationMessages = this.messages.filter((message) => {
-            if (message.role !== 'system') {
-                return true;
-            }
-
-            return !isAutoSummaryMessage(message) && message !== baseSystemMessage;
-        });
-        const includeSummaryMessage = this.maxMessages > (baseSystemMessage ? 1 : 0);
-        const reservedSlots = (baseSystemMessage ? 1 : 0) + (includeSummaryMessage ? 1 : 0);
-        const maxRecentCount = Math.max(1, this.maxMessages - reservedSlots);
-        const keepRecentCount = Math.min(
-            conversationMessages.length,
-            Math.max(1, Math.floor(this.maxMessages / 2)),
-            maxRecentCount,
-        );
-        const compactBoundary = Math.max(0, conversationMessages.length - keepRecentCount);
-        const compactedMessages = conversationMessages.slice(0, compactBoundary);
-        const recentMessages = conversationMessages.slice(compactBoundary);
-        const summary = this.buildCompactSummary(compactedMessages);
+        const plan = this.createCompactionPlan();
+        const summary = this.buildCompactSummary(plan.compactedMessages, plan.recentMessages);
         const nextMessages: LLMMessage[] = [];
 
         if (baseSystemMessage) {
             nextMessages.push(cloneMessage(baseSystemMessage));
         }
-        if (includeSummaryMessage) {
+        if (this.maxMessages > (baseSystemMessage ? 1 : 0)) {
             nextMessages.push({
                 role: 'system',
                 content: formatAutoSummaryMessage(summary),
             });
         }
-        nextMessages.push(...cloneMessages(recentMessages));
+        nextMessages.push(...cloneMessages(plan.recentMessages));
 
         const compaction: AgentSessionCompaction = {
             id: generateCompactionId(),
@@ -456,40 +532,62 @@ export class AgentSession {
         this.messages = nextMessages.slice(-this.maxMessages);
     }
 
-    private buildCompactSummary(compactedMessages: LLMMessage[]): string {
+    private buildCompactSummary(compactedMessages: LLMMessage[], recentMessages: LLMMessage[]): string {
         const sections: string[] = [];
         const priorSummary = this.compactSummary?.trim();
 
         if (priorSummary) {
-            sections.push(`此前摘要: ${truncateText(priorSummary, 320)}`);
+            sections.push([
+                '## Historical Summary',
+                truncateText(priorSummary, 320),
+            ].join('\n'));
         }
 
+        const historicalHighlights: string[] = [];
         const userRequests = collectDistinctMessages(compactedMessages, 'user', 4);
         if (userRequests.length > 0) {
-            sections.push(`用户需求: ${userRequests.join('；')}`);
+            historicalHighlights.push(`用户需求: ${userRequests.join('；')}`);
         }
 
         const assistantConclusions = collectDistinctMessages(compactedMessages, 'assistant', 3);
         if (assistantConclusions.length > 0) {
-            sections.push(`已给出的结论: ${assistantConclusions.join('；')}`);
+            historicalHighlights.push(`已给出的结论: ${assistantConclusions.join('；')}`);
         }
 
         const recentCommands = this.commandHistory.slice(-4).map((entry) => truncateText(entry.command, 120));
         if (recentCommands.length > 0) {
-            sections.push(`最近执行命令: ${recentCommands.join('；')}`);
+            historicalHighlights.push(`最近执行命令: ${recentCommands.join('；')}`);
         }
 
         const changedFiles = this.fileChanges.slice(-6).map((entry) => truncateText(entry.path, 120));
         if (changedFiles.length > 0) {
-            sections.push(`最近变更文件: ${changedFiles.join('；')}`);
+            historicalHighlights.push(`最近变更文件: ${changedFiles.join('；')}`);
+        }
+
+        if (historicalHighlights.length > 0) {
+            sections.push([
+                '## Historical Highlights',
+                ...historicalHighlights.map((section) => `- ${section}`),
+            ].join('\n'));
+        }
+
+        if (recentMessages.length > 0) {
+            sections.push([
+                '## Recent Turns Kept Verbatim',
+                `- 保留最近 ${recentMessages.length} 条消息原文，不重复改写。`,
+                ...formatRecentTurnLayer(recentMessages),
+            ].join('\n'));
         }
 
         if (sections.length === 0) {
-            sections.push('此前对话已被自动压缩，请延续当前项目上下文继续工作。');
+            sections.push([
+                '## Historical Highlights',
+                '- 此前对话已被自动压缩，请延续当前项目上下文继续工作。',
+            ].join('\n'));
         }
 
         return truncateText(
-            sections.map((section) => `- ${section}`).join('\n'),
+            sections.join('\n\n'),
             MAX_SUMMARY_LENGTH,
         );
     }
@@ -501,6 +599,7 @@ export function normalizeSessionMetadataSnapshot(
     const source = typeof metadata === 'object' && metadata !== null
         ? metadata as Partial<AgentSessionMetadataSnapshot>
         : undefined;
+    const fixHistory = normalizeFixHistory(source?.fixHistory);
 
     return {
         ...(readString(source?.compactSummary)
@@ -525,6 +624,104 @@ export function normalizeSessionMetadataSnapshot(
             ? source.fileChanges
                 .map(normalizeFileChangeEntry)
                 .filter((entry): entry is AgentFileChangeEntry => entry !== null)
+            : [],
+        ...(fixHistory ? { fixHistory } : {}),
+    };
+}
+
+function normalizeFixHistory(value: unknown): AgentSessionFixHistorySnapshot | undefined {
+    if (typeof value !== 'object' || value === null) {
+        return undefined;
+    }
+
+    const source = value as Partial<AgentSessionFixHistorySnapshot>;
+    const totalRuns = readNumber(source.totalRuns);
+    const successfulRuns = readNumber(source.successfulRuns);
+    const failedRuns = readNumber(source.failedRuns);
+    const successRate = readNumber(source.successRate);
+    const updatedAt = normalizeDate(source.updatedAt);
+
+    if (totalRuns === undefined || successfulRuns === undefined || failedRuns === undefined || successRate === undefined || !updatedAt) {
+        return undefined;
+    }
+
+    return {
+        totalRuns,
+        successfulRuns,
+        failedRuns,
+        successRate,
+        updatedAt,
+        rollingWindows: Array.isArray(source.rollingWindows)
+            ? source.rollingWindows
+                .map(normalizeFixHistoryWindow)
+                .filter((entry): entry is AgentSessionFixHistoryWindow => entry !== null)
+            : [],
+        recentRuns: Array.isArray(source.recentRuns)
+            ? source.recentRuns
+                .map(normalizeFixRun)
+                .filter((entry): entry is AgentSessionFixRun => entry !== null)
+            : [],
+    };
+}
+
+function normalizeFixHistoryWindow(value: unknown): AgentSessionFixHistoryWindow | null {
+    if (typeof value !== 'object' || value === null) {
+        return null;
+    }
+
+    const entry = value as Partial<AgentSessionFixHistoryWindow>;
+    const label = entry.label === '7d' || entry.label === '30d' ? entry.label : undefined;
+    const totalRuns = readNumber(entry.totalRuns);
+    const successfulRuns = readNumber(entry.successfulRuns);
+    const failedRuns = readNumber(entry.failedRuns);
+    const successRate = readNumber(entry.successRate);
+
+    if (!label || totalRuns === undefined || successfulRuns === undefined || failedRuns === undefined || successRate === undefined) {
+        return null;
+    }
+
+    return {
+        label,
+        totalRuns,
+        successfulRuns,
+        failedRuns,
+        successRate,
+    };
+}
+
+function normalizeFixRun(value: unknown): AgentSessionFixRun | null {
+    if (typeof value !== 'object' || value === null) {
+        return null;
+    }
+
+    const entry = value as Partial<AgentSessionFixRun>;
+    const id = readString(entry.id);
+    const attemptCount = readNumber(entry.attemptCount);
+    const totalDurationMs = readNumber(entry.totalDurationMs);
+    const startedAt = normalizeDate(entry.startedAt);
+    const completedAt = normalizeDate(entry.completedAt);
+
+    if (!id || attemptCount === undefined || totalDurationMs === undefined || !startedAt || !completedAt) {
+        return null;
+    }
+
+    return {
+        id,
+        success: Boolean(entry.success),
+        attemptCount,
+        totalDurationMs,
+        startedAt,
+        completedAt,
+        ...(readString(entry.failureBucket) ? { failureBucket: readString(entry.failureBucket) } : {}),
+        ...(readString(entry.resultLabel) ? { resultLabel: readString(entry.resultLabel) } : {}),
+        remediationPolicyIds: Array.isArray(entry.remediationPolicyIds)
+            ? entry.remediationPolicyIds.filter((item): item is string => typeof item === 'string' && item.length > 0)
+            : [],
+        suspectedFailureBuckets: Array.isArray(entry.suspectedFailureBuckets)
+            ? entry.suspectedFailureBuckets.filter((item): item is string => typeof item === 'string' && item.length > 0)
+            : [],
+        automaticActionIds: Array.isArray(entry.automaticActionIds)
+            ? entry.automaticActionIds.filter((item): item is string => typeof item === 'string' && item.length > 0)
             : [],
     };
 }
@@ -684,6 +881,70 @@ function cloneFileChangeEntry(entry: AgentFileChangeEntry): AgentFileChangeEntry
         ...entry,
         timestamp: new Date(entry.timestamp),
     };
+}
+
+function cloneFixHistory(entry: AgentSessionFixHistorySnapshot): AgentSessionFixHistorySnapshot {
+    return {
+        ...entry,
+        updatedAt: new Date(entry.updatedAt),
+        rollingWindows: entry.rollingWindows.map((window) => ({ ...window })),
+        recentRuns: entry.recentRuns.map(cloneFixRun),
+    };
+}
+
+function cloneFixRun(entry: AgentSessionFixRun): AgentSessionFixRun {
+    return {
+        ...entry,
+        startedAt: new Date(entry.startedAt),
+        completedAt: new Date(entry.completedAt),
+        remediationPolicyIds: [...entry.remediationPolicyIds],
+        suspectedFailureBuckets: [...entry.suspectedFailureBuckets],
+        automaticActionIds: [...entry.automaticActionIds],
+    };
+}
+
+function normalizeReservedMessages(value: number | undefined): number | undefined {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0
+        ? Math.max(1, Math.trunc(value))
+        : undefined;
+}
+
+function resolveReservedMessageCount(
+    conversationMessageCount: number,
+    maxRecentCount: number,
+    reservedMessages: number | undefined,
+    maxMessages: number,
+): number {
+    if (reservedMessages !== undefined) {
+        return Math.min(conversationMessageCount, maxRecentCount, reservedMessages);
+    }
+
+    return Math.min(
+        conversationMessageCount,
+        Math.max(1, Math.floor(maxMessages / 2)),
+        maxRecentCount,
+    );
+}
+
+function formatRecentTurnLayer(messages: LLMMessage[]): string[] {
+    return messages
+        .slice(-4)
+        .map((message) => `- ${formatMessageRole(message.role)}: ${truncateText(message.content.trim(), 120)}`);
+}
+
+function formatMessageRole(role: LLMMessage['role']): string {
+    switch (role) {
+        case 'user':
+            return 'User';
+        case 'assistant':
+            return 'Assistant';
+        case 'tool':
+            return 'Tool';
+        case 'system':
+            return 'System';
+        default:
+            return role;
+    }
 }
 
 function sanitizeToolArgs(args: Record<string, unknown> | undefined): Record<string, unknown> {

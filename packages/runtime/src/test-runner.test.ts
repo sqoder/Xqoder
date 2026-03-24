@@ -8,17 +8,19 @@ import { ProjectTestRunner } from './test-runner.js';
 const tempDirs: string[] = [];
 
 function createTempProject(options: {
-    packageJson: Record<string, unknown>;
+    packageJson?: Record<string, unknown>;
     files: Record<string, string>;
     lockfile?: 'pnpm' | 'yarn';
 }): string {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-test-runner-'));
     tempDirs.push(dir);
-    fs.writeFileSync(
-        path.join(dir, 'package.json'),
-        JSON.stringify(options.packageJson, null, 2),
-        'utf-8',
-    );
+    if (options.packageJson) {
+        fs.writeFileSync(
+            path.join(dir, 'package.json'),
+            JSON.stringify(options.packageJson, null, 2),
+            'utf-8',
+        );
+    }
 
     for (const [filePath, content] of Object.entries(options.files)) {
         const fullPath = path.join(dir, filePath);
@@ -107,5 +109,34 @@ describe('ProjectTestRunner', () => {
         expect(report.status).toBe(TestStatus.Failed);
         expect(report.failed).toBeGreaterThan(0);
         expect(report.failures[0]?.message).toContain('FAIL unit should work');
+    });
+
+    it('runs an explicit test command even when package.json is missing', async () => {
+        const projectDir = createTempProject({
+            files: {
+                'pass.js': "console.log('external tests ok');\n",
+            },
+        });
+
+        const runner = new ProjectTestRunner();
+        const report = await runner.run(projectDir, {
+            command: 'node pass.js',
+        });
+
+        expect(report.status).toBe(TestStatus.Passed);
+        expect(report.command).toBe('node pass.js');
+        expect(report.packageManager).toBeUndefined();
+    });
+
+    it('returns failed when package.json is missing and no command is provided', async () => {
+        const projectDir = createTempProject({
+            files: {},
+        });
+
+        const runner = new ProjectTestRunner();
+        const report = await runner.run(projectDir);
+
+        expect(report.status).toBe(TestStatus.Failed);
+        expect(report.failures[0]?.message).toContain('未找到 package.json');
     });
 });

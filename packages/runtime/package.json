@@ -1,6 +1,6 @@
 {
     "name": "@xqoder/runtime",
-    "version": "0.1.0-rc.202603230340",
+    "version": "0.1.0",
     "private": true,
     "type": "module",
     "description": "XQoder Project Runtime - run, monitor, and capture errors",
@@ -12,9 +12,13 @@
         "clean": "rm -rf dist",
         "test": "vitest run",
         "test:integration": "vitest run",
+        "typecheck": "tsc --noEmit",
         "lint": "tsc --noEmit"
     },
     "dependencies": {
+        "@xqoder/permissions": "workspace:*",
+        "@xqoder/plugin-sdk": "workspace:*",
+        "@xqoder/protocol": "workspace:*",
         "@xqoder/shared": "workspace:*",
         "dockerode": "^4.0.0",
         "tree-kill": "^1.2.2"

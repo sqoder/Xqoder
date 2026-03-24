@@ -29,6 +29,17 @@ export interface WorkflowResult {
     error?: string;
 }
 
+export function findLastFailedStep(stepResults: StepResult[]): StepResult | undefined {
+    return [...stepResults]
+        .reverse()
+        .find((result) => result.status === StepStatus.Failed);
+}
+
+export function deriveDefaultFailureBucket(stepResults: StepResult[]): string | undefined {
+    const failedStep = findLastFailedStep(stepResults);
+    return failedStep ? `${failedStep.stepName}_failed` : undefined;
+}
+
 /**
  * WorkflowEngine
  * 负责按顺序执行工作流步骤，处理错误和回滚

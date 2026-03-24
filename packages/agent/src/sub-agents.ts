@@ -11,6 +11,14 @@ import type { ILLMProvider } from './llm/provider.js';
 
 export type AgentName = 'coder' | 'summarizer' | 'title' | 'task';
 
+const MAX_SUMMARIZER_MESSAGE_LENGTH = 2000;
+
+export interface CompactionSummaryInput {
+    compactedMessages: LLMMessage[];
+    recentMessages?: LLMMessage[];
+    priorSummary?: string;
+}
+
 // ---- Summarizer Agent ----
 
 const SUMMARIZER_SYSTEM_PROMPT = `You are a conversation summarizer. Your job is to condense a long conversation history into a compact summary that preserves all important context.
@@ -30,8 +38,8 @@ Rules:
 export class SummarizerAgent {
     private provider: ILLMProvider;
 
-    constructor(config: LLMProviderConfig) {
-        this.provider = createLLMProvider(config);
+    constructor(config: LLMProviderConfig, provider?: ILLMProvider) {
+        this.provider = provider ?? createLLMProvider(config);
     }
 
     /**
@@ -63,6 +71,67 @@ export class SummarizerAgent {
 
         return response.message.content;
     }
+
+    async summarizeForCompaction(input: CompactionSummaryInput): Promise<string> {
+        const response = await this.provider.complete({
+            messages: [
+                { role: 'system', content: SUMMARIZER_SYSTEM_PROMPT },
+                { role: 'user', content: buildCompactionSummaryPrompt(input) },
+            ],
+            maxTokens: 2048,
+            temperature: 0.2,
+        });
+
+        return response.message.content;
+    }
+}
+
+export function buildCompactionSummaryPrompt(input: CompactionSummaryInput): string {
+    const compactedMessages = serializeConversation(input.compactedMessages);
+    const recentMessages = serializeConversation(input.recentMessages ?? []);
+
+    return [
+        'Please prepare a layered compaction summary for an ongoing coding session.',
+        '',
+        'Output requirements:',
+        '- Use Markdown headings',
+        '- Focus the summary on older context that will no longer remain verbatim',
+        '- Do not rewrite the recent preserved turns in full',
+        '- Preserve file paths, commands, decisions, bugs, fixes, pending work, and user preferences',
+        '- If there is prior summary context, merge it forward instead of repeating it verbatim',
+        '',
+        ...(input.priorSummary?.trim()
+            ? [
+                'Existing historical summary:',
+                input.priorSummary.trim(),
+                '',
+            ]
+            : []),
+        'Older messages to compress:',
+        compactedMessages || '[none]',
+        '',
+        'Recent messages kept verbatim in the session window:',
+        recentMessages || '[none]',
+        '',
+        'Return the summary with these sections when relevant:',
+        '## Historical Summary',
+        '## Decisions and Changes',
+        '## Active Context',
+        '## Open Threads',
+    ].join('\n');
+}
+
+function serializeConversation(messages: LLMMessage[]): string {
+    return messages
+        .filter((message) => message.role !== 'system')
+        .map((message) => {
+            const prefix = message.role === 'user' ? 'User' : message.role === 'assistant' ? 'Assistant' : 'Tool';
+            const content = message.content.length > MAX_SUMMARIZER_MESSAGE_LENGTH
+                ? `${message.content.slice(0, MAX_SUMMARIZER_MESSAGE_LENGTH)}... [截断]`
+                : message.content;
+            return `[${prefix}]: ${content}`;
+        })
+        .join('\n\n');
 }
 
 // ---- Title Agent ----

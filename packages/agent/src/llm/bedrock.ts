@@ -6,7 +6,7 @@
 
 import type { LLMProviderConfig } from '@xqoder/shared';
 import { normalizeLLMConfig } from '@xqoder/shared';
-import { AnthropicProvider } from '@xqoder/provider-anthropic';
+import { AnthropicProvider } from './providers/index.js';
 
 const BEDROCK_DEFAULT_MODEL = 'anthropic.claude-3-7-sonnet-20250219-v1:0';
 

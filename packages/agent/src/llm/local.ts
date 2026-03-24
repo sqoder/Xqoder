@@ -6,7 +6,7 @@
 import type { LLMProviderConfig, LLMProviderName } from '@xqoder/shared';
 import { normalizeLLMConfig, logger } from '@xqoder/shared';
 import { LOCAL_BASE_URL } from '@xqoder/shared';
-import { OpenAIProvider } from '@xqoder/provider-openai';
+import { OpenAIProvider } from './providers/index.js';
 
 const LOCAL_DEFAULT_MODEL = 'llama3';
 

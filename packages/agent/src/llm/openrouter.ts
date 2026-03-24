@@ -6,7 +6,7 @@
 import type { LLMProviderConfig, LLMProviderName } from '@xqoder/shared';
 import { normalizeLLMConfig } from '@xqoder/shared';
 import { OPENROUTER_BASE_URL } from '@xqoder/shared';
-import { OpenAIProvider } from '@xqoder/provider-openai';
+import { OpenAIProvider } from './providers/index.js';
 
 const OPENROUTER_DEFAULT_MODEL = 'openai/gpt-4o';
 

@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { LLMMessage } from '@xqoder/shared';
-import { AnthropicProvider } from '@xqoder/provider-anthropic';
-import { OpenAIProvider } from '@xqoder/provider-openai';
+import { AnthropicProvider } from './providers/index.js';
+import { OpenAIProvider } from './providers/index.js';
 
 const messageWithAttachments: LLMMessage = {
     role: 'user',
     content: 'describe these inputs',
     attachments: [
         {
+            kind: 'image',
             type: 'image',
             mimeType: 'image/png',
             data: 'aGVsbG8=',
@@ -15,6 +16,7 @@ const messageWithAttachments: LLMMessage = {
             fileName: 'demo.png',
         },
         {
+            kind: 'file',
             type: 'file',
             mimeType: 'application/octet-stream',
             filePath: '/workspace/src/app.ts',

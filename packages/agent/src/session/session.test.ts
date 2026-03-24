@@ -133,6 +133,7 @@ describe('AgentSession', () => {
     it('clones user message attachments when storing session messages', () => {
         const session = new AgentSession({ systemPrompt: 'system prompt' });
         const attachments = [{
+            kind: 'image' as const,
             type: 'image' as const,
             mimeType: 'image/png',
             data: 'base64-data',
@@ -145,11 +146,136 @@ describe('AgentSession', () => {
 
         const message = session.getMessages().find((entry) => entry.role === 'user');
         expect(message?.attachments).toEqual([{
+            kind: 'image',
             type: 'image',
             mimeType: 'image/png',
             data: 'base64-data',
             filePath: '/tmp/demo.png',
             fileName: 'demo.png',
         }]);
+    });
+
+    it('updates base system prompt without clearing history', () => {
+        const session = new AgentSession({ systemPrompt: 'sys-A' });
+        session.addUserMessage('u1');
+        session.addAssistantMessage({ role: 'assistant', content: 'a1' });
+        const before = session.getMessages();
+
+        session.setBaseSystemPrompt('sys-B');
+
+        const after = session.getMessages();
+        const baseSystem = after.find((m) => m.role === 'system' && !m.content.startsWith('[XQoder auto-compact summary]'));
+        expect(baseSystem?.content).toBe('sys-B');
+
+        // History (non-system messages) should remain unchanged.
+        expect(after.filter((m) => m.role !== 'system')).toEqual(before.filter((m) => m.role !== 'system'));
+    });
+
+    it('preserves fix history metadata across snapshot restore', () => {
+        const session = new AgentSession({
+            systemPrompt: 'system prompt',
+            metadata: {
+                fixHistory: {
+                    totalRuns: 3,
+                    successfulRuns: 2,
+                    failedRuns: 1,
+                    successRate: 0.6667,
+                    updatedAt: new Date('2026-03-22T00:10:00.000Z'),
+                    rollingWindows: [{
+                        label: '7d',
+                        totalRuns: 2,
+                        successfulRuns: 1,
+                        failedRuns: 1,
+                        successRate: 0.5,
+                    }],
+                    recentRuns: [{
+                        id: 'fix_run_3',
+                        success: true,
+                        attemptCount: 2,
+                        totalDurationMs: 42000,
+                        startedAt: new Date('2026-03-22T00:00:00.000Z'),
+                        completedAt: new Date('2026-03-22T00:00:42.000Z'),
+                        remediationPolicyIds: ['compile-error-v2'],
+                        suspectedFailureBuckets: ['runtime_compile_error'],
+                        automaticActionIds: [],
+                    }],
+                },
+            },
+        });
+
+        const restored = AgentSession.fromSnapshot(session.toSnapshot());
+
+        expect(restored.getMetadata().fixHistory).toMatchObject({
+            totalRuns: 3,
+            successfulRuns: 2,
+            failedRuns: 1,
+            successRate: 0.6667,
+            rollingWindows: [{
+                label: '7d',
+                totalRuns: 2,
+                successfulRuns: 1,
+                failedRuns: 1,
+                successRate: 0.5,
+            }],
+            recentRuns: [{
+                id: 'fix_run_3',
+                success: true,
+                attemptCount: 2,
+                totalDurationMs: 42000,
+                remediationPolicyIds: ['compile-error-v2'],
+                suspectedFailureBuckets: ['runtime_compile_error'],
+                automaticActionIds: [],
+            }],
+        });
+    });
+
+    it('keeps the configured recent message window during manual compaction', () => {
+        const session = new AgentSession({
+            systemPrompt: 'system prompt',
+            maxMessages: 10,
+        });
+        session.setCompactionReservedMessages(4);
+
+        session.addUserMessage('u1');
+        session.addAssistantMessage({ role: 'assistant', content: 'a1' });
+        session.addUserMessage('u2');
+        session.addAssistantMessage({ role: 'assistant', content: 'a2' });
+        session.addUserMessage('u3');
+        session.addAssistantMessage({ role: 'assistant', content: 'a3' });
+
+        session.performCompaction('## Historical Summary\n- compacted');
+
+        expect(session.getMessages().map((message) => message.content)).toEqual([
+            'system prompt',
+            '[XQoder auto-compact summary]\n## Historical Summary\n- compacted',
+            'u2',
+            'a2',
+            'u3',
+            'a3',
+        ]);
+    });
+
+    it('uses the configured recent message reserve during automatic compaction', () => {
+        const session = new AgentSession({
+            systemPrompt: 'system prompt',
+            maxMessages: 6,
+        });
+        session.setCompactionReservedMessages(3);
+
+        session.addUserMessage('u1');
+        session.addAssistantMessage({ role: 'assistant', content: 'a1' });
+        session.addUserMessage('u2');
+        session.addAssistantMessage({ role: 'assistant', content: 'a2' });
+        session.addUserMessage('u3');
+        session.addAssistantMessage({ role: 'assistant', content: 'a3' });
+
+        const conversationMessages = session.getMessages().filter((message) => message.role !== 'system');
+        expect(conversationMessages).toHaveLength(3);
+        expect(conversationMessages.map((message) => message.content)).toEqual([
+            'a2',
+            'u3',
+            'a3',
+        ]);
+        expect(session.getCompactSummary()).toContain('## Recent Turns Kept Verbatim');
     });
 });

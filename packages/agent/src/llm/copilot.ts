@@ -6,7 +6,7 @@
 
 import type { LLMProviderConfig } from '@xqoder/shared';
 import { normalizeLLMConfig, logger, loadGitHubCopilotToken } from '@xqoder/shared';
-import { OpenAIProvider } from '@xqoder/provider-openai';
+import { OpenAIProvider } from './providers/index.js';
 
 const COPILOT_API_BASE = 'https://api.githubcopilot.com';
 const COPILOT_DEFAULT_MODEL = 'gpt-4o';

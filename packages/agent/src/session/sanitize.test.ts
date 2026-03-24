@@ -49,7 +49,7 @@ describe('sanitizeMessageForPersistence', () => {
         const msg = {
             role: 'user' as const,
             content: 'hi',
-            attachments: [{ type: 'image' as const, mimeType: 'image/png', data: 'base64longstring' }],
+            attachments: [{ kind: 'image' as const, type: 'image' as const, mimeType: 'image/png', data: 'base64longstring' }],
         };
         const out = sanitizeMessageForPersistence(msg);
         expect(Array.isArray(out.attachments)).toBe(true);
