@@ -1,6 +1,6 @@
 {
     "name": "@xqoder/workflow",
-    "version": "0.1.0-rc.202603230340",
+    "version": "0.1.0",
     "private": true,
     "type": "module",
     "description": "XQoder Workflow Engine - task orchestration",
@@ -11,13 +11,13 @@
         "dev": "tsc --watch",
         "clean": "rm -rf dist",
         "test": "vitest run",
+        "typecheck": "tsc --noEmit",
         "lint": "tsc --noEmit"
     },
     "dependencies": {
         "@xqoder/shared": "workspace:*",
         "@xqoder/agent": "workspace:*",
-        "@xqoder/runtime": "workspace:*",
-        "@xqoder/deploy": "workspace:*"
+        "@xqoder/runtime": "workspace:*"
     },
     "devDependencies": {
         "typescript": "^5.4.0",

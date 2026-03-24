@@ -1,6 +1,6 @@
 {
     "name": "@xqoder/shared",
-    "version": "0.1.0-rc.202603230340",
+    "version": "0.1.0",
     "private": true,
     "type": "module",
     "description": "XQoder shared types and utilities",
@@ -11,6 +11,7 @@
         "dev": "tsc --watch",
         "clean": "rm -rf dist",
         "test": "vitest run",
+        "typecheck": "tsc --noEmit",
         "lint": "tsc --noEmit"
     },
     "devDependencies": {

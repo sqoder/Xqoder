@@ -3,7 +3,7 @@
 // 参考 OpenCode: internal/config/config.go setProviderDefaults()
 // ============================================================
 
-import type { LLMProviderName } from './types.js';
+import type { LLMProviderName } from './llm-types.js';
 
 interface DetectedProvider {
     provider: LLMProviderName;
@@ -25,6 +25,7 @@ const PROVIDER_PRIORITY: ProviderCandidate[] = [
     { provider: 'groq', envKey: 'GROQ_API_KEY', defaultModel: 'llama-3.3-70b-versatile' },
     { provider: 'openrouter', envKey: 'OPENROUTER_API_KEY', defaultModel: 'anthropic/claude-sonnet-4' },
     { provider: 'xai', envKey: 'XAI_API_KEY', defaultModel: 'grok-3' },
+    { provider: 'zhipu', envKey: 'ZHIPU_API_KEY', defaultModel: 'glm-4-flash' },
     { provider: 'dashscope', envKey: 'DASHSCOPE_API_KEY', defaultModel: 'qwen-max' },
     { provider: 'bedrock', envKey: 'AWS_ACCESS_KEY_ID', defaultModel: 'anthropic.claude-3-5-sonnet-20241022-v2:0' },
     { provider: 'azure', envKey: 'AZURE_OPENAI_API_KEY', defaultModel: 'gpt-4o' },

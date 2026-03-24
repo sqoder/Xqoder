@@ -50,10 +50,19 @@ describe('XQoderAgentProvider', () => {
       'status.changed',
       'tool.output',
       'tool.completed',
+      'message.completed',
       'status.changed',
       'message.completed',
       'status.changed',
     ]);
+    const toolMessage = events.find((event) => event.type === 'message.completed' && event.message.role === 'tool');
+    expect(toolMessage).toMatchObject({
+      type: 'message.completed',
+      message: {
+        role: 'tool',
+        content: 'done',
+      },
+    });
     expect(events.at(-2)).toMatchObject({
       type: 'message.completed',
       message: {

@@ -11,6 +11,8 @@ export interface ErrorAnalysis {
     autoFixCommands: string[];
     /** 给 Agent 的上下文摘要 */
     summaryForAgent: string;
+    /** 可选：来自 LSP 的补充诊断摘要 */
+    lspDiagnosticsSummary?: string;
 }
 
 /**

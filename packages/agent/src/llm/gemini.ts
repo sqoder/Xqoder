@@ -5,7 +5,7 @@
 
 import type { LLMProviderConfig, LLMProviderName } from '@xqoder/shared';
 import { normalizeLLMConfig } from '@xqoder/shared';
-import { OpenAIProvider } from '@xqoder/provider-openai';
+import { OpenAIProvider } from './providers/index.js';
 
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
 const GEMINI_DEFAULT_MODEL = 'gemini-2.0-flash';

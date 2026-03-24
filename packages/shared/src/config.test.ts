@@ -39,7 +39,7 @@ describe('ConfigManager', () => {
                 apiKey: '',
             },
             sandbox: {
-                mode: 'project',
+                mode: 'full-access',
                 allowedPaths: [],
             },
             mcp: {
@@ -51,6 +51,8 @@ describe('ConfigManager', () => {
             tui: {
                 mouseMode: 'terminal',
                 scrollStep: 3,
+                inertiaDecayThreshold: 0.3,
+                inertiaMaxStep: 20,
             },
             contextPaths: [
                 '.github/copilot-instructions.md',
@@ -166,6 +168,8 @@ describe('ConfigManager', () => {
             tui: {
                 mouseMode: 'app',
                 scrollStep: 6,
+                inertiaDecayThreshold: 0.45,
+                inertiaMaxStep: 28,
             },
         });
         manager.save();
@@ -176,10 +180,14 @@ describe('ConfigManager', () => {
         expect(reloaded.tui).toEqual({
             mouseMode: 'app',
             scrollStep: 6,
+            inertiaDecayThreshold: 0.45,
+            inertiaMaxStep: 28,
         });
         expect(reloadedManager.getTuiSettings()).toEqual({
             mouseMode: 'app',
             scrollStep: 6,
+            inertiaDecayThreshold: 0.45,
+            inertiaMaxStep: 28,
         });
     });
 

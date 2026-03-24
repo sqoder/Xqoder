@@ -12,3 +12,4 @@ export { LogWatcher, type LogEntry } from './log-watcher.js';
 export { PortDetector } from './port-detector.js';
 export { ErrorAnalyzer, type ErrorAnalysis } from './error-analyzer.js';
 export { ProjectTestRunner, type ProjectTestRunnerOptions } from './test-runner.js';
+export * from './core/index.js';
