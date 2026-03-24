@@ -573,7 +573,7 @@ impl XqRenderer {
                 input_lines = input_lines.max(c.lines().count() as u16);
             }
         }
-        let input_lines = input_lines.min(6).max(1) + 1; // +1 为 Border/Margin 留白
+        let input_lines = input_lines.clamp(1, 6) + 1; // +1 为 Border/Margin 留白
 
         let overlay_item_count = state.overlay.as_ref().map(|o| o.items.len() as u16);
         let overlay_max_width = state.overlay.as_ref().and_then(|o| o.max_width);

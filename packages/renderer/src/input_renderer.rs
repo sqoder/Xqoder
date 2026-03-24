@@ -139,7 +139,7 @@ fn render_input_with_shadow(buf: &mut Buffer, rect: Rect, state: &TuiState) {
         );
     }
 
-    let is_shell = state.input.mode.to_ascii_lowercase() == "shell";
+    let is_shell = state.input.mode.eq_ignore_ascii_case("shell");
     let prompt = if is_shell { "!" } else { "›" };
     let prompt_style = CellStyle {
         fg: if is_shell { FG_BRAND } else { FG_FAINT },
@@ -297,7 +297,7 @@ pub fn render_input_parts(
     placeholder: &str,
 ) -> InputLayoutResult {
     // 目前供 TS 侧做布局/调试用：返回纯文本行 + 最基础的 tone 标注
-    let is_shell = mode.to_ascii_lowercase() == "shell";
+    let is_shell = mode.eq_ignore_ascii_case("shell");
     let prompt_first = if is_shell {
         "!".to_string()
     } else {

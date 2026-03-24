@@ -9,7 +9,7 @@ use crate::types::TuiState;
 use crate::unicode::string_display_width;
 
 fn repeat(ch: char, count: u16) -> String {
-    std::iter::repeat(ch).take(count as usize).collect()
+    std::iter::repeat_n(ch, count as usize).collect()
 }
 
 fn content_width(rect: Rect) -> usize {
@@ -164,11 +164,12 @@ pub fn render_messages(buf: &mut Buffer, rect: Rect, state: &TuiState) {
                      global_line: &mut u32,
                      text: &str,
                      style: CellStyle| {
-        if *global_line >= visible.start_line && *global_line < visible.end_line {
-            if *y < rect.y + rect.height {
-                buf.write_string(rect.x + 1, *y, text, style, Some(rect));
-                *y = y.saturating_add(1);
-            }
+        if *global_line >= visible.start_line
+            && *global_line < visible.end_line
+            && *y < rect.y + rect.height
+        {
+            buf.write_string(rect.x + 1, *y, text, style, Some(rect));
+            *y = y.saturating_add(1);
         }
         *global_line = global_line.saturating_add(1);
     };
@@ -376,7 +377,7 @@ pub fn render_messages(buf: &mut Buffer, rect: Rect, state: &TuiState) {
                         BADGE_DONE_BG,
                     )
                 } else if status == "running" {
-                    let anim = if state.tick % 2 == 0 { '◉' } else { '◍' };
+                    let anim = if state.tick.is_multiple_of(2) { '◉' } else { '◍' };
                     (
                         anim,
                         "[···]",
@@ -459,7 +460,7 @@ pub fn render_messages(buf: &mut Buffer, rect: Rect, state: &TuiState) {
         }
 
         // 分隔线（40 字符，或按宽度缩短）
-        let sep_len = (w as u16).min(40).max(10);
+        let sep_len = (w as u16).clamp(10, 40);
         emit_line(
             buf,
             text_rect,
@@ -604,8 +605,7 @@ pub fn find_visible_message_range(
     }
 
     let mut start = 0usize;
-    for i in 0..cum_heights.len() {
-        let top = cum_heights[i];
+    for (i, top) in cum_heights.iter().copied().enumerate() {
         let bottom = top.saturating_add(heights.get(i).copied().unwrap_or(0));
         if offset >= top && offset < bottom {
             start = i;

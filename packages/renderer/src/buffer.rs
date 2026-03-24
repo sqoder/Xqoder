@@ -114,7 +114,7 @@ impl Buffer {
                 row,
                 Cell {
                     ch: c,
-                    style: style.clone(),
+                    style,
                     width: w,
                 },
             );
@@ -126,7 +126,7 @@ impl Buffer {
                     row,
                     Cell {
                         ch: ' ',
-                        style: style.clone(),
+                        style,
                         width: 0,
                     },
                 );

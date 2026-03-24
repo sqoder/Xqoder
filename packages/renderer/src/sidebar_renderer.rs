@@ -197,7 +197,7 @@ pub fn render_sidebar(buf: &mut Buffer, rect: Rect, state: &TuiState) {
                 row += 1;
             }
 
-            if !state.sidebar.docker_url.trim().is_empty() && row + 1 <= rect.height {
+            if !state.sidebar.docker_url.trim().is_empty() && row < rect.height {
                 write_line(
                     buf,
                     rect,

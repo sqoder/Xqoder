@@ -16,14 +16,15 @@ fn map() -> &'static Mutex<Vec<ClickRegion>> {
 }
 
 pub fn clear() {
-    map().lock().ok().map(|mut v| v.clear());
+    if let Ok(mut regions) = map().lock() {
+        regions.clear();
+    }
 }
 
 pub fn register(rect: Rect, kind: &'static str, id: String) {
-    map()
-        .lock()
-        .ok()
-        .map(|mut v| v.push(ClickRegion { rect, kind, id }));
+    if let Ok(mut regions) = map().lock() {
+        regions.push(ClickRegion { rect, kind, id });
+    }
 }
 
 pub fn hit(col: u16, row: u16) -> Option<ClickRegion> {

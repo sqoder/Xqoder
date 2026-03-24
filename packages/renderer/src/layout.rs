@@ -82,7 +82,7 @@ pub fn compute_layout(
         let content_w_val = overlay_max_width.unwrap_or(40).clamp(24, 58);
 
         let box_w = (content_w.saturating_sub(2)).min(content_w_val + 4);
-        let box_x = (content_w.saturating_sub(box_w)).min(2).max(1);
+        let box_x = (content_w.saturating_sub(box_w)).clamp(1, 2);
         let box_y = (rows.saturating_sub(box_h)).saturating_sub(4).max(1);
 
         overlay = Some(Rect::new(box_x, box_y, box_w, box_h));

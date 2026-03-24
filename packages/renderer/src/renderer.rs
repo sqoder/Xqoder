@@ -83,7 +83,7 @@ impl Renderer {
                 row,
                 Cell {
                     ch,
-                    style: style.clone(),
+                    style,
                     width: w,
                 },
             );
@@ -93,7 +93,7 @@ impl Renderer {
                     row,
                     Cell {
                         ch: ' ',
-                        style: style.clone(),
+                        style,
                         width: 0,
                     },
                 );
@@ -168,7 +168,7 @@ impl Renderer {
             };
             input_lines = input_lines.max(part_lines);
         }
-        let input_lines = input_lines.min(6).max(1) + 1;
+        let input_lines = input_lines.clamp(1, 6) + 1;
 
         let overlay_item_count = state.overlay.as_ref().map(|o| o.items.len() as u16);
         let overlay_max_width = state.overlay.as_ref().and_then(|o| o.max_width);
