@@ -1,0 +1,46 @@
+name: Manual E2E
+
+on:
+  workflow_dispatch:
+
+jobs:
+  real-fix-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      XQODER_E2E_PROVIDER: dashscope
+      XQODER_E2E_MODEL: qwen-plus
+      XQODER_REAL_LLM_E2E: '1'
+      DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build CLI
+        run: bun run build
+
+      - name: Run real fix and deploy smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          TEMP_HOME="$(mktemp -d)"
+          TEMP_PROJECT="$(mktemp -d)"
+          cp -R src/commands/__fixtures__/fix/syntax-error/. "$TEMP_PROJECT"
+          HOME="$TEMP_HOME" bun dist/index.js config init --provider dashscope --model qwen-plus --api-key "$DASHSCOPE_API_KEY"
+          HOME="$TEMP_HOME" bun dist/index.js fix --dir "$TEMP_PROJECT" --model qwen-plus --max-attempts 2
+          (cd "$TEMP_PROJECT" && npm run build)
+          HOME="$TEMP_HOME" bun dist/index.js deploy --dir "$TEMP_PROJECT" --token "$VERCEL_TOKEN"

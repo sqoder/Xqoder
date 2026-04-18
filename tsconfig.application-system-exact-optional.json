@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "exactOptionalPropertyTypes": true
+  },
+  "include": [
+    "src/application/system/**/*",
+    "src/infra/shared/**/*",
+    "src/shared/**/*",
+    "src/domain/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "test"
+  ]
+}

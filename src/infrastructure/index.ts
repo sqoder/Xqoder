@@ -1,0 +1,10 @@
+export * as deploy from './deploy/index.js';
+export * as llm from './llm/index.js';
+export * as lsp from './lsp/index.js';
+export * as mcp from './mcp/index.js';
+export * as notifications from './notifications/index.js';
+export * as plugins from './plugins/index.js';
+export * as remoteExec from './remote-exec/index.js';
+export * as search from './search/index.js';
+export * as shell from './shell/index.js';
+export * as storage from './storage/index.js';

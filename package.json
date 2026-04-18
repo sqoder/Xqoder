@@ -1,0 +1,46 @@
+{
+    "name": "xqoder",
+    "version": "0.1.0-rc.202603230340",
+    "private": true,
+    "type": "module",
+    "description": "XQoder - terminal-native AI coding assistant",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "bin": {
+        "xqoder": "./dist/index.js"
+    },
+    "scripts": {
+        "build": "bun scripts/build.mjs",
+        "dev": "bun scripts/build.mjs --watch",
+        "start": "bun dist/index.js",
+        "xqoder": "bun dist/index.js",
+    "clean": "rm -rf dist",
+    "test": "bun test ./test ./src",
+    "test:coverage": "node scripts/check-coverage.mjs",
+    "lint": "bun x tsc --noEmit",
+    "lint:layers-strict": "bun x tsc -p tsconfig.domain-shared-strict.json --noEmit",
+    "lint:domain-exact-optional": "bun x tsc -p tsconfig.domain-exact-optional.json --noEmit",
+    "lint:application-system-exact-optional": "bun x tsc -p tsconfig.application-system-exact-optional.json --noEmit",
+    "lint:application-permissions-sessions-exact-optional": "bun x tsc -p tsconfig.application-permissions-sessions-exact-optional.json --noEmit",
+    "local:repair-runtime-state": "node scripts/repair-local-runtime-state.mjs",
+    "security:tracked": "node scripts/security-tracked-files.mjs",
+    "release:check": "bun run build && bun run lint && bun run lint:layers-strict && bun run lint:domain-exact-optional && bun run lint:application-system-exact-optional && bun run lint:application-permissions-sessions-exact-optional && bun run test:coverage && bun run security:tracked"
+  },
+    "dependencies": {
+        "@anthropic-ai/sdk": "^0.88.0",
+        "chalk": "^5.3.0",
+        "clipboardy": "^4.0.0",
+        "commander": "^12.0.0",
+        "ink": "^6.8.0",
+        "openai": "^6.34.0",
+        "react": "^19.2.4",
+        "string-width": "4.2.3",
+        "tree-kill": "^1.2.2"
+    },
+    "devDependencies": {
+        "@types/node": "^22.19.15",
+        "@types/react": "^19.2.2",
+        "bun-types": "^1.3.12",
+        "typescript": "^5.4.0"
+    }
+}
