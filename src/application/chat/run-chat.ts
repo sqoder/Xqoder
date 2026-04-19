@@ -16,6 +16,7 @@ import {
     buildAgentConfigFromXQoderConfig,
     type AgentCallbacks,
 } from '@xqoder/agent';
+import { MISSING_API_KEY_GUIDANCE } from '../config/api-key-guidance.js';
 import { buildProjectNotepadPromptAppendix } from '../system/notepad.js';
 import type {
     ChatAgentFactoryConfig,
@@ -221,7 +222,7 @@ export async function runChatHeadless(
     });
 
     if (!agentConfig.llmConfig.apiKey.trim()) {
-        throw new Error('LLM API Key not configured');
+        throw new Error(MISSING_API_KEY_GUIDANCE);
     }
 
     const factoryConfig = {
@@ -283,7 +284,7 @@ export async function runChat(
     });
 
     if (!dependencies.agentFactory && !agentConfig.llmConfig.apiKey.trim()) {
-        throw new Error('LLM API Key not configured, please run xqoder config init --api-key <key>');
+        throw new Error(MISSING_API_KEY_GUIDANCE);
     }
 
     const factoryConfig = {
@@ -351,7 +352,7 @@ export async function runNonInteractivePrompt(
     });
 
     if (!dependencies.agentFactory && !agentConfig.llmConfig.apiKey.trim()) {
-        throw new Error('LLM API Key not configured, please run xqoder config init --api-key <key>');
+        throw new Error(MISSING_API_KEY_GUIDANCE);
     }
 
     const factoryConfig = {

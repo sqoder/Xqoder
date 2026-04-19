@@ -8,18 +8,35 @@ const coverageFile = path.join(coverageDir, 'lcov.info');
 const bunExecutable = process.platform === 'win32' ? 'bun.exe' : 'bun';
 
 const COVERAGE_RULES = {
-  // Transitional repo-wide floor. The review doc called for a real gate first;
-  // this establishes one now while broader test expansion is still in progress.
-  overallLineMin: 25,
+  // Transitional repo-wide floor. Ratchet upward incrementally:
+  // 36% landed in this pass, with 45% / 50% as the next milestones once
+  // more legacy-heavy execution paths are covered.
+  overallLineMin: 36,
   criticalFiles: [
     { path: 'src/domain/permissions/approval.ts', lineMin: 90 },
     { path: 'src/domain/permissions/tool-policy.ts', lineMin: 90 },
     { path: 'src/infra/shared/config.ts', lineMin: 65 },
     { path: 'src/infra/shared/config-normalizers.ts', lineMin: 65 },
     { path: 'src/interfaces/http/server-openapi.ts', lineMin: 90 },
-    // The terminal shell is covered today, but still far from the long-term target.
-    // Keep a non-zero floor here so regressions fail before the next test-expansion pass.
-    { path: 'src/platform/terminal/app/run-terminal-app.ts', lineMin: 10 },
+    { path: 'src/interfaces/http/server-openapi-components.ts', lineMin: 90 },
+    { path: 'src/interfaces/http/server-openapi-paths.ts', lineMin: 90 },
+    { path: 'src/application/chat/run-chat.ts', lineMin: 90 },
+    { path: 'src/application/config/doctor.ts', lineMin: 70 },
+    { path: 'src/application/config/service.ts', lineMin: 60 },
+    { path: 'src/application/sessions/session-resolve.ts', lineMin: 80 },
+    { path: 'src/cli/root-shell.ts', lineMin: 60 },
+    { path: 'src/commands/core/agent.ts', lineMin: 75 },
+    { path: 'src/commands/core/auth.ts', lineMin: 85 },
+    { path: 'src/commands/core/models.ts', lineMin: 85 },
+    { path: 'src/commands/sessions/stats.ts', lineMin: 75 },
+    { path: 'src/core/agent/mcp-inspection.ts', lineMin: 85 },
+    { path: 'src/core/agent/mcp-tools.ts', lineMin: 80 },
+    { path: 'src/infrastructure/agent/tui-agent-service.ts', lineMin: 80 },
+    { path: 'src/interfaces/tui/index.ts', lineMin: 50 },
+    { path: 'src/platform/terminal/app/agent-runtime.ts', lineMin: 70 },
+    // The terminal scrollback shell still needs deeper scenario coverage, but
+    // keep raising the floor so regressions fail before the next pass.
+    { path: 'src/platform/terminal/app/run-terminal-app.ts', lineMin: 50 },
   ],
 };
 

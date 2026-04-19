@@ -41,7 +41,8 @@ Node 22+ is required because XQoder persists chat sessions in SQLite.
 bun install
 bun run build
 
-bun run xqoder -- config init --provider openai --api-key <your-key>
+bun run xqoder -- auth login openai --api-key <your-key>
+bun run xqoder -- models use gpt-4.1 --provider openai
 bun run xqoder -- auth list
 bun run xqoder -- models list
 bun run xqoder -- agent list
@@ -49,6 +50,12 @@ bun run xqoder -- chat "Take a first look at this project"
 bun run xqoder -- session list
 bun run xqoder -- stats
 bun run xqoder -- share list
+```
+
+If you prefer writing a config file in one step, `config init` still works:
+
+```bash
+bun run xqoder -- config init --provider openai --api-key <your-key>
 ```
 
 If you want to expose the local repository as a global CLI entrypoint:
@@ -74,7 +81,7 @@ New code should converge on:
 - `src/infrastructure`
 - `src/shared`
 
-Existing directories remain during migration as compatibility-only surfaces. Do not add new reusable logic to `src/commands`, `src/core`, `src/platform`, `src/infra`, or `src/services`; land it in the target layers instead.
+Current stable execution still crosses several legacy directories during migration, especially `src/cli`, `src/core`, `src/platform`, `src/infra`, and `src/plugins`. Treat them as compatibility surfaces. Do not add new reusable logic to `src/commands`, `src/core`, `src/platform`, `src/infra`, or `src/services`; land it in the target layers instead.
 
 The repo keeps this direction honest with guardrail tests for layer imports, terminal-shell command drift, public-doc portability, a strict TypeScript pass for `domain/shared`, an `exactOptionalPropertyTypes` pass for `domain`, and tracked-files-only secret hygiene checks.
 
@@ -222,7 +229,10 @@ Local share assets are stored in `~/.xqoder/data/shares`. At this stage, `share`
 
 `xqoder tui` is now a persistent conversation shell rather than a static command list.
 
-- Type a prompt directly to continue the active session; if you have not manually resumed a session yet, XQoder resumes the most recent project session automatically
+- By default, `xqoder tui` opens the shell without restoring a prior conversation
+- `xqoder tui --continue`: restore the most recent session for the current project
+- `xqoder tui --session <id>`: restore a specific session
+- Type a prompt directly to continue the current shell session after startup
 - `/new`: start a new chat session in the current shell
 - `/session new`: same as `/new`
 - `/exit`: leave the shell
@@ -321,15 +331,24 @@ Current boundaries:
 ## Workspace Layout
 
 ```text
-src/cli         CLI bootstrap and root shell
-src/commands    user-facing command definitions
-src/core        agent engine, runtime kernel, workflow engine
-src/features    runtime and deploy feature modules
-src/infra       shared utilities, protocols, plugin SDK, storage
-src/platform    terminal runtime, TUI, and server adapters
-src/plugins     workspace plugin discovery and loading
-src/services    application services for chat, config, and session resolution
-src/ux          UX helpers such as tool approval
+Current stable directories
+src/cli           CLI bootstrap and root shell
+src/commands      user-facing command definitions
+src/core          agent engine, runtime kernel, workflow engine
+src/features      runtime and deploy feature modules
+src/infra         shared utilities, protocols, plugin SDK, storage
+src/platform      terminal runtime and server adapters
+src/plugins       workspace plugin discovery and loading
+src/services      application services for chat, config, and session resolution
+src/ux            UX helpers such as tool approval
+
+Target landing zones for new code
+src/bootstrap
+src/interfaces
+src/application
+src/domain
+src/infrastructure
+src/shared
 ```
 
 ## Common Commands

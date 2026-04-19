@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "exactOptionalPropertyTypes": true
+  },
+  "include": [
+    "src/interfaces/http/server-openapi.ts",
+    "src/interfaces/http/server-openapi-components.ts",
+    "src/interfaces/http/server-openapi-paths.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "test"
+  ]
+}

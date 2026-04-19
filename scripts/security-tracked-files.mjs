@@ -13,7 +13,14 @@ const TRACKED_SCAN_PATHS = [
   'ARCHITECTURE.md',
   'package.json',
   'tsconfig.json',
+  'tsconfig.application-chat-strict.json',
+  'tsconfig.platform-terminal-strict.json',
+  'tsconfig.core-agent-protocol-strict.json',
+  'tsconfig.interfaces-http-openapi-exact-optional.json',
+  'tsconfig.domain-exact-optional.json',
   'tsconfig.domain-shared-strict.json',
+  'tsconfig.application-system-exact-optional.json',
+  'tsconfig.application-permissions-sessions-exact-optional.json',
 ];
 
 const SECRET_PATTERNS = [
@@ -29,16 +36,25 @@ const TRACKED_FILE_NAME_PATTERNS = [
   { name: 'Tracked private key file', pattern: /\.(pem|key)$/i },
 ];
 
-function listTrackedFiles() {
-  const raw = execFileSync('git', ['ls-files', '-z', '--', ...TRACKED_SCAN_PATHS], {
+function listWorktreeFiles() {
+  const tracked = execFileSync('git', ['ls-files', '-z', '--', ...TRACKED_SCAN_PATHS], {
     cwd: rootDir,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     maxBuffer: 16 * 1024 * 1024,
   });
 
-  return raw
-    .split('\0')
+  const untracked = execFileSync('git', ['ls-files', '-z', '--others', '--exclude-standard', '--', ...TRACKED_SCAN_PATHS], {
+    cwd: rootDir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    maxBuffer: 16 * 1024 * 1024,
+  });
+
+  return Array.from(new Set([
+    ...tracked.split('\0'),
+    ...untracked.split('\0'),
+  ]))
     .map((filePath) => filePath.trim())
     .filter(Boolean);
 }
@@ -59,7 +75,7 @@ function createLineNumberIndex(content, matchIndex) {
 
 function collectIssues() {
   const issues = [];
-  const trackedFiles = listTrackedFiles();
+  const trackedFiles = listWorktreeFiles();
 
   for (const relativePath of trackedFiles) {
     const normalizedPath = relativePath.replace(/\\/g, '/');
@@ -101,11 +117,11 @@ function collectIssues() {
 const issues = collectIssues();
 
 if (issues.length === 0) {
-  console.log('tracked-files security hygiene: PASS');
+  console.log('worktree security hygiene: PASS');
   process.exit(0);
 }
 
-console.error('tracked-files security hygiene: FAIL');
+console.error('worktree security hygiene: FAIL');
 for (const issue of issues) {
   const location = issue.line ? `${issue.file}:${issue.line}` : issue.file;
   console.error(`- ${location} — ${issue.reason}`);

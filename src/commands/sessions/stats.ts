@@ -16,6 +16,7 @@ import {
 
 interface StatsCommandDependencies {
     sessionStore?: Pick<AgentSessionStore, 'listSessions'>;
+    writeOutput?: (output: string) => void;
 }
 
 interface StatsCommandOptions {
@@ -59,18 +60,17 @@ export function runStatsCommand(
     dependencies: StatsCommandDependencies = {},
 ): SessionStatsReport {
     const sessionStore = dependencies.sessionStore ?? createDefaultSessionStore();
+    const writeOutput = dependencies.writeOutput ?? ((output: string) => console.log(output));
     const resolvedDir = path.resolve(options.dir);
     const projectFilter = options.project === undefined
         ? (options.all ? undefined : resolvedDir)
         : (options.project === '' ? resolvedDir : path.resolve(options.project));
     let summaries = sessionStore.listSessions(projectFilter, 100000);
     if (options.days) {
-        const days = parseInt(options.days, 10);
-        if (Number.isFinite(days) && days > 0) {
-            const cutoff = new Date();
-            cutoff.setDate(cutoff.getDate() - days);
-            summaries = summaries.filter(s => s.updatedAt >= cutoff);
-        }
+        const days = parsePositiveIntegerOption(options.days, 'days');
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - days);
+        summaries = summaries.filter((summary) => summary.updatedAt >= cutoff);
     }
     const report = buildSessionStatsReport(summaries, {
         allProjects: Boolean(options.all),
@@ -78,7 +78,7 @@ export function runStatsCommand(
     });
 
     if (options.json) {
-        console.log(JSON.stringify(report, null, 2));
+        writeOutput(JSON.stringify(report, null, 2));
         return report;
     }
 
@@ -89,7 +89,7 @@ export function runStatsCommand(
         return report;
     }
 
-    console.log(formatSessionStatsReport(report));
+    writeOutput(formatSessionStatsReport(report));
     return report;
 }
 
@@ -97,4 +97,12 @@ export const statsCommand = createStatsCommand();
 
 function createDefaultSessionStore(): AgentSessionStore {
     return new SQLiteSessionStore(getXQoderPaths().sessionDbFile);
+}
+
+function parsePositiveIntegerOption(rawValue: string, optionName: string): number {
+    const parsed = Number.parseInt(rawValue, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        throw new Error(`${optionName} must be a positive integer`);
+    }
+    return parsed;
 }

@@ -605,19 +605,20 @@ export class XQoderAgent implements AgentProtocol {
     ): void {
         try { callbacks?.onToolStart?.(toolCall.name, args); } catch { /* noop */ }
         try { callbacks?.onToolEnd?.(toolCall.name, result.output, false); } catch { /* noop */ }
+        const errorMessage = result.error ?? 'Unknown tool failure';
         this.session.recordToolExecution({
             id: toolCall.id,
             name: toolCall.name,
             args,
             success: false,
             output: result.output,
-            error: result.error,
+            error: errorMessage,
             startedAt: new Date(),
             completedAt: new Date(),
             metadata: result.metadata,
         });
-        this.session.addToolResult(toolCall.id, `Error: ${result.error}`);
-        this.emit('tool_response', { requestId: toolCall.id, name: toolCall.name, output: result.error, success: false }, streamId);
+        this.session.addToolResult(toolCall.id, `Error: ${errorMessage}`);
+        this.emit('tool_response', { requestId: toolCall.id, name: toolCall.name, output: errorMessage, success: false }, streamId);
     }
 
     /** Register default tools */

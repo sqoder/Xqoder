@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "strict": true
+  },
+  "include": [
+    "src/core/agent/mcp.ts",
+    "src/core/agent/mcp-inspection.ts",
+    "src/core/agent/mcp-tools.ts",
+    "src/core/agent/lsp.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "test"
+  ]
+}

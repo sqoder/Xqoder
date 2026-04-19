@@ -2,18 +2,37 @@ import * as path from 'node:path';
 import * as readline from 'node:readline/promises';
 import { ConfigManager, LogLevel, logger, resolveConfigWithEnvOverrides, type SandboxMode } from '@xqoder/shared';
 import type {
-    AgentRunStatus,
-    AgentRuntimeEvent,
     TuiAgentSettings,
+    AgentRuntimeEvent,
 } from '../../../application/agent/index.js';
 import {
     createTerminalAgentRuntime,
     createTerminalSession,
     disposeTerminalAgentRuntime,
     restoreTerminalAgentSession,
-    type TerminalAgentRuntime,
     type TerminalSessionSnapshot,
+    type TerminalAgentRuntime,
 } from './agent-runtime.js';
+import {
+    TERMINAL_LOCAL_COMMANDS,
+    resolveTerminalLocalCommand,
+} from './terminal-local-commands.js';
+import {
+    TERMINAL_INLINE_EVENT_MAX_LENGTH,
+    TERMINAL_INLINE_OUTPUT_MAX_LENGTH,
+    createTerminalStreamingBlockState,
+    createTerminalToolOutputState,
+    finishStreamingConversationBlock,
+    formatTerminalInlineValue,
+    formatTerminalStatusNote,
+    getTerminalToolKey,
+    shouldShowToolArgs,
+    splitTerminalOutputBuffer,
+    truncateTerminalInlineText,
+    writeConversationBlock,
+    writeStreamingConversationChunk,
+    writeTerminalInlineNote,
+} from './terminal-scrollback-output.js';
 
 export interface TerminalAppOptions {
     dir?: string;
@@ -27,38 +46,27 @@ export interface TerminalAppOptions {
     attachBaseUrl?: string;
 }
 
-const TERMINAL_INLINE_EVENT_MAX_LENGTH = 160;
-const TERMINAL_INLINE_OUTPUT_MAX_LENGTH = 240;
-
-interface TerminalStreamingBlockState {
-    open: boolean;
-    atLineStart: boolean;
-    wroteContent: boolean;
+export interface TerminalShellReadline {
+    question(query: string): Promise<string>;
+    close(): void;
 }
 
-interface TerminalToolOutputState {
-    tool: string;
-    buffer: string;
-    sawPartial: boolean;
+export interface TerminalScrollbackShellDependencies {
+    createReadlineInterface?: (options: {
+        input: NodeJS.ReadStream;
+        output: NodeJS.WriteStream;
+        terminal: boolean;
+    }) => TerminalShellReadline;
+    createSession?: typeof createTerminalSession;
 }
 
-export const TERMINAL_LOCAL_COMMANDS = {
-    exit: ['/quit', '/exit'],
-    new: ['/new', '/session new'],
-} as const;
-
-export type TerminalLocalCommand = keyof typeof TERMINAL_LOCAL_COMMANDS;
-
-const TERMINAL_LOCAL_COMMAND_LOOKUP = new Map<string, TerminalLocalCommand>(
-    Object.entries(TERMINAL_LOCAL_COMMANDS).flatMap(([command, aliases]) =>
-        aliases.map((alias) => [alias, command as TerminalLocalCommand]),
-    ),
-);
-
-export function resolveTerminalLocalCommand(prompt: string): TerminalLocalCommand | null {
-    const trimmed = prompt.trim();
-    return TERMINAL_LOCAL_COMMAND_LOOKUP.get(trimmed) ?? null;
-}
+export { TERMINAL_LOCAL_COMMANDS, resolveTerminalLocalCommand };
+export type { TerminalLocalCommand } from './terminal-local-commands.js';
+export {
+    formatTerminalInlineValue,
+    splitTerminalOutputBuffer,
+    truncateTerminalInlineText,
+} from './terminal-scrollback-output.js';
 
 function resolveSettings(options: TerminalAppOptions): TuiAgentSettings {
     const resolvedDir = path.resolve(options.dir ?? process.cwd());
@@ -99,165 +107,19 @@ function installTerminalNoiseGuards(): () => void {
     };
 }
 
-function writeConversationBlock(
-    stdout: NodeJS.WriteStream,
-    header: string,
-    content: string,
-): void {
-    stdout.write(`${header}\n`);
-    const lines = content.length > 0 ? content.split('\n') : [''];
-    for (const line of lines) {
-        stdout.write(`  ${line}\n`);
-    }
-    stdout.write('\n');
-}
-
-export function truncateTerminalInlineText(text: string, maxLength = TERMINAL_INLINE_EVENT_MAX_LENGTH): string {
-    if (maxLength <= 0) return '';
-    if (text.length <= maxLength) return text;
-    if (maxLength === 1) return '…';
-    return `${text.slice(0, maxLength - 1).trimEnd()}…`;
-}
-
-export function formatTerminalInlineValue(value: unknown, maxLength = TERMINAL_INLINE_EVENT_MAX_LENGTH): string {
-    const raw = (() => {
-        if (typeof value === 'string') {
-            return value;
-        }
-        try {
-            return JSON.stringify(value);
-        } catch {
-            return String(value);
-        }
-    })();
-
-    const normalized = raw
-        .replace(/\r\n/g, '\n')
-        .replace(/\r/g, '\n')
-        .replace(/\s+/g, ' ')
-        .trim();
-    return truncateTerminalInlineText(normalized, maxLength);
-}
-
-export function splitTerminalOutputBuffer(buffer: string, flush = false): { lines: string[]; rest: string } {
-    const normalized = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    const parts = normalized.split('\n');
-    if (flush) {
-        const lines = parts.at(-1) === '' ? parts.slice(0, -1) : parts;
-        return { lines, rest: '' };
-    }
-    return {
-        lines: parts.slice(0, -1),
-        rest: parts.at(-1) ?? '',
-    };
-}
-
-function ensureStreamingConversationBlock(
-    stdout: NodeJS.WriteStream,
-    header: string,
-    state: TerminalStreamingBlockState,
-): void {
-    if (state.open) {
-        return;
-    }
-    stdout.write(`${header}\n`);
-    state.open = true;
-    state.atLineStart = true;
-    state.wroteContent = false;
-}
-
-function writeStreamingConversationChunk(
-    stdout: NodeJS.WriteStream,
-    header: string,
-    state: TerminalStreamingBlockState,
-    text: string,
-): void {
-    if (!text) {
-        return;
-    }
-
-    ensureStreamingConversationBlock(stdout, header, state);
-    const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-
-    for (const character of normalized) {
-        if (state.atLineStart) {
-            stdout.write('  ');
-        }
-        stdout.write(character);
-        state.wroteContent = true;
-        state.atLineStart = character === '\n';
-    }
-}
-
-function finishStreamingConversationBlock(
-    stdout: NodeJS.WriteStream,
-    state: TerminalStreamingBlockState,
-): void {
-    if (!state.open) {
-        return;
-    }
-
-    if (!state.wroteContent) {
-        stdout.write('  \n\n');
-    } else {
-        if (!state.atLineStart) {
-            stdout.write('\n');
-        }
-        stdout.write('\n');
-    }
-
-    state.open = false;
-    state.atLineStart = true;
-    state.wroteContent = false;
-}
-
-function writeTerminalInlineNote(stdout: NodeJS.WriteStream, note: string): void {
-    stdout.write(`${note}\n`);
-}
-
-function getTerminalToolKey(event: { provider: string; tool: string }): string {
-    return `${event.provider}:${event.tool}`;
-}
-
-function shouldShowToolArgs(args: unknown): boolean {
-    if (args == null) {
-        return false;
-    }
-    if (typeof args === 'string') {
-        return args.trim().length > 0;
-    }
-    if (Array.isArray(args)) {
-        return args.length > 0;
-    }
-    if (typeof args === 'object') {
-        return Object.keys(args as Record<string, unknown>).length > 0;
-    }
-    return true;
-}
-
-function formatTerminalStatusNote(
-    status: AgentRunStatus,
-    hasAnnouncedThinking: boolean,
-): string | null {
-    if (status === 'thinking' && !hasAnnouncedThinking) {
-        return '[thinking]';
-    }
-    if (status === 'awaiting-approval') {
-        return '[approval] waiting for input';
-    }
-    return null;
-}
-
-async function runTerminalScrollbackShell(
+export async function runTerminalScrollbackShell(
     runtime: TerminalAgentRuntime,
     settings: TuiAgentSettings,
     restoredSession: TerminalSessionSnapshot | undefined,
     options: TerminalAppOptions,
     streams: { stdin: NodeJS.ReadStream; stdout: NodeJS.WriteStream; stderr: NodeJS.WriteStream },
+    dependencies: TerminalScrollbackShellDependencies = {},
 ): Promise<void> {
     const { stdin, stdout } = streams;
     const agentService = runtime.agentService;
-    const rl = readline.createInterface({
+    const createReadlineInterface = dependencies.createReadlineInterface ?? readline.createInterface;
+    const createSession = dependencies.createSession ?? createTerminalSession;
+    const rl = createReadlineInterface({
         input: stdin,
         output: stdout,
         terminal: true,
@@ -300,7 +162,7 @@ async function runTerminalScrollbackShell(
 
             if (localCommand === 'new') {
                 if (runtime.attachBaseUrl) {
-                    const created = await createTerminalSession(runtime, settings.dir);
+                    const created = await createSession(runtime, settings.dir);
                     activeSessionId = created.id;
                     stdout.write(`[new session ${created.title}]\n\n`);
                 } else {
@@ -316,14 +178,10 @@ async function runTerminalScrollbackShell(
             let assistantStreamed = false;
             let assistantDelivered = false;
             let announcedThinking = false;
-            const assistantStream: TerminalStreamingBlockState = {
-                open: false,
-                atLineStart: true,
-                wroteContent: false,
-            };
-            const toolOutputs = new Map<string, TerminalToolOutputState>();
+            const assistantStream = createTerminalStreamingBlockState();
+            const toolOutputs = new Map<string, ReturnType<typeof createTerminalToolOutputState>>();
 
-            const flushToolOutput = (toolState: TerminalToolOutputState, flush: boolean): void => {
+            const flushToolOutput = (toolState: ReturnType<typeof createTerminalToolOutputState>, flush: boolean): void => {
                 const { lines, rest } = splitTerminalOutputBuffer(toolState.buffer, flush);
                 toolState.buffer = rest;
                 if (lines.length === 0) {
@@ -369,11 +227,7 @@ async function runTerminalScrollbackShell(
                 if (event.type === 'tool.called') {
                     finishStreamingConversationBlock(stdout, assistantStream);
                     const key = getTerminalToolKey(event);
-                    toolOutputs.set(key, {
-                        tool: event.tool,
-                        buffer: '',
-                        sawPartial: false,
-                    });
+                    toolOutputs.set(key, createTerminalToolOutputState(event.tool));
                     const argsSummary = shouldShowToolArgs(event.args)
                         ? ` ${formatTerminalInlineValue(event.args, TERMINAL_INLINE_EVENT_MAX_LENGTH)}`
                         : '';
@@ -383,11 +237,7 @@ async function runTerminalScrollbackShell(
 
                 if (event.type === 'tool.output') {
                     const key = getTerminalToolKey(event);
-                    const toolState = toolOutputs.get(key) ?? {
-                        tool: event.tool,
-                        buffer: '',
-                        sawPartial: false,
-                    };
+                    const toolState = toolOutputs.get(key) ?? createTerminalToolOutputState(event.tool);
                     toolOutputs.set(key, toolState);
 
                     if (event.partial) {
@@ -406,11 +256,7 @@ async function runTerminalScrollbackShell(
 
                 if (event.type === 'tool.completed') {
                     const key = getTerminalToolKey(event);
-                    const toolState = toolOutputs.get(key) ?? {
-                        tool: event.tool,
-                        buffer: '',
-                        sawPartial: false,
-                    };
+                    const toolState = toolOutputs.get(key) ?? createTerminalToolOutputState(event.tool);
                     flushToolOutput(toolState, true);
                     toolOutputs.delete(key);
                     writeTerminalInlineNote(stdout, `[tool] ${event.tool} ${event.success ? 'done' : 'failed'}`);

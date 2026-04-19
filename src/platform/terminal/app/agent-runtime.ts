@@ -86,7 +86,9 @@ export async function restoreTerminalAgentSession(
 ): Promise<TerminalSessionSnapshot | undefined> {
     if (hasAgentSessionBrowserPort(runtime.agentService)) {
         const sessionId = options.session?.trim()
-            || (await runtime.agentService.listSessions(settings.dir, 1))[0]?.id;
+            || (options.continue
+                ? (await runtime.agentService.listSessions(settings.dir, 1))[0]?.id
+                : undefined);
         return sessionId
             ? await loadTerminalSessionHistory(runtime, sessionId)
             : undefined;

@@ -5,28 +5,27 @@ import {
     type Logger,
     type MCPServerConfig,
     type SandboxMode,
-    type ToolDefinition,
-    type ToolResult,
 } from '@xqoder/shared';
-import type { ITool, ToolApprovalRequest, ToolContext } from './tools/tool.js';
+import type { ITool } from './tools/tool.js';
 import {
     buildRoots,
-    buildSyntheticApproval,
-    convertJsonSchemaToParameters,
     createReservedAlias,
     createToolAlias,
     formatNotificationMessage,
-    formatPromptList,
-    formatPromptResult,
-    formatReadResourceResult,
-    formatResourceIndex,
-    formatToolCallResult,
     hasCapability,
-    normalizePromptArguments,
-    requireStringArgument,
     resolveServerCwd,
-    safeStringify,
 } from './mcp-utils.js';
+import {
+    McpGetPromptTool,
+    McpListPromptsTool,
+    McpListResourcesTool,
+    McpReadResourceTool,
+    McpRemoteTool,
+} from './mcp-tools.js';
+import { inspectMcpServersWithClientFactory } from './mcp-inspection.js';
+import type { McpServerInspection } from './mcp-inspection.js';
+
+export type { McpServerInspection } from './mcp-inspection.js';
 
 const MCP_CLIENT_INFO = {
     name: 'xqoder',
@@ -65,34 +64,34 @@ interface McpInitializeResult {
     serverInfo?: McpServerInfo;
 }
 
-interface McpServerInfo {
+export interface McpServerInfo {
     name: string;
     version: string;
     title?: string;
 }
 
-interface McpToolDescriptor {
+export interface McpToolDescriptor {
     name: string;
     title?: string;
     description?: string;
     inputSchema?: unknown;
 }
 
-interface McpPromptArgumentDescriptor {
+export interface McpPromptArgumentDescriptor {
     name: string;
     title?: string;
     description?: string;
     required?: boolean;
 }
 
-interface McpPromptDescriptor {
+export interface McpPromptDescriptor {
     name: string;
     title?: string;
     description?: string;
     arguments?: McpPromptArgumentDescriptor[];
 }
 
-interface McpResourceDescriptor {
+export interface McpResourceDescriptor {
     uri: string;
     name: string;
     title?: string;
@@ -101,7 +100,7 @@ interface McpResourceDescriptor {
     size?: number;
 }
 
-interface McpResourceTemplateDescriptor {
+export interface McpResourceTemplateDescriptor {
     uriTemplate: string;
     name: string;
     title?: string;
@@ -129,17 +128,17 @@ interface McpResourceTemplatesListResult {
     nextCursor?: string;
 }
 
-interface McpCallToolResult {
+export interface McpCallToolResult {
     content?: Array<Record<string, unknown>>;
     structuredContent?: unknown;
     isError?: boolean;
 }
 
-interface McpReadResourceResult {
+export interface McpReadResourceResult {
     contents?: Array<Record<string, unknown>>;
 }
 
-interface McpGetPromptResult {
+export interface McpGetPromptResult {
     description?: string;
     messages?: Array<Record<string, unknown>>;
 }
@@ -153,7 +152,7 @@ interface McpManagerOptions {
     logger?: Logger;
 }
 
-interface McpClientAdapter {
+export interface McpClientAdapter {
     readonly protocolVersion?: string;
     readonly serverInfo?: McpServerInfo;
     supportsPrompts(): boolean;
@@ -166,46 +165,6 @@ interface McpClientAdapter {
     readResource(uri: string): Promise<McpReadResourceResult>;
     callTool(name: string, args: Record<string, unknown>): Promise<McpCallToolResult>;
     close(): Promise<void>;
-}
-
-export interface McpServerInspection {
-    name: string;
-    enabled: boolean;
-    status: 'ok' | 'error' | 'disabled';
-    transport: 'stdio' | 'http' | 'sse';
-    command: string;
-    url?: string;
-    args: string[];
-    cwd?: string;
-    protocolVersion?: string;
-    serverInfo?: McpServerInfo;
-    toolCount: number;
-    tools: Array<{
-        name: string;
-        title?: string;
-        description?: string;
-    }>;
-    promptCount: number;
-    prompts: Array<{
-        name: string;
-        title?: string;
-        description?: string;
-    }>;
-    resourceCount: number;
-    resources: Array<{
-        uri: string;
-        name: string;
-        title?: string;
-        description?: string;
-    }>;
-    resourceTemplateCount: number;
-    resourceTemplates: Array<{
-        uriTemplate: string;
-        name: string;
-        title?: string;
-        description?: string;
-    }>;
-    error?: string;
 }
 
 type PendingRequest = {
@@ -894,230 +853,6 @@ class McpHttpClient implements McpClientAdapter {
     }
 }
 
-class McpRemoteTool implements ITool {
-    readonly definition: ToolDefinition;
-
-    constructor(
-        private readonly aliasName: string,
-        private readonly serverName: string,
-        private readonly remoteTool: McpToolDescriptor,
-        private readonly client: McpClientAdapter,
-    ) {
-        this.definition = {
-            name: aliasName,
-            description: `[MCP:${serverName}] ${remoteTool.description ?? remoteTool.title ?? remoteTool.name}`,
-            parameters: convertJsonSchemaToParameters(remoteTool.inputSchema),
-        };
-    }
-
-    buildApprovalRequest(args: Record<string, unknown>, _context: ToolContext): ToolApprovalRequest {
-        return {
-            toolCallId: '',
-            toolName: this.aliasName,
-            summary: `Call MCP tool ${this.remoteTool.name} @ ${this.serverName}`,
-            reason: 'MCP tools are provided by external processes and require explicit confirmation before execution.',
-            preview: safeStringify(args, 600),
-            risk: 'medium',
-        };
-    }
-
-    async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
-        const toolCallId = String(args.toolCallId ?? '');
-        const remoteArgs = { ...args };
-        delete remoteArgs.toolCallId;
-
-        const result = await this.client.callTool(this.remoteTool.name, remoteArgs);
-        const output = formatToolCallResult(result);
-        const isError = result.isError === true;
-
-        return {
-            toolCallId,
-            success: !isError,
-            output,
-            error: isError ? output : undefined,
-            metadata: {
-                mcpServer: this.serverName,
-                remoteTool: this.remoteTool.name,
-            },
-        };
-    }
-}
-
-class McpListPromptsTool implements ITool {
-    readonly definition: ToolDefinition;
-
-    constructor(
-        private readonly serverName: string,
-        private readonly aliasName: string,
-        private readonly client: McpClientAdapter,
-    ) {
-        this.definition = {
-            name: aliasName,
-            description: `[MCP:${serverName}] List available prompts`,
-            parameters: [],
-        };
-    }
-
-    buildApprovalRequest(_args: Record<string, unknown>, _context: ToolContext): ToolApprovalRequest {
-        return buildSyntheticApproval(this.aliasName, this.serverName, 'List MCP prompts');
-    }
-
-    async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
-        const prompts = await this.client.listPrompts();
-        return {
-            toolCallId: String(args.toolCallId ?? ''),
-            success: true,
-            output: formatPromptList(prompts),
-            metadata: {
-                mcpServer: this.serverName,
-                action: 'list_prompts',
-                promptCount: prompts.length,
-            },
-        };
-    }
-}
-
-class McpGetPromptTool implements ITool {
-    readonly definition: ToolDefinition;
-
-    constructor(
-        private readonly serverName: string,
-        private readonly aliasName: string,
-        private readonly client: McpClientAdapter,
-    ) {
-        this.definition = {
-            name: aliasName,
-            description: `[MCP:${serverName}] Get prompt templates and messages`,
-            parameters: [
-                {
-                    name: 'name',
-                    type: 'string',
-                    description: 'prompt name',
-                    required: true,
-                },
-                {
-                    name: 'arguments',
-                    type: 'object',
-                    description: 'prompt arguments object, values should ideally be strings',
-                },
-            ],
-        };
-    }
-
-    buildApprovalRequest(args: Record<string, unknown>, _context: ToolContext): ToolApprovalRequest {
-        return buildSyntheticApproval(
-            this.aliasName,
-            this.serverName,
-            'Read MCP prompt',
-            safeStringify(args, 600),
-        );
-    }
-
-    async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
-        const promptName = requireStringArgument(args, 'name');
-        const promptArgs = normalizePromptArguments(args['arguments']);
-        const result = await this.client.getPrompt(promptName, promptArgs);
-
-        return {
-            toolCallId: String(args.toolCallId ?? ''),
-            success: true,
-            output: formatPromptResult(promptName, result),
-            metadata: {
-                mcpServer: this.serverName,
-                action: 'get_prompt',
-                promptName,
-            },
-        };
-    }
-}
-
-class McpListResourcesTool implements ITool {
-    readonly definition: ToolDefinition;
-
-    constructor(
-        private readonly serverName: string,
-        private readonly aliasName: string,
-        private readonly client: McpClientAdapter,
-    ) {
-        this.definition = {
-            name: aliasName,
-            description: `[MCP:${serverName}] List readable resources`,
-            parameters: [],
-        };
-    }
-
-    buildApprovalRequest(_args: Record<string, unknown>, _context: ToolContext): ToolApprovalRequest {
-        return buildSyntheticApproval(this.aliasName, this.serverName, 'List MCP resources');
-    }
-
-    async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
-        const [resources, templates] = await Promise.all([
-            this.client.listResources(),
-            this.client.listResourceTemplates(),
-        ]);
-
-        return {
-            toolCallId: String(args.toolCallId ?? ''),
-            success: true,
-            output: formatResourceIndex(resources, templates),
-            metadata: {
-                mcpServer: this.serverName,
-                action: 'list_resources',
-                resourceCount: resources.length,
-                resourceTemplateCount: templates.length,
-            },
-        };
-    }
-}
-
-class McpReadResourceTool implements ITool {
-    readonly definition: ToolDefinition;
-
-    constructor(
-        private readonly serverName: string,
-        private readonly aliasName: string,
-        private readonly client: McpClientAdapter,
-    ) {
-        this.definition = {
-            name: aliasName,
-            description: `[MCP:${serverName}] Read specified resource`,
-            parameters: [
-                {
-                    name: 'uri',
-                    type: 'string',
-                    description: 'resource URI',
-                    required: true,
-                },
-            ],
-        };
-    }
-
-    buildApprovalRequest(args: Record<string, unknown>, _context: ToolContext): ToolApprovalRequest {
-        return buildSyntheticApproval(
-            this.aliasName,
-            this.serverName,
-            'Read MCP resource',
-            safeStringify(args, 600),
-        );
-    }
-
-    async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
-        const uri = requireStringArgument(args, 'uri');
-        const result = await this.client.readResource(uri);
-
-        return {
-            toolCallId: String(args.toolCallId ?? ''),
-            success: true,
-            output: formatReadResourceResult(uri, result),
-            metadata: {
-                mcpServer: this.serverName,
-                action: 'read_resource',
-                uri,
-            },
-        };
-    }
-}
-
 export class McpServerManager {
     private readonly clients = new Map<string, McpClientAdapter>();
     private readonly logger: Logger;
@@ -1228,102 +963,8 @@ function createStandaloneMcpClient(server: MCPServerConfig, options: McpManagerO
 }
 
 export async function inspectMcpServers(options: McpManagerOptions): Promise<McpServerInspection[]> {
-    const inspections: McpServerInspection[] = [];
-
-    for (const server of options.servers) {
-        if (server.enabled === false) {
-            inspections.push({
-                name: server.name,
-                enabled: false,
-                status: 'disabled',
-                transport: server.transport ?? 'stdio',
-                command: server.command ?? '-',
-                ...(server.url ? { url: server.url } : {}),
-                args: server.args ?? [],
-                cwd: server.cwd,
-                toolCount: 0,
-                tools: [],
-                promptCount: 0,
-                prompts: [],
-                resourceCount: 0,
-                resources: [],
-                resourceTemplateCount: 0,
-                resourceTemplates: [],
-            });
-            continue;
-        }
-
-        const client = createStandaloneMcpClient(server, options);
-
-        try {
-            const tools = await client.listTools();
-            const [prompts, resources, resourceTemplates] = await Promise.all([
-                client.supportsPrompts() ? client.listPrompts() : Promise.resolve([]),
-                client.supportsResources() ? client.listResources() : Promise.resolve([]),
-                client.supportsResources() ? client.listResourceTemplates() : Promise.resolve([]),
-            ]);
-            inspections.push({
-                name: server.name,
-                enabled: true,
-                status: 'ok',
-                transport: server.transport ?? 'stdio',
-                command: server.command ?? '-',
-                ...(server.url ? { url: server.url } : {}),
-                args: server.args ?? [],
-                cwd: server.cwd,
-                protocolVersion: client.protocolVersion,
-                serverInfo: client.serverInfo,
-                toolCount: tools.length,
-                tools: tools.map((tool) => ({
-                    name: tool.name,
-                    title: tool.title,
-                    description: tool.description,
-                })),
-                promptCount: prompts.length,
-                prompts: prompts.map((prompt) => ({
-                    name: prompt.name,
-                    title: prompt.title,
-                    description: prompt.description,
-                })),
-                resourceCount: resources.length,
-                resources: resources.map((resource) => ({
-                    uri: resource.uri,
-                    name: resource.name,
-                    title: resource.title,
-                    description: resource.description,
-                })),
-                resourceTemplateCount: resourceTemplates.length,
-                resourceTemplates: resourceTemplates.map((template) => ({
-                    uriTemplate: template.uriTemplate,
-                    name: template.name,
-                    title: template.title,
-                    description: template.description,
-                })),
-            });
-        } catch (error) {
-            inspections.push({
-                name: server.name,
-                enabled: true,
-                status: 'error',
-                transport: server.transport ?? 'stdio',
-                command: server.command ?? '-',
-                ...(server.url ? { url: server.url } : {}),
-                args: server.args ?? [],
-                cwd: server.cwd,
-                toolCount: 0,
-                tools: [],
-                promptCount: 0,
-                prompts: [],
-                resourceCount: 0,
-                resources: [],
-                resourceTemplateCount: 0,
-                resourceTemplates: [],
-                error: error instanceof Error ? error.message : String(error),
-            });
-        } finally {
-            await client.close();
-        }
-    }
-
-    return inspections;
+    return inspectMcpServersWithClientFactory(
+        options,
+        (server) => createStandaloneMcpClient(server, options),
+    );
 }

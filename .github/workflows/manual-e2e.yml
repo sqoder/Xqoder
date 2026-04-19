@@ -10,6 +10,7 @@ jobs:
       XQODER_E2E_PROVIDER: dashscope
       XQODER_E2E_MODEL: qwen-plus
       XQODER_REAL_LLM_E2E: '1'
+      XQODER_REAL_DEPLOY_E2E: '0'
       DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
 
@@ -33,14 +34,5 @@ jobs:
       - name: Build CLI
         run: bun run build
 
-      - name: Run real fix and deploy smoke
-        shell: bash
-        run: |
-          set -euo pipefail
-          TEMP_HOME="$(mktemp -d)"
-          TEMP_PROJECT="$(mktemp -d)"
-          cp -R src/commands/__fixtures__/fix/syntax-error/. "$TEMP_PROJECT"
-          HOME="$TEMP_HOME" bun dist/index.js config init --provider dashscope --model qwen-plus --api-key "$DASHSCOPE_API_KEY"
-          HOME="$TEMP_HOME" bun dist/index.js fix --dir "$TEMP_PROJECT" --model qwen-plus --max-attempts 2
-          (cd "$TEMP_PROJECT" && npm run build)
-          HOME="$TEMP_HOME" bun dist/index.js deploy --dir "$TEMP_PROJECT" --token "$VERCEL_TOKEN"
+      - name: Run manual E2E runner
+        run: node scripts/run-manual-e2e.mjs

@@ -142,7 +142,7 @@ export class TodoReadTool implements ITool {
 
         if (!fs.existsSync(targetPath)) {
             const empty: TodoStatePayload = {
-                sessionId: context.sessionId,
+                sessionId: context.sessionId ?? '',
                 updatedAt: null,
                 todos: [],
             };

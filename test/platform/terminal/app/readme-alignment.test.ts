@@ -32,4 +32,13 @@ describe('README TUI section', () => {
         expect(tuiSection).not.toContain('Ctrl+L');
         expect(tuiSection).not.toContain('Ctrl+Y');
     });
+
+    it('describes the actual resume entrypoints', () => {
+        const readme = fs.readFileSync(readmePath, 'utf-8');
+        const tuiSection = extractTuiSection(readme);
+
+        expect(tuiSection).toContain('`xqoder tui --continue`');
+        expect(tuiSection).toContain('`xqoder tui --session <id>`');
+        expect(tuiSection).not.toContain('most recent project session automatically');
+    });
 });

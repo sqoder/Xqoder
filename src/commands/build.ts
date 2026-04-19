@@ -25,6 +25,7 @@ import {
     runBuildProjectFlow,
     type BuildProjectFlowRuntime,
 } from '@xqoder/workflow';
+import { MISSING_API_KEY_GUIDANCE } from '../application/config/api-key-guidance.js';
 import { createCliToolApprovalHandler, createCliToolStreamHandler } from '../ux/tool-approval.js';
 
 interface BuildCommandOptions {
@@ -85,7 +86,7 @@ export async function runBuildCommand(
     });
 
     if (!dependencies.agentFactory && !agentConfig.llmConfig.apiKey.trim()) {
-        throw new Error('LLM API Key not configured, please run xqoder config init --api-key <key>');
+        throw new Error(MISSING_API_KEY_GUIDANCE);
     }
 
     const factoryConfig = {
