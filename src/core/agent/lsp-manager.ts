@@ -9,7 +9,7 @@ import type {
     RenameMatch,
     WorkspaceSymbolMatch,
 } from './lsp-types.js';
-import { createStdioLanguageServerClient } from './lsp.js';
+import { createStdioLanguageServerClient } from './lsp-client.js';
 
 interface ManagedLanguageServerClient {
     findWorkspaceSymbols(query: string, limit: number): Promise<WorkspaceSymbolMatch[]>;

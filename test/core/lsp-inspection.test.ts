@@ -138,6 +138,21 @@ describe('lsp server inspection', () => {
         const lspModule = await import('../../src/core/agent/lsp.js');
 
         expect(typeof lspModule.inspectLspServers).toBe('function');
+        expect(typeof lspModule.createStdioLanguageServerClient).toBe('function');
+
+        const client = lspModule.createStdioLanguageServerClient({
+            name: 'facade-test',
+            command: 'node',
+            args: [],
+            extensions: ['.ts'],
+        }, {
+            cwd: '/repo',
+            projectRoot: '/repo',
+        });
+
+        expect(typeof client.initialize).toBe('function');
+        expect(typeof client.close).toBe('function');
+        await client.close();
     });
 
 });
