@@ -7,11 +7,11 @@ import {
     type HoverMatch as LspHoverMatch,
     type RenameMatch as LspRenameMatch,
     type TextEditMatch as LspTextEditMatch,
-    ExternalLanguageServerManager,
     type DiagnosticMatch as LspDiagnosticMatch,
     type LocationMatch as LspLocationMatch,
     type WorkspaceSymbolMatch as LspSymbolMatch,
 } from '../lsp.js';
+import { ExternalLanguageServerManager } from '../lsp-manager.js';
 import type { ITool, ToolApprovalRequest, ToolContext } from './tool.js';
 import { createFileDiffPreview, truncatePreview } from './diff.js';
 import { resolvePathWithinProject } from './sandbox.js';

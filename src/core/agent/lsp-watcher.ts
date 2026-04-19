@@ -5,7 +5,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { ExternalLanguageServerManager } from './lsp.js';
+import type { ExternalLanguageServerManager } from './lsp-manager.js';
 
 const DEFAULT_IGNORE = [
     'node_modules',

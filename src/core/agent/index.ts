@@ -48,7 +48,6 @@ export {
 export {
     type CompletionMatch,
     type HoverMatch,
-    ExternalLanguageServerManager,
     type RenameMatch,
     type TextEditMatch,
     inspectLspServers,
@@ -57,6 +56,7 @@ export {
     type LspServerInspection,
     type WorkspaceSymbolMatch,
 } from './lsp.js';
+export { ExternalLanguageServerManager } from './lsp-manager.js';
 export { type ITool, ToolRegistry, type ToolContext } from './tools/tool.js';
 export { type ToolApprovalRequest, type ToolApprovalRisk, type ToolStreamEvent } from './tools/tool.js';
 export {

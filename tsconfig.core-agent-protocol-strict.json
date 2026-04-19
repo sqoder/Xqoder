@@ -8,6 +8,7 @@
     "src/core/agent/mcp-inspection.ts",
     "src/core/agent/mcp-tools.ts",
     "src/core/agent/lsp.ts",
+    "src/core/agent/lsp-manager.ts",
     "src/core/agent/lsp-inspection.ts",
     "src/core/agent/lsp-types.ts"
   ],

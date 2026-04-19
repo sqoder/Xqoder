@@ -25,7 +25,7 @@ import {
 import {
     createLLMProvider,
 } from './llm/factory.js';
-import { ExternalLanguageServerManager } from './lsp.js';
+import { ExternalLanguageServerManager } from './lsp-manager.js';
 import { McpServerManager } from './mcp.js';
 import { ToolRegistry, type QuestionAnswer, type QuestionPrompt, type ToolApprovalRequest, type ToolContext } from './tools/tool.js';
 import { ListFilesTool, GlobFilesTool, GrepContentTool } from './tools/discovery-tools.js';
