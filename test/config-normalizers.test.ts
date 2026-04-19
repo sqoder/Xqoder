@@ -101,4 +101,150 @@ describe('config normalizer helpers', () => {
         expect('shell' in normalized.hooks.PreToolUse![0]!.hooks[0]!).toBe(false);
         expect('timeout' in normalized.hooks.PreToolUse![0]!.hooks[0]!).toBe(false);
     });
+
+    it('normalizes split domain settings without materializing undefined optional fields', () => {
+        const normalized = normalizeXQoderConfig({
+            providers: {
+                anthropic: {
+                    apiKey: '  domain-key  ',
+                    baseUrl: '   ',
+                    maxTokens: Number.NaN,
+                },
+            },
+            disabledProviders: [],
+            agents: {
+                ' coder ': {
+                    model: ' gpt-4o ',
+                    prompt: '   ',
+                    cwd: '   ',
+                    instructions: [' keep this ', '   '],
+                    tools: [' read ', '   '],
+                },
+            },
+            mcp: {
+                servers: [
+                    {
+                        name: ' docs ',
+                        transport: 'http',
+                        url: ' https://mcp.example.test ',
+                    },
+                ],
+            },
+            formatter: {
+                command: ' prettier ',
+                args: [' --write ', '   '],
+                extensions: ['ts', ' .tsx ', '   '],
+            },
+        });
+
+        expect(normalized.providers.anthropic?.apiKey).toBe('domain-key');
+        expect('baseUrl' in normalized.providers.anthropic!).toBe(false);
+        expect('maxTokens' in normalized.providers.anthropic!).toBe(false);
+        expect('disabledProviders' in normalized).toBe(false);
+        expect(normalized.agents?.coder?.instructions).toEqual(['keep this']);
+        expect(normalized.agents?.coder?.tools).toEqual(['read']);
+        expect('prompt' in normalized.agents!.coder!).toBe(false);
+        expect('cwd' in normalized.agents!.coder!).toBe(false);
+        expect('command' in normalized.mcp.servers[0]!).toBe(false);
+        expect('cwd' in normalized.mcp.servers[0]!).toBe(false);
+        expect(normalized.formatter).toEqual({
+            command: 'prettier',
+            args: ['--write'],
+            extensions: ['.ts', '.tsx'],
+        });
+    });
+
+    it('honors merge precedence while preserving base nested settings', () => {
+        const base = normalizeXQoderConfig({
+            providers: {
+                openai: {
+                    apiKey: 'base-key',
+                    defaultModel: 'base-model',
+                },
+            },
+            agents: {
+                coder: {
+                    model: 'base-agent-model',
+                    tools: ['read'],
+                },
+            },
+            hooks: {
+                PreToolUse: [
+                    {
+                        matcher: 'Read',
+                        hooks: [{ type: 'command', command: 'echo base' }],
+                    },
+                ],
+            },
+            mcp: {
+                servers: [
+                    { name: 'base-mcp', command: 'node', args: ['base.js'] },
+                ],
+            },
+            lsp: {
+                servers: [
+                    { name: 'base-lsp', extensions: ['ts'], command: 'typescript-language-server' },
+                ],
+            },
+            plugins: {
+                enabled: ['base-plugin'],
+                paths: ['/base/plugins'],
+            },
+        });
+
+        const merged = mergeXQoderConfig(base, {
+            providers: {
+                openai: {
+                    defaultModel: 'override-model',
+                    temperature: 0.2,
+                },
+            },
+            agents: {
+                coder: {
+                    model: 'override-agent-model',
+                },
+            },
+            hooks: {
+                PreToolUse: [
+                    {
+                        matcher: 'Write',
+                        hooks: [{ type: 'command', command: 'echo override' }],
+                    },
+                ],
+            },
+            mcp: {
+                servers: [
+                    { name: 'override-mcp', transport: 'http', url: 'https://mcp.example.test' },
+                ],
+            },
+            lsp: {
+                servers: [
+                    { name: 'override-lsp', transport: 'tcp', extensions: ['py'], host: '127.0.0.2', port: 9000 },
+                ],
+            },
+            plugins: {
+                allowIncompatible: true,
+            },
+        });
+
+        expect(merged.providers.openai?.apiKey).toBe('base-key');
+        expect(merged.providers.openai?.defaultModel).toBe('override-model');
+        expect(merged.providers.openai?.temperature).toBe(0.2);
+        expect(merged.agents?.coder?.model).toBe('override-agent-model');
+        expect(merged.agents?.coder?.tools).toEqual(['read']);
+        expect(merged.hooks.PreToolUse?.map(group => group.matcher)).toEqual(['Read', 'Write']);
+        expect(merged.mcp.servers).toHaveLength(1);
+        expect(merged.mcp.servers[0]?.name).toBe('override-mcp');
+        expect(merged.lsp.servers).toHaveLength(1);
+        expect(merged.lsp.servers[0]).toMatchObject({
+            name: 'override-lsp',
+            transport: 'tcp',
+            host: '127.0.0.2',
+            port: 9000,
+            extensions: ['.py'],
+        });
+        expect(merged.plugins.enabled).toEqual(['base-plugin']);
+        expect(merged.plugins.paths).toEqual(['/base/plugins']);
+        expect(merged.plugins.allowIncompatible).toBe(true);
+    });
 });
