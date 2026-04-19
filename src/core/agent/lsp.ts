@@ -33,6 +33,7 @@ import {
     toLspPosition,
     toWorkspaceSymbolMatch,
 } from './lsp-utils.js';
+import { inspectLspServers as inspectLspServersWithClient } from './lsp-inspection.js';
 
 const LSP_CLIENT_INFO = {
     name: 'xqoder',
@@ -73,7 +74,7 @@ interface TrackedDocument {
     languageId: string;
 }
 
-interface LspManagerOptions {
+export interface LspManagerOptions {
     servers: LSPServerConfig[];
     cwd: string;
     projectRoot: string;
@@ -1128,101 +1129,9 @@ export class ExternalLanguageServerManager {
 }
 
 export async function inspectLspServers(options: LspManagerOptions): Promise<LspServerInspection[]> {
-    const inspections: LspServerInspection[] = [];
-
-    for (const server of options.servers) {
-        if (server.enabled === false) {
-            inspections.push({
-                name: server.name,
-                enabled: false,
-                status: 'disabled',
-                transport: server.transport ?? 'stdio',
-                ...(server.command ? { command: server.command } : {}),
-                args: server.args ?? [],
-                ...(isTcpServerConfig(server)
-                    ? {
-                        host: server.host,
-                        port: server.port,
-                    }
-                    : {}),
-                cwd: server.cwd,
-                extensions: server.extensions,
-                languageId: server.languageId,
-                capabilities: {
-                    workspaceSymbols: false,
-                    definition: false,
-                    references: false,
-                    diagnostics: false,
-                    hover: false,
-                    completion: false,
-                    completionResolve: false,
-                    rename: false,
-                },
-            });
-            continue;
-        }
-
-        const client = new StdioLanguageServerClient(server, {
-            cwd: options.cwd,
-            projectRoot: options.projectRoot,
-            logger: options.logger,
-        });
-
-        try {
-            await client.initialize();
-            const info = client.getInspection();
-            inspections.push({
-                name: server.name,
-                enabled: true,
-                status: 'ok',
-                transport: server.transport ?? 'stdio',
-                ...(server.command ? { command: server.command } : {}),
-                args: server.args ?? [],
-                ...(isTcpServerConfig(server)
-                    ? {
-                        host: server.host,
-                        port: server.port,
-                    }
-                    : {}),
-                cwd: server.cwd,
-                extensions: server.extensions,
-                languageId: server.languageId,
-                serverInfo: info.serverInfo,
-                capabilities: info.capabilities,
-            });
-        } catch (error) {
-            inspections.push({
-                name: server.name,
-                enabled: true,
-                status: 'error',
-                transport: server.transport ?? 'stdio',
-                ...(server.command ? { command: server.command } : {}),
-                args: server.args ?? [],
-                ...(isTcpServerConfig(server)
-                    ? {
-                        host: server.host,
-                        port: server.port,
-                    }
-                    : {}),
-                cwd: server.cwd,
-                extensions: server.extensions,
-                languageId: server.languageId,
-                capabilities: {
-                    workspaceSymbols: false,
-                    definition: false,
-                    references: false,
-                    diagnostics: false,
-                    hover: false,
-                    completion: false,
-                    completionResolve: false,
-                    rename: false,
-                },
-                error: error instanceof Error ? error.message : String(error),
-            });
-        } finally {
-            await client.close();
-        }
-    }
-
-    return inspections;
+    return inspectLspServersWithClient(options, (server, inspectionOptions) => new StdioLanguageServerClient(server, {
+        cwd: inspectionOptions.cwd,
+        projectRoot: inspectionOptions.projectRoot,
+        logger: inspectionOptions.logger,
+    }));
 }
