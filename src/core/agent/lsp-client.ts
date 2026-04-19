@@ -1,15 +1,10 @@
 import * as fs from 'node:fs';
-import * as net from 'node:net';
 import * as path from 'node:path';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { once } from 'node:events';
-import { type Readable, type Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import {
     logger as defaultLogger,
     type Logger,
     type LSPServerConfig,
-    type LSPTcpServerConfig,
 } from '@xqoder/shared';
 import type {
     CompletionMatch,
@@ -23,19 +18,15 @@ import type {
 } from './lsp-types.js';
 import {
     applyWorkspaceEdits,
-    connectTcpSocket,
     containsUnsupportedWorkspaceChanges,
     delay,
     extractCompletionItems,
     formatServerMessage,
-    isTcpServerConfig,
-    parseContentLength,
     parseDiagnosticReport,
     parseHoverResult,
     parseLocationResult,
     parseWorkspaceEditResult,
     resolveLanguageId,
-    resolveServerCwd,
     supportsProvider,
     toCompletionMatch,
     toDiagnosticMatch,
@@ -43,24 +34,19 @@ import {
     toLspPosition,
     toWorkspaceSymbolMatch,
 } from './lsp-utils.js';
+import {
+    LspClientTransportController,
+    startLspClientTransport,
+} from './lsp-client-transport.js';
+import {
+    type JsonRpcMessage,
+    LspRpcMessagePipeline,
+} from './lsp-rpc-pipeline.js';
 
 const LSP_CLIENT_INFO = {
     name: 'xqoder',
     version: '0.1.0',
 };
-
-interface JsonRpcMessage {
-    jsonrpc: '2.0';
-    id?: string | number;
-    method?: string;
-    params?: unknown;
-    result?: unknown;
-    error?: {
-        code: number;
-        message: string;
-        data?: unknown;
-    };
-}
 
 interface LspInitializeResult {
     capabilities?: Record<string, unknown>;
@@ -68,12 +54,6 @@ interface LspInitializeResult {
         name: string;
         version?: string;
     };
-}
-
-interface PendingRequest {
-    resolve: (value: unknown) => void;
-    reject: (error: Error) => void;
-    timer: NodeJS.Timeout;
 }
 
 interface TrackedDocument {
@@ -84,18 +64,12 @@ interface TrackedDocument {
 }
 
 export class StdioLanguageServerClient {
-    private child?: ChildProcessWithoutNullStreams;
-    private bootstrapChild?: ChildProcessWithoutNullStreams;
-    private socket?: net.Socket;
-    private output?: Writable;
-    private readonly pendingRequests = new Map<string | number, PendingRequest>();
+    private transport?: LspClientTransportController;
     private readonly diagnosticsCache = new Map<string, DiagnosticMatch[]>();
     private readonly documents = new Map<string, TrackedDocument>();
     private readonly logger: Logger;
-    private stdoutBuffer = Buffer.alloc(0);
-    private nextId = 1;
+    private readonly rpc: LspRpcMessagePipeline;
     private initialized = false;
-    private messageQueue: Promise<void> = Promise.resolve();
     private capabilities: Record<string, unknown> = {};
     private serverInfo?: {
         name: string;
@@ -107,6 +81,11 @@ export class StdioLanguageServerClient {
         private readonly options: Omit<LspManagerOptions, 'servers'>,
     ) {
         this.logger = (options.logger ?? defaultLogger).child(`LSP:${config.name}`);
+        this.rpc = new LspRpcMessagePipeline({
+            logger: this.logger,
+            getTimeoutMs: () => this.config.timeoutMs ?? 15_000,
+            handleMessage: (message) => this.handleIncomingMessage(message),
+        });
     }
 
     getInspection(): Pick<LspServerInspection, 'serverInfo' | 'capabilities'> {
@@ -183,13 +162,11 @@ export class StdioLanguageServerClient {
     }
 
     async close(): Promise<void> {
-        if (!this.child && !this.socket) {
+        if (!this.transport) {
             return;
         }
 
-        const child = this.child;
-        const bootstrapChild = this.bootstrapChild;
-        const socket = this.socket;
+        const transport = this.transport;
 
         try {
             if (this.initialized) {
@@ -204,145 +181,26 @@ export class StdioLanguageServerClient {
             // ignore
         }
 
-        this.child = undefined;
-        this.bootstrapChild = undefined;
-        this.socket = undefined;
-        this.output = undefined;
+        this.transport = undefined;
+        this.rpc.clearTransport();
         this.initialized = false;
         this.capabilities = {};
         this.documents.clear();
         this.diagnosticsCache.clear();
 
-        if (child) {
-            child.stdout.removeAllListeners();
-            child.stderr.removeAllListeners();
-            if (!child.killed) {
-                child.kill();
-            }
-        }
-
-        if (socket) {
-            socket.removeAllListeners();
-            socket.destroy();
-        }
-
-        if (bootstrapChild) {
-            bootstrapChild.stdout.removeAllListeners();
-            bootstrapChild.stderr.removeAllListeners();
-            if (!bootstrapChild.killed) {
-                bootstrapChild.kill();
-            }
-        }
-
-        if (child && child.exitCode === null && child.signalCode === null) {
-            try {
-                await once(child, 'exit');
-            } catch {
-                // ignore
-            }
-        }
-
-        if (bootstrapChild && bootstrapChild.exitCode === null && bootstrapChild.signalCode === null) {
-            try {
-                await once(bootstrapChild, 'exit');
-            } catch {
-                // ignore
-            }
-        }
+        await transport.close();
     }
 
     private async startTransport(): Promise<void> {
-        if (isTcpServerConfig(this.config)) {
-            await this.startTcpTransport();
-            return;
-        }
-
-        const child = spawn(this.config.command, this.config.args ?? [], {
-            cwd: resolveServerCwd(this.config.cwd, this.options.projectRoot, this.options.cwd),
-            env: {
-                ...process.env,
-                ...(this.config.env ?? {}),
-            },
-            stdio: 'pipe',
+        const transport = await startLspClientTransport(this.config, {
+            cwd: this.options.cwd,
+            projectRoot: this.options.projectRoot,
+            logger: this.logger,
+            onData: (chunk) => this.rpc.handleIncomingChunk(chunk),
+            onTransportError: (error) => this.rpc.rejectAllPending(error),
         });
-
-        this.child = child;
-        this.attachTransport(child.stdout, child.stdin);
-        child.stderr.setEncoding('utf-8');
-        child.stderr.on('data', (chunk: string) => {
-            this.logTransportLines(chunk);
-        });
-        child.once('error', (error) => {
-            this.rejectAllPending(new Error(`LSP process failed to start: ${error.message}`));
-        });
-        child.once('exit', (code, signal) => {
-            const reason = code !== null
-                ? `Exit code ${code}`
-                : `Signal ${signal ?? 'unknown'}`;
-            this.rejectAllPending(new Error(`LSP process exited (${reason})`));
-        });
-    }
-
-    private async startTcpTransport(): Promise<void> {
-        const tcpConfig = this.config as LSPTcpServerConfig;
-        if (this.config.command) {
-            const child = spawn(this.config.command, this.config.args ?? [], {
-                cwd: resolveServerCwd(this.config.cwd, this.options.projectRoot, this.options.cwd),
-                env: {
-                    ...process.env,
-                    ...(this.config.env ?? {}),
-                },
-                stdio: 'pipe',
-            });
-            this.bootstrapChild = child;
-            child.stdout.setEncoding('utf-8');
-            child.stderr.setEncoding('utf-8');
-            child.stdout.on('data', (chunk: string) => {
-                this.logTransportLines(chunk);
-            });
-            child.stderr.on('data', (chunk: string) => {
-                this.logTransportLines(chunk);
-            });
-            child.once('error', (error) => {
-                this.logger.warn(`TCP LSP bootstrap failed: ${error.message}`);
-            });
-            child.once('exit', (code, signal) => {
-                const reason = code !== null
-                    ? `Exit code ${code}`
-                    : `Signal ${signal ?? 'unknown'}`;
-                this.logger.debug(`TCP LSP bootstrap exited (${reason})`);
-            });
-        }
-
-        const host = tcpConfig.host;
-        const port = tcpConfig.port;
-        const socket = await connectTcpSocket({
-            host,
-            port,
-            timeoutMs: tcpConfig.timeoutMs ?? 15_000,
-        });
-
-        this.socket = socket;
-        this.attachTransport(socket, socket);
-        socket.on('error', (error) => {
-            this.rejectAllPending(new Error(`LSP TCP connection error: ${error.message}`));
-        });
-        socket.on('close', () => {
-            this.rejectAllPending(new Error(`LSP TCP connection closed: ${host}:${port}`));
-        });
-    }
-
-    private attachTransport(input: Readable, output: Writable): void {
-        this.output = output;
-        input.on('data', (chunk: Buffer | string) => {
-            this.handleStdoutChunk(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'utf8'));
-        });
-    }
-
-    private logTransportLines(chunk: string): void {
-        for (const line of chunk.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)) {
-            this.logger.warn(line);
-        }
+        this.transport = transport;
+        this.rpc.setOutput(transport.output);
     }
 
     supportsWorkspaceSymbols(): boolean {
@@ -625,70 +483,7 @@ export class StdioLanguageServerClient {
         return existing;
     }
 
-    private handleStdoutChunk(chunk: Buffer): void {
-        this.stdoutBuffer = Buffer.concat([this.stdoutBuffer, chunk]);
-
-        while (true) {
-            const headerEnd = this.stdoutBuffer.indexOf('\r\n\r\n');
-            if (headerEnd === -1) {
-                return;
-            }
-
-            const header = this.stdoutBuffer.slice(0, headerEnd).toString('utf8');
-            const contentLength = parseContentLength(header);
-            if (contentLength === null) {
-                throw new Error(`Invalid LSP header: ${header}`);
-            }
-
-            const messageStart = headerEnd + 4;
-            const messageEnd = messageStart + contentLength;
-            if (this.stdoutBuffer.length < messageEnd) {
-                return;
-            }
-
-            const payload = this.stdoutBuffer.slice(messageStart, messageEnd).toString('utf8');
-            this.stdoutBuffer = this.stdoutBuffer.slice(messageEnd);
-            this.handleIncomingPayload(payload);
-        }
-    }
-
-    private handleIncomingPayload(payload: string): void {
-        let message: JsonRpcMessage;
-
-        try {
-            message = JSON.parse(payload) as JsonRpcMessage;
-        } catch (error) {
-            this.logger.warn(`Ignoring unparseable LSP message: ${payload}`);
-            this.logger.debug(String(error));
-            return;
-        }
-
-        this.messageQueue = this.messageQueue
-            .then(() => this.handleIncomingMessage(message))
-            .catch((error) => {
-                this.logger.warn(`Failed to process LSP message: ${error instanceof Error ? error.message : String(error)}`);
-            });
-    }
-
     private async handleIncomingMessage(message: JsonRpcMessage): Promise<void> {
-        if (message.id !== undefined && message.method === undefined) {
-            const pending = this.pendingRequests.get(message.id);
-            if (!pending) {
-                return;
-            }
-
-            clearTimeout(pending.timer);
-            this.pendingRequests.delete(message.id);
-
-            if (message.error) {
-                pending.reject(new Error(`${message.error.code}: ${message.error.message}`));
-                return;
-            }
-
-            pending.resolve(message.result);
-            return;
-        }
-
         if (!message.method) {
             return;
         }
@@ -823,63 +618,15 @@ export class StdioLanguageServerClient {
     }
 
     private sendNotification(method: string, params: unknown): void {
-        this.sendRaw({
-            jsonrpc: '2.0',
-            method,
-            params,
-        });
+        this.rpc.sendNotification(method, params);
     }
 
     private sendRaw(message: JsonRpcMessage): void {
-        if (!this.output || !this.output.writable) {
-            throw new Error('LSP transport not writable');
-        }
-
-        const payload = JSON.stringify(message);
-        const bytes = Buffer.byteLength(payload, 'utf8');
-        this.output.write(`Content-Length: ${bytes}\r\n\r\n${payload}`, 'utf8');
+        this.rpc.sendRaw(message);
     }
 
     private async sendRequest<T>(method: string, params: unknown): Promise<T> {
-        const id = this.nextId++;
-        const timeoutMs = this.config.timeoutMs ?? 15_000;
-
-        const result = await new Promise<T>((resolve, reject) => {
-            const timer = setTimeout(() => {
-                this.pendingRequests.delete(id);
-                reject(new Error(`LSP request timeout: ${method}`));
-            }, timeoutMs);
-
-            this.pendingRequests.set(id, {
-                resolve: (value) => resolve(value as T),
-                reject,
-                timer,
-            });
-
-            try {
-                this.sendRaw({
-                    jsonrpc: '2.0',
-                    id,
-                    method,
-                    params,
-                });
-            } catch (error) {
-                clearTimeout(timer);
-                this.pendingRequests.delete(id);
-                reject(error instanceof Error ? error : new Error(String(error)));
-            }
-        });
-
-        await this.drainMessages();
-        return result;
-    }
-
-    private rejectAllPending(error: Error): void {
-        for (const [id, pending] of this.pendingRequests.entries()) {
-            clearTimeout(pending.timer);
-            pending.reject(error);
-            this.pendingRequests.delete(id);
-        }
+        return this.rpc.sendRequest<T>(method, params);
     }
 
     private async waitForPublishedDiagnostics(uri: string): Promise<void> {
@@ -893,7 +640,7 @@ export class StdioLanguageServerClient {
     }
 
     private async drainMessages(): Promise<void> {
-        await this.messageQueue;
+        await this.rpc.drainMessages();
     }
 }
 
