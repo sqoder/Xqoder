@@ -7,7 +7,9 @@
     "src/core/agent/mcp.ts",
     "src/core/agent/mcp-inspection.ts",
     "src/core/agent/mcp-tools.ts",
-    "src/core/agent/lsp.ts"
+    "src/core/agent/lsp.ts",
+    "src/core/agent/lsp-inspection.ts",
+    "src/core/agent/lsp-types.ts"
   ],
   "exclude": [
     "node_modules",

@@ -1,5 +1,5 @@
 import type { LSPServerConfig } from '@xqoder/shared';
-import type { LspManagerOptions, LspServerInspection } from './lsp.js';
+import type { LspManagerOptions, LspServerInspection } from './lsp-types.js';
 import { isTcpServerConfig } from './lsp-utils.js';
 
 export interface LspInspectionClient {

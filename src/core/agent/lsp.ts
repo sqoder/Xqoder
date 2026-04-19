@@ -11,6 +11,16 @@ import {
     type LSPServerConfig,
     type LSPTcpServerConfig,
 } from '@xqoder/shared';
+import type {
+    CompletionMatch,
+    DiagnosticMatch,
+    HoverMatch,
+    LocationMatch,
+    LspManagerOptions,
+    LspServerInspection,
+    RenameMatch,
+    WorkspaceSymbolMatch,
+} from './lsp-types.js';
 import {
     applyWorkspaceEdits,
     connectTcpSocket,
@@ -34,6 +44,18 @@ import {
     toWorkspaceSymbolMatch,
 } from './lsp-utils.js';
 import { inspectLspServers as inspectLspServersWithClient } from './lsp-inspection.js';
+export type {
+    CompletionMatch,
+    DiagnosticMatch,
+    HoverMatch,
+    LocationMatch,
+    LspManagerOptions,
+    LspServerCapabilities,
+    LspServerInspection,
+    RenameMatch,
+    TextEditMatch,
+    WorkspaceSymbolMatch,
+} from './lsp-types.js';
 
 const LSP_CLIENT_INFO = {
     name: 'xqoder',
@@ -72,105 +94,6 @@ interface TrackedDocument {
     version: number;
     text: string;
     languageId: string;
-}
-
-export interface LspManagerOptions {
-    servers: LSPServerConfig[];
-    cwd: string;
-    projectRoot: string;
-    logger?: Logger;
-}
-
-export interface WorkspaceSymbolMatch {
-    kind: string;
-    name: string;
-    filePath: string;
-    line: number;
-    character: number;
-    preview: string;
-    containerName?: string;
-}
-
-export interface DiagnosticMatch {
-    severity: string;
-    code: string;
-    filePath: string;
-    line: number;
-    character: number;
-    message: string;
-}
-
-export interface LocationMatch {
-    filePath: string;
-    line: number;
-    character: number;
-    preview: string;
-    kind?: string;
-}
-
-export interface HoverMatch {
-    contents: string;
-    range?: {
-        line: number;
-        character: number;
-        endLine: number;
-        endCharacter: number;
-    };
-}
-
-export interface CompletionMatch {
-    label: string;
-    kind?: string;
-    detail?: string;
-    documentation?: string;
-    insertText?: string;
-    sortText?: string;
-    resolved?: boolean;
-}
-
-export interface TextEditMatch {
-    filePath: string;
-    startLine: number;
-    startCharacter: number;
-    endLine: number;
-    endCharacter: number;
-    newText: string;
-}
-
-export interface RenameMatch {
-    filePaths: string[];
-    edits: TextEditMatch[];
-    totalEdits: number;
-    placeholder?: string;
-}
-
-export interface LspServerInspection {
-    name: string;
-    enabled: boolean;
-    status: 'ok' | 'error' | 'disabled';
-    transport: 'stdio' | 'tcp';
-    command?: string;
-    args: string[];
-    host?: string;
-    port?: number;
-    cwd?: string;
-    extensions: string[];
-    languageId?: string;
-    serverInfo?: {
-        name: string;
-        version?: string;
-    };
-    capabilities: {
-        workspaceSymbols: boolean;
-        definition: boolean;
-        references: boolean;
-        diagnostics: boolean;
-        hover: boolean;
-        completion: boolean;
-        completionResolve: boolean;
-        rename: boolean;
-    };
-    error?: string;
 }
 
 class StdioLanguageServerClient {
