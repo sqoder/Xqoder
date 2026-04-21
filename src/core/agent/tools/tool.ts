@@ -6,6 +6,7 @@ import type { SandboxMode, ToolDefinition, ToolResult } from '@xqoder/shared';
 import { ToolError } from '@xqoder/shared';
 import type { RollbackStore } from './rollback-store.js';
 import { isSandboxAccessError } from './sandbox.js';
+import type { MvpRuntimeConfig } from '../mvp/types.js';
 import {
     mergeToolApprovalRequest,
     type ToolApprovalPatch,
@@ -68,6 +69,8 @@ export interface ToolContext {
     requestQuestion?: (prompt: QuestionPrompt) => Promise<QuestionAnswer>;
     /** Rollback point storage */
     rollbackStore?: RollbackStore;
+    /** MVP runtime configuration loaded from project/user rules */
+    mvpRuntimeConfig?: MvpRuntimeConfig;
     /** Hook-injected approval patch or forced approval request */
     approvalRequestPatch?: ToolApprovalPatch;
 }

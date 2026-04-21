@@ -9,6 +9,13 @@ import type { ToolDefinition, ToolResult } from '@xqoder/shared';
 import type { ITool, ToolApprovalRequest, ToolContext } from './tool.js';
 import { createFileDiffPreview, truncatePreview } from './diff.js';
 import { isSandboxAccessError, resolvePathWithinProject } from './sandbox.js';
+import {
+    captureMvpTestBaseline,
+    compareMvpTestBaselines,
+    detectMvpTestCommand,
+    formatMvpBaselineSignal,
+} from '../mvp/baseline.js';
+import type { MvpTestBaseline } from '../mvp/types.js';
 
 /** High-risk path identification. Used to escalate risk and warnings during write_file approval. */
 function getWritePathRisk(filePath: string): 'high' | 'medium' {
@@ -141,13 +148,85 @@ export class WriteFileTool implements ITool {
                 toolName: 'write_file',
                 filePaths: [filePath],
             });
+            const baselineCheckEnabled = context.mvpRuntimeConfig?.baselineCheck !== false;
+            const baselineCommand = baselineCheckEnabled
+                ? await detectMvpTestCommand(context.projectRoot)
+                : null;
+            let baselineBefore: MvpTestBaseline | null = null;
+            let baselineNotice = baselineCheckEnabled
+                ? 'Baseline check: skipped (no test command detected)'
+                : 'Baseline check: skipped (disabled by config)';
+            if (baselineCommand) {
+                try {
+                    baselineBefore = await captureMvpTestBaseline({
+                        projectRoot: context.projectRoot,
+                        command: baselineCommand,
+                        shell: context.shell,
+                    });
+                    baselineNotice = `Baseline check: captured pre-write state via ${baselineCommand}`;
+                } catch (error) {
+                    baselineNotice = `[xqoder] Baseline check failed before write: ${error instanceof Error ? error.message : String(error)}`;
+                }
+            }
 
             if (!fs.existsSync(dir)) {
                 fs.mkdirSync(dir, { recursive: true });
             }
             fs.writeFileSync(filePath, content, 'utf-8');
 
-            const outputLines = [`File written successfully: ${filePath}`];
+            if (baselineBefore && baselineCommand) {
+                try {
+                    const currentBaseline = await captureMvpTestBaseline({
+                        projectRoot: context.projectRoot,
+                        command: baselineCommand,
+                        shell: context.shell,
+                    });
+
+                    if (currentBaseline) {
+                        const comparison = compareMvpTestBaselines(baselineBefore, currentBaseline);
+                        const baselineSignal = formatMvpBaselineSignal(comparison, baselineCommand);
+                        baselineNotice = baselineSignal.line;
+
+                        if (comparison.hasRegression) {
+                            if (rollbackPoint && context.rollbackStore) {
+                                context.rollbackStore.restorePoint(rollbackPoint.id);
+                            }
+
+                            const regressions = comparison.regressions.join(', ');
+                            const outputLines = [
+                                baselineNotice,
+                                `File write rolled back: ${filePath}`,
+                                ...(rollbackPoint ? [`Rollback point: ${rollbackPoint.id}`] : []),
+                            ];
+
+                            return {
+                                toolCallId,
+                                success: false,
+                                output: outputLines.join('\n'),
+                                error: `Regression detected: ${regressions || 'test suite failure-count increased'}`,
+                                metadata: {
+                                    path: filePath,
+                                    changeType: 'write',
+                                    bytes: Buffer.byteLength(content, 'utf-8'),
+                                    existedBefore,
+                                    timestamp: new Date().toISOString(),
+                                    baselineStatus: 'failed',
+                                    regressions: comparison.regressions,
+                                    testCommand: baselineCommand,
+                                    ...(rollbackPoint ? { rollbackPointId: rollbackPoint.id } : {}),
+                                },
+                            };
+                        }
+                    }
+                } catch (error) {
+                    baselineNotice = `[xqoder] Baseline check failed after write: ${error instanceof Error ? error.message : String(error)}. Proceeding without regression rollback.`;
+                }
+            }
+
+            const outputLines = [
+                baselineNotice,
+                `File written successfully: ${filePath}`,
+            ];
             if (rollbackPoint) {
                 outputLines.push(`Rollback point: ${rollbackPoint.id}`);
             }
@@ -162,6 +241,12 @@ export class WriteFileTool implements ITool {
                     bytes: Buffer.byteLength(content, 'utf-8'),
                     existedBefore,
                     timestamp: new Date().toISOString(),
+                    baselineStatus: baselineNotice.includes('passed')
+                        ? 'passed'
+                        : baselineNotice.includes('failed')
+                            ? 'failed'
+                            : 'skipped',
+                    ...(baselineCommand ? { testCommand: baselineCommand } : {}),
                     ...(rollbackPoint ? { rollbackPointId: rollbackPoint.id } : {}),
                 },
             };

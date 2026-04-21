@@ -3,7 +3,7 @@
 // ============================================================
 
 export { XQoderAgent, type AgentConfig, type AgentCallbacks } from './agent.js';
-export { DEFAULT_SYSTEM_PROMPT } from './agent.js';
+export { DEFAULT_SYSTEM_PROMPT, DEFAULT_MVP_SYSTEM_PROMPT } from './agent.js';
 export { createLLMProvider } from './llm/factory.js';
 export {
     XQoderAgentProvider,
@@ -83,7 +83,7 @@ export {
     LspRenameSymbolTool,
     LspReferencesTool,
 } from './tools/lsp-tools.js';
-export { RunCommandTool, InstallPackageTool } from './tools/command-tool.js';
+export { RunCommandTool, RunShellTool, InstallPackageTool } from './tools/command-tool.js';
 export { SkillTool, TodoWriteTool, TodoReadTool, QuestionTool } from './tools/interaction-tools.js';
 export { ApplyPatchTool, RestoreRollbackPointTool } from './tools/patch-tool.js';
 export { FetchUrlTool, WebSearchTool } from './tools/fetch-tool.js';
@@ -141,3 +141,67 @@ export {
 } from './session/file-history.js';
 export * from './protocol.js';
 export { EventSession } from './session/event-session.js';
+export { MvpRuntimeController } from './mvp/orchestrator.js';
+export {
+    classifyMvpTask,
+    extractCandidatePaths,
+} from './mvp/task-classifier.js';
+export { collectMvpContext } from './mvp/context-collector.js';
+export { shapeMvpContext } from './mvp/context-shaper.js';
+export {
+    calculateMvpFreshness,
+    orderMvpContextSections,
+    scoreMvpContextSections,
+    sortMvpSectionsForCompression,
+} from './mvp/freshness.js';
+export { planMvpTurn, renderMvpPlannerPrompt } from './mvp/planner.js';
+export {
+    captureMvpTestBaseline,
+    compareMvpTestBaselines,
+    detectMvpTestCommand,
+    formatMvpBaselineSignal,
+} from './mvp/baseline.js';
+export { distillMvpVerifierOutput } from './mvp/distiller.js';
+export { runMvpVerification, formatMvpVerificationMessage } from './mvp/verifier.js';
+export { decideMvpRecovery, formatMvpRecoveryMessage, classifyMvpFailure } from './mvp/recovery.js';
+export {
+    MvpFailurePatternMemory,
+    normalizeMvpFailureSignature,
+} from './mvp/pattern-memory.js';
+export { resolveMvpRecoveryDecision, applyMvpRecoveryDecision, renderMvpRecoveryMessage } from './mvp/recovery-manager.js';
+export { loadMvpRuntimeConfig } from './mvp/runtime-config.js';
+export {
+    createMvpBaselineCheck,
+    createMvpOutputCheck,
+    createMvpStopCheck,
+    evaluateMvpStopConditions,
+    formatMvpStopEvaluationMessage,
+    isMvpStopConditionSatisfied,
+} from './mvp/stop-condition.js';
+export type {
+    AgentRuntimeProfile,
+    MvpBaselineSignal,
+    MvpBaselineStatus,
+    MvpCollectedContext,
+    MvpContextSection,
+    MvpContextTier,
+    MvpDistilledResult,
+    MvpFailureClassification,
+    MvpFailurePattern,
+    MvpPlannerAction,
+    MvpPlannerDecision,
+    MvpProjectRule,
+    MvpRecoveryAction,
+    MvpRecoveryDecision,
+    MvpRuntimeConfig,
+    MvpShapedContext,
+    MvpStopConditionConfig,
+    MvpStopEvaluationResult,
+    MvpTaskType,
+    MvpTestBaseline,
+    MvpVerificationLocation,
+    MvpVerificationCheckResult,
+    MvpVerificationResult,
+    MvpVerifierRawOutput,
+    MvpVerifierType,
+} from './mvp/types.js';

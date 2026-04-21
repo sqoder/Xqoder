@@ -34,6 +34,7 @@ These workflow commands remain available, but they are currently treated as seco
 - Bun 1.3+
 
 Node 22+ is required because XQoder persists chat sessions in SQLite.
+`bun install` now also pulls in `better-sqlite3`, which is used by the MVP runtime's failure-pattern memory store under `~/.xqoder/<project-hash>/failures.db`.
 
 ## Quick Start
 
