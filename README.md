@@ -66,6 +66,24 @@ bun link --global
 xqoder chat "Continue the previous session"
 ```
 
+## MVP runtime demos and rule-file controls
+
+To exercise the closed-loop MVP runtime without touching your own project, run:
+
+```bash
+bun run demo:mvp:typeerror
+bun run demo:mvp:typeerror:cli
+```
+
+Project-local `xqoder.md` frontmatter can tune the MVP loop with keys such as:
+
+- `baselineCheck`
+- `baseline_check_retries`
+- `distillVerifier`
+- `stopConditions`
+
+Security-only keys such as `apiBaseUrl` are ignored at the project level and emit a warning instead.
+
 ## Architecture
 
 The repository is being migrated toward a strong-boundary modular monolith so future features have a stable landing zone.

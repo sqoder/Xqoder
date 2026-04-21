@@ -6,6 +6,7 @@ import type {
 } from './types.js';
 
 export const DEFAULT_MVP_DISTILLER_MAX_CHARS = 800;
+export const DEFAULT_MVP_DISTILLER_MAX_TOKENS = 200;
 const MAX_LOCATIONS = 5;
 
 export function distillMvpVerifierOutput(
@@ -13,15 +14,19 @@ export function distillMvpVerifierOutput(
     maxSummaryChars: number = DEFAULT_MVP_DISTILLER_MAX_CHARS,
 ): MvpDistilledResult {
     const combined = `${raw.stdout}\n${raw.stderr}`.trim();
+    const originalTokenCount = estimateMvpTokenCount(combined);
+    const passingSummary = `${raw.verifierType} passed (${raw.durationMs}ms)`;
 
     if (raw.exitCode === 0) {
         return {
             passed: true,
             category: 'Unknown',
-            summary: `${raw.verifierType} passed (${raw.durationMs}ms)`,
+            summary: passingSummary,
             locations: [],
             rawTruncated: false,
             originalCharCount: combined.length,
+            summaryTokenCount: estimateMvpTokenCount(passingSummary),
+            compressionRatio: calculateCompressionRatio(originalTokenCount, estimateMvpTokenCount(passingSummary)),
             issueCount: 0,
             coveragePercent: readCoveragePercent(combined),
         };
@@ -29,20 +34,36 @@ export function distillMvpVerifierOutput(
 
     const extracted = extractSignals(combined, raw.verifierType);
     const rawSummary = extracted.signalLines.join('\n').trim();
-    const summary = rawSummary.length > maxSummaryChars
-        ? `${rawSummary.slice(0, Math.max(0, maxSummaryChars - 8)).trimEnd()}\n…(cut)`
-        : rawSummary;
+    const tokenBoundSummary = truncateMvpSummaryByTokens(rawSummary, DEFAULT_MVP_DISTILLER_MAX_TOKENS);
+    const summary = tokenBoundSummary.length > maxSummaryChars
+        ? `${tokenBoundSummary.slice(0, Math.max(0, maxSummaryChars - 8)).trimEnd()}\n…(cut)`
+        : tokenBoundSummary;
+    const summaryTokenCount = estimateMvpTokenCount(summary);
 
     return {
         passed: false,
         category: classifyMvpError(combined, raw.verifierType),
         summary,
         locations: extracted.locations.slice(0, MAX_LOCATIONS),
-        rawTruncated: rawSummary.length > maxSummaryChars || combined.length > maxSummaryChars,
+        rawTruncated: rawSummary.length > maxSummaryChars
+            || combined.length > maxSummaryChars
+            || rawSummary !== summary,
         originalCharCount: combined.length,
+        summaryTokenCount,
+        compressionRatio: calculateCompressionRatio(originalTokenCount, summaryTokenCount),
         issueCount: extracted.issueCount,
         coveragePercent: readCoveragePercent(combined),
     };
+}
+
+export function estimateMvpTokenCount(value: string): number {
+    const normalized = value.trim();
+    if (normalized.length === 0) {
+        return 0;
+    }
+
+    const matches = normalized.match(/[\p{L}\p{N}_]+|[^\s]/gu);
+    return matches?.length ?? 0;
 }
 
 interface SignalExtractionResult {
@@ -233,4 +254,31 @@ function readCoveragePercent(output: string): number | undefined {
 
     const parsed = Number.parseFloat(match[1]);
     return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function truncateMvpSummaryByTokens(value: string, maxTokens: number): string {
+    const normalized = value.trim();
+    if (normalized.length === 0) {
+        return normalized;
+    }
+
+    const matches = Array.from(normalized.matchAll(/[\p{L}\p{N}_]+|[^\s]/gu));
+    if (matches.length <= maxTokens) {
+        return normalized;
+    }
+
+    const lastMatch = matches[maxTokens - 1];
+    if (lastMatch?.index === undefined) {
+        return '…(cut)';
+    }
+
+    return `${normalized.slice(0, lastMatch.index + lastMatch[0].length).trimEnd()}\n…(cut)`;
+}
+
+function calculateCompressionRatio(originalTokenCount: number, summaryTokenCount: number): number {
+    if (originalTokenCount <= 0) {
+        return 1;
+    }
+
+    return Math.max(0, 1 - (summaryTokenCount / originalTokenCount));
 }

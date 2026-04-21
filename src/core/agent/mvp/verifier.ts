@@ -100,6 +100,8 @@ export async function runMvpVerification(input: {
             locations: distilled.locations,
             rawTruncated: distilled.rawTruncated,
             originalCharCount: distilled.originalCharCount,
+            summaryTokenCount: distilled.summaryTokenCount,
+            compressionRatio: distilled.compressionRatio,
             issueCount: distilled.issueCount,
             coveragePercent: distilled.coveragePercent,
         });
@@ -209,6 +211,12 @@ function finalizeVerification(checks: MvpVerificationCheckResult[]): MvpVerifica
 
 function createUndistilledResult(raw: MvpVerifierRawOutput): MvpDistilledResult {
     const combined = `${raw.stdout}\n${raw.stderr}`.trim();
+    const summary = raw.exitCode === 0
+        ? `${raw.verifierType} passed (${raw.durationMs}ms)`
+        : truncate(combined, 800);
+    const originalTokenCount = combined.split(/\s+/).filter(Boolean).length;
+    const summaryTokenCount = summary.split(/\s+/).filter(Boolean).length;
+
     return {
         passed: raw.exitCode === 0,
         category: raw.exitCode === 0 ? 'Unknown' as const : raw.verifierType === 'test'
@@ -218,12 +226,14 @@ function createUndistilledResult(raw: MvpVerifierRawOutput): MvpDistilledResult 
                 : raw.verifierType === 'build'
                     ? 'BuildError' as const
                     : 'OutputMismatch' as const,
-        summary: raw.exitCode === 0
-            ? `${raw.verifierType} passed (${raw.durationMs}ms)`
-            : truncate(combined, 800),
+        summary,
         locations: [],
         rawTruncated: combined.length > 800,
         originalCharCount: combined.length,
+        summaryTokenCount,
+        compressionRatio: originalTokenCount === 0
+            ? 1
+            : Math.max(0, 1 - (summaryTokenCount / originalTokenCount)),
         issueCount: undefined,
         coveragePercent: undefined,
     };

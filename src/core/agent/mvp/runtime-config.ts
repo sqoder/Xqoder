@@ -15,6 +15,7 @@ const DEFAULT_STOP_CONDITIONS: MvpStopConditionConfig = {
 
 const DEFAULT_RUNTIME_CONFIG: MvpRuntimeConfig = {
     baselineCheck: true,
+    baselineCheckRetries: 0,
     distillVerifier: true,
     stopConditions: DEFAULT_STOP_CONDITIONS,
 };
@@ -65,6 +66,9 @@ export function loadMvpRuntimeConfig(
 
     return {
         baselineCheck: readBoolean(sanitizedConfig['baselineCheck']) ?? DEFAULT_RUNTIME_CONFIG.baselineCheck,
+        baselineCheckRetries: readPositiveInteger(sanitizedConfig['baselineCheckRetries'])
+            ?? readPositiveInteger(sanitizedConfig['baseline_check_retries'])
+            ?? DEFAULT_RUNTIME_CONFIG.baselineCheckRetries,
         distillVerifier: readBoolean(sanitizedConfig['distillVerifier']) ?? DEFAULT_RUNTIME_CONFIG.distillVerifier,
         stopConditions: normalizeStopConditions(
             readRecord(sanitizedConfig['stopConditions']),
@@ -100,6 +104,7 @@ function findRuleFile(projectRoot: string): string | null {
 function cloneRuntimeConfig(config: MvpRuntimeConfig): MvpRuntimeConfig {
     return {
         baselineCheck: config.baselineCheck,
+        baselineCheckRetries: config.baselineCheckRetries ?? DEFAULT_RUNTIME_CONFIG.baselineCheckRetries,
         distillVerifier: config.distillVerifier,
         stopConditions: {
             hard: [...config.stopConditions.hard],

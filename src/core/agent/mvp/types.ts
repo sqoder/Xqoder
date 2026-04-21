@@ -84,6 +84,8 @@ export interface MvpDistilledResult {
     locations: MvpVerificationLocation[];
     rawTruncated: boolean;
     originalCharCount: number;
+    summaryTokenCount: number;
+    compressionRatio: number;
     issueCount?: number;
     coveragePercent?: number;
 }
@@ -108,6 +110,8 @@ export interface MvpVerificationCheckResult {
     locations?: MvpVerificationLocation[];
     rawTruncated?: boolean;
     originalCharCount?: number;
+    summaryTokenCount?: number;
+    compressionRatio?: number;
     issueCount?: number;
     coveragePercent?: number;
 }
@@ -159,6 +163,7 @@ export interface MvpStopEvaluationResult {
 
 export interface MvpRuntimeConfig {
     baselineCheck: boolean;
+    baselineCheckRetries?: number;
     distillVerifier: boolean;
     stopConditions: MvpStopConditionConfig;
 }

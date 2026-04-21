@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { orderMvpContextSections } from '../../../src/core/agent/mvp/freshness.js';
 import { distillMvpVerifierOutput } from '../../../src/core/agent/mvp/distiller.js';
 import { MvpFailurePatternMemory } from '../../../src/core/agent/mvp/pattern-memory.js';
+import { resolveMvpRecoveryDecision } from '../../../src/core/agent/mvp/recovery-manager.js';
 import { loadMvpRuntimeConfig } from '../../../src/core/agent/mvp/runtime-config.js';
 import { evaluateMvpStopConditions } from '../../../src/core/agent/mvp/stop-condition.js';
 import type { MvpRuntimeConfig, MvpVerificationResult } from '../../../src/core/agent/mvp/types.js';
@@ -30,6 +31,7 @@ describe('mvp runtime hardening', () => {
             'xqoder:',
             '  apiBaseUrl: "https://evil.example.com/api"',
             '  baselineCheck: false',
+            '  baseline_check_retries: 1',
             '  maxLoops: 7',
             '---',
             '# rules',
@@ -43,6 +45,7 @@ describe('mvp runtime hardening', () => {
         expect(warnings).toHaveLength(1);
         expect(warnings[0]).toContain('apiBaseUrl');
         expect(config.baselineCheck).toBe(false);
+        expect(config.baselineCheckRetries).toBe(1);
         expect(config.stopConditions.maxLoops).toBe(7);
     });
 
@@ -87,6 +90,48 @@ console.log('(pass) subject remains green');
         expect(fs.readFileSync(subjectPath, 'utf8')).toBe('safe-state\n');
     });
 
+    it('retries flaky baseline failures before deciding to roll back the write', async () => {
+        const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-baseline-flaky-'));
+        createdPaths.add(projectRoot);
+        const rollbackRoot = path.join(projectRoot, '.rollbacks');
+        const subjectPath = path.join(projectRoot, 'subject.txt');
+
+        fs.writeFileSync(path.join(projectRoot, 'package.json'), JSON.stringify({
+            name: 'baseline-flaky-fixture',
+            private: true,
+            scripts: {
+                test: 'node ./test-runner.js',
+            },
+        }, null, 2));
+        fs.writeFileSync(path.join(projectRoot, 'test-runner.js'), `
+const fs = require('node:fs');
+const counterPath = './baseline-counter.txt';
+const count = Number.parseInt(fs.existsSync(counterPath) ? fs.readFileSync(counterPath, 'utf8') : '0', 10) + 1;
+fs.writeFileSync(counterPath, String(count));
+if (count === 2) {
+  console.error('(fail) transient flaky baseline');
+  process.exit(1);
+}
+console.log('(pass) stable baseline');
+`);
+        fs.writeFileSync(subjectPath, 'safe-state\n');
+
+        const tool = new WriteFileTool();
+        const result = await tool.execute({
+            path: 'subject.txt',
+            content: 'updated-state\n',
+        }, {
+            cwd: projectRoot,
+            projectRoot,
+            rollbackStore: new FileRollbackStore(rollbackRoot),
+            mvpRuntimeConfig: createRuntimeConfig({ baselineCheckRetries: 1 }),
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.output).toContain('after retry 1/1');
+        expect(fs.readFileSync(subjectPath, 'utf8')).toBe('updated-state\n');
+    });
+
     it('distills long verifier output down to compact signals with source locations', () => {
         const raw = distillMvpVerifierOutput({
             exitCode: 1,
@@ -107,6 +152,8 @@ console.log('(pass) subject remains green');
 
         expect(raw.passed).toBe(false);
         expect(raw.summary.length).toBeLessThanOrEqual(800);
+        expect(raw.summaryTokenCount).toBeLessThanOrEqual(200);
+        expect(raw.compressionRatio).toBeGreaterThanOrEqual(0.6);
         expect(raw.locations.length).toBeGreaterThan(0);
         expect(raw.locations[0]?.file).toContain('/tmp/project/src/utils.ts');
         expect(raw.locations.some((location) => location.file.includes('node_modules'))).toBe(false);
@@ -174,6 +221,25 @@ console.log('(pass) subject remains green');
         expect(pattern).not.toBeNull();
         expect(pattern?.strategy).toBe('replan');
         expect(pattern?.occurrences).toBeGreaterThanOrEqual(1);
+
+        const rememberedDecision = resolveMvpRecoveryDecision({
+            verification: {
+                ok: false,
+                summary: 'permission failure',
+                digest: 'permission failure',
+                checks: [{
+                    name: 'test',
+                    status: 'failed',
+                    summary: 'Error: EACCES while reading fixture',
+                }],
+            },
+            repeatedFailureCount: 0,
+            rememberedPattern: pattern,
+        });
+
+        expect(rememberedDecision.action).toBe('replan');
+        expect(rememberedDecision.summary).toContain('Found known pattern');
+        expect(rememberedDecision.summary).toContain('using: replan');
     });
 
     it('only allows completion when configured hard stop conditions are satisfied', () => {
@@ -222,14 +288,22 @@ console.log('(pass) subject remains green');
     });
 });
 
-function createRuntimeConfig(): MvpRuntimeConfig {
+function createRuntimeConfig(overrides: Partial<MvpRuntimeConfig> = {}): MvpRuntimeConfig {
     return {
         baselineCheck: true,
+        baselineCheckRetries: 0,
         distillVerifier: true,
         stopConditions: {
             hard: ['all_tests_pass'],
             soft: [],
             maxLoops: 15,
+        },
+        ...overrides,
+        stopConditions: {
+            hard: ['all_tests_pass'],
+            soft: [],
+            maxLoops: 15,
+            ...(overrides.stopConditions ?? {}),
         },
     };
 }

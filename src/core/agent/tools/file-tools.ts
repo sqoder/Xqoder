@@ -149,6 +149,7 @@ export class WriteFileTool implements ITool {
                 filePaths: [filePath],
             });
             const baselineCheckEnabled = context.mvpRuntimeConfig?.baselineCheck !== false;
+            const baselineCheckRetries = Math.max(0, context.mvpRuntimeConfig?.baselineCheckRetries ?? 0);
             const baselineCommand = baselineCheckEnabled
                 ? await detectMvpTestCommand(context.projectRoot)
                 : null;
@@ -183,9 +184,28 @@ export class WriteFileTool implements ITool {
                     });
 
                     if (currentBaseline) {
-                        const comparison = compareMvpTestBaselines(baselineBefore, currentBaseline);
+                        let comparison = compareMvpTestBaselines(baselineBefore, currentBaseline);
+                        let retriesUsed = 0;
+                        let finalBaseline = currentBaseline;
+
+                        while (comparison.hasRegression && retriesUsed < baselineCheckRetries) {
+                            retriesUsed += 1;
+                            const retriedBaseline = await captureMvpTestBaseline({
+                                projectRoot: context.projectRoot,
+                                command: baselineCommand,
+                                shell: context.shell,
+                            });
+                            if (!retriedBaseline) {
+                                break;
+                            }
+                            finalBaseline = retriedBaseline;
+                            comparison = compareMvpTestBaselines(baselineBefore, retriedBaseline);
+                        }
+
                         const baselineSignal = formatMvpBaselineSignal(comparison, baselineCommand);
-                        baselineNotice = baselineSignal.line;
+                        baselineNotice = comparison.hasRegression || retriesUsed === 0
+                            ? baselineSignal.line
+                            : `${baselineSignal.line} after retry ${retriesUsed}/${baselineCheckRetries}`;
 
                         if (comparison.hasRegression) {
                             if (rollbackPoint && context.rollbackStore) {
@@ -212,6 +232,8 @@ export class WriteFileTool implements ITool {
                                     timestamp: new Date().toISOString(),
                                     baselineStatus: 'failed',
                                     regressions: comparison.regressions,
+                                    baselineRetriesUsed: retriesUsed,
+                                    baselineFailedCount: finalBaseline.failed,
                                     testCommand: baselineCommand,
                                     ...(rollbackPoint ? { rollbackPointId: rollbackPoint.id } : {}),
                                 },
@@ -246,6 +268,7 @@ export class WriteFileTool implements ITool {
                         : baselineNotice.includes('failed')
                             ? 'failed'
                             : 'skipped',
+                    ...(baselineCheckRetries > 0 ? { baselineCheckRetries } : {}),
                     ...(baselineCommand ? { testCommand: baselineCommand } : {}),
                     ...(rollbackPoint ? { rollbackPointId: rollbackPoint.id } : {}),
                 },

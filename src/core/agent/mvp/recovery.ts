@@ -24,7 +24,7 @@ export function decideMvpRecovery(input: {
         return {
             classification,
             action: input.rememberedPattern.strategy,
-            summary: `Failure memory matched this signature (x${input.rememberedPattern.occurrences}). Reuse ${input.rememberedPattern.strategy}.`,
+            summary: `[Recovery] Found known pattern (×${input.rememberedPattern.occurrences}), using: ${input.rememberedPattern.strategy}`,
             ...(input.rememberedPattern.strategy === 'rollback' && input.latestRollbackPointId
                 ? { rollbackPointId: input.latestRollbackPointId }
                 : {}),
