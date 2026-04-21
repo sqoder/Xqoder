@@ -9,8 +9,10 @@ import {
 } from '../src/application/system/hooks.js';
 import {
     buildAutoProjectContext,
+    buildChatPromptAppendix,
     buildChatSystemPrompt,
     maybeAugmentPromptWithProjectContext,
+    shouldUseStructuredEngineeringResponse,
 } from '../src/application/chat/run-chat.js';
 import {
     createMemorySnapshot,
@@ -26,7 +28,6 @@ import {
     runWritePriorityNotepadCommand,
     runWriteWorkingNotepadCommand,
 } from '../src/application/system/notepad.js';
-import { createIdeSnapshot } from '../src/application/system/ide.js';
 import {
     createPermissionsSnapshot,
     runSetPermissionsDefaultCommand,
@@ -35,7 +36,10 @@ import {
     runUnsetToolPermissionCommand,
 } from '../src/application/system/permissions.js';
 import type { SandboxSettings } from '@xqoder/shared';
-import { resolveEnabledPluginNames } from '../src/plugins/command-plugins.js';
+import {
+    getBuiltInCommandRegistrations,
+    resolveEnabledPluginNames,
+} from '../src/plugins/command-plugins.js';
 
 const tempDirs: string[] = [];
 
@@ -89,6 +93,61 @@ describe('chat prompt helpers', () => {
         expect(prompt).toContain('If the user asks about "this project", "this repo", "the current codebase"');
         expect(prompt).toContain('Only ask the user to provide files or paths after you have already tried inspecting the current project');
         expect(prompt).toContain("prefer the user's language");
+    });
+
+    it('uses a direct no-tool response prompt for greetings and identity questions', () => {
+        const sandbox: SandboxSettings = { mode: 'project', allowedPaths: [] };
+
+        const prompt = buildChatSystemPrompt(sandbox, '/tmp/demo-project', { structuredOutput: false });
+
+        expect(shouldUseStructuredEngineeringResponse('你好 你是谁')).toBe(false);
+        expect(shouldUseStructuredEngineeringResponse('你是什么模型')).toBe(false);
+        expect(shouldUseStructuredEngineeringResponse('您能干嘛')).toBe(false);
+        expect(shouldUseStructuredEngineeringResponse('你可以干嘛')).toBe(false);
+        expect(shouldUseStructuredEngineeringResponse('请用中文重新回答我一遍')).toBe(false);
+        expect(shouldUseStructuredEngineeringResponse('解释这个项目')).toBe(false);
+        expect(shouldUseStructuredEngineeringResponse('为什么 doctor 说 API key 缺失')).toBe(false);
+        expect(shouldUseStructuredEngineeringResponse('按文档的需求继续推进')).toBe(true);
+        expect(shouldUseStructuredEngineeringResponse('你好，帮我修 src/utils.ts 的 bug')).toBe(true);
+        expect(prompt).not.toContain('USER_PROMPT');
+        expect(prompt).not.toContain('EXECUTION_LOG');
+        expect(prompt).toContain('Do not claim that you read files, searched code, ran commands, inspected git diff, or inspected project context unless a tool was actually executed');
+        expect(prompt).toContain('For greetings, identity questions, small talk, or clarification questions, answer directly');
+        expect(prompt).toContain('For capability questions, keep the answer short and natural');
+    });
+
+    it('includes truthful runtime model identity when provided', () => {
+        const sandbox: SandboxSettings = { mode: 'project', allowedPaths: [] };
+
+        const prompt = buildChatSystemPrompt(sandbox, '/tmp/demo-project', {
+            structuredOutput: false,
+            runtimeIdentity: {
+                provider: 'dashscope',
+                model: 'qwen-plus',
+            },
+        });
+
+        expect(prompt).toContain('configured LLM provider/model: dashscope/qwen-plus');
+        expect(prompt).toContain('我是 XQoder；当前连接的模型是 dashscope/qwen-plus.');
+        expect(prompt).toContain('Do not answer as if XQoder itself were the model');
+        expect(prompt).toContain('do not say you are not a language model');
+        expect(prompt).toContain('Do not mention project-specific files, scripts, configs, dependencies, recent diffs, or implementation details unless the user provided them');
+        expect(prompt).toContain('This overrides generic default-agent English preferences');
+    });
+
+    it('keeps capability prompts free from model-identity instructions', () => {
+        const sandbox: SandboxSettings = { mode: 'project', allowedPaths: [] };
+
+        const prompt = buildChatPromptAppendix('你可以干嘛', sandbox, '/tmp/demo-project', {
+            provider: 'dashscope',
+            model: 'qwen-plus',
+        });
+
+        expect(prompt).not.toContain('configured LLM provider/model: dashscope/qwen-plus');
+        expect(prompt).toContain('The current user message is a capability question');
+        expect(prompt).toContain('Do not mention the current model/provider unless the user explicitly asked about the model');
+        expect(prompt).toContain('Reply in 1-3 short sentences');
+        expect(prompt).toContain('Use natural wording; do not force a single fixed template sentence');
     });
 
     it('injects current project context for project-explanation prompts', () => {
@@ -287,28 +346,40 @@ describe('permissions snapshot helpers', () => {
 });
 
 describe('command plugin defaults', () => {
-    it('enables integrations and system commands by default', () => {
+    it('enables workflow and extras plugins by default', () => {
         const enabled = resolveEnabledPluginNames();
 
         expect(enabled.has('cli-core-shell')).toBe(true);
-        expect(enabled.has('cli-integrations')).toBe(true);
         expect(enabled.has('cli-system')).toBe(true);
-        expect(enabled.has('cli-workflows')).toBe(false);
+        expect(enabled.has('cli-workflows')).toBe(true);
+        expect(enabled.has('cli-extras')).toBe(true);
     });
-});
 
-describe('ide command helpers', () => {
-    it('builds local attach instructions for the current project', () => {
-        const cwd = createTempDir();
+    it('exposes workflow/extras commands while keeping removed legacy surfaces disabled', () => {
+        const registrations = getBuiltInCommandRegistrations();
+        const names = new Set(registrations.map((registration) => registration.name));
 
-        const snapshot = createIdeSnapshot({ cwd });
-
-        expect(snapshot.cwd).toBe(cwd);
-        expect(snapshot.bridgeStatus).toBe('not-configured');
-        expect(snapshot.serverUrl).toBe('http://127.0.0.1:4096');
-        expect(snapshot.serveCommand).toContain(`xqoder serve --dir ${cwd}`);
-        expect(snapshot.attachCommand).toContain(`xqoder attach http://127.0.0.1:4096 --dir ${cwd}`);
-        expect(snapshot.acpCommand).toContain(`xqoder acp --cwd ${cwd}`);
+        expect(names.has('chat')).toBe(true);
+        expect(names.has('tui')).toBe(true);
+        expect(names.has('build')).toBe(true);
+        expect(names.has('fix')).toBe(true);
+        expect(names.has('run')).toBe(true);
+        expect(names.has('start')).toBe(true);
+        expect(names.has('test')).toBe(true);
+        expect(names.has('deploy')).toBe(true);
+        expect(names.has('plan')).toBe(true);
+        expect(names.has('review')).toBe(true);
+        expect(names.has('automation')).toBe(true);
+        expect(names.has('explain')).toBe(true);
+        expect(names.has('github')).toBe(true);
+        expect(names.has('agents')).toBe(true);
+        expect(names.has('mcp')).toBe(true);
+        expect(names.has('serve')).toBe(true);
+        expect(names.has('attach')).toBe(false);
+        expect(names.has('acp')).toBe(false);
+        expect(names.has('hooks')).toBe(true);
+        expect(names.has('memory')).toBe(true);
+        expect(names.has('notepad')).toBe(false);
     });
 });
 

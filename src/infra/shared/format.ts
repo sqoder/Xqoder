@@ -2,7 +2,7 @@
 // Output Format — Formatting for non-interactive output
 // ============================================================
 
-export type OutputFormat = 'text' | 'json';
+export type OutputFormat = 'text' | 'json' | 'stream-json';
 
 export interface FormatOptions {
     format: OutputFormat;
@@ -15,6 +15,7 @@ export interface FormatOptions {
 export function formatOutput(response: string, options: FormatOptions): string {
     switch (options.format) {
         case 'json':
+        case 'stream-json':
             return JSON.stringify({ response }, null, 2);
         case 'text':
         default:

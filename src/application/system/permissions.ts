@@ -71,6 +71,8 @@ export function createPermissionsSnapshot(
         permissions: {
             defaultMode: snapshot.config.permissions?.defaultMode ?? 'ask',
             tools: { ...(snapshot.config.permissions?.tools ?? {}) },
+            allowedTools: [...(snapshot.config.permissions?.allowedTools ?? [])],
+            disallowedTools: [...(snapshot.config.permissions?.disallowedTools ?? [])],
         },
         sandboxMode: snapshot.config.sandbox?.mode ?? 'project',
         sources,

@@ -7,6 +7,13 @@ import {
     runChatHeadless,
     runNonInteractivePrompt,
 } from '../../../src/application/chat/run-chat.js';
+import { XQoderAgent } from '../../../src/core/agent/agent.js';
+import {
+    createMvpTypeErrorDemoProvider,
+    createMvpTypeErrorDemoWorkspace,
+    MVP_TYPEERROR_DEMO_PROMPT,
+} from '../../../src/core/agent/mvp/demo.js';
+import { FileRollbackStore } from '../../../src/core/agent/tools/rollback-store.js';
 
 const tempDirs: string[] = [];
 const descriptorRestorers: Array<() => void> = [];
@@ -96,6 +103,27 @@ describe('chat runtime helpers', () => {
         })).rejects.toThrow('auth login');
     });
 
+    it('allows local provider headless chat to proceed without an api key', async () => {
+        const cwd = createTempDir();
+
+        const result = await runChatHeadless('hello', { dir: cwd }, {
+            configManager: { load: () => createLoadedConfig('', { provider: 'local', model: 'qwen3:8b' }) },
+            sessionStore: {
+                findLatestSession: () => null,
+                getSession: () => null,
+                saveSession: () => ({ id: 'local-summary' }),
+            },
+            agentFactory: () => createFakeAgent({
+                response: 'LOCAL_RESPONSE',
+            }),
+        });
+
+        expect(result).toEqual({
+            response: 'LOCAL_RESPONSE',
+            sessionId: 'local-summary',
+        });
+    });
+
     it('renders JSON output for interactive chat through the injected runtime and persists the session', async () => {
         const cwd = createTempDir();
         const stdout = captureStream(process.stdout, 'write');
@@ -169,27 +197,208 @@ describe('chat runtime helpers', () => {
         expect(received.prompt).toBe('Summarize the repo status');
         expect(stdout.value).toContain('TEXT_RESPONSE');
     });
+
+    it('does not force the engineering report template for plain greetings', async () => {
+        const cwd = createTempDir();
+        const stdout = captureStream(process.stdout, 'write');
+        const received: {
+            systemPrompt?: string;
+        } = {};
+
+        await runNonInteractivePrompt({
+            prompt: '你好 你是谁',
+            cwd,
+            outputFormat: 'text',
+            quiet: true,
+        }, {
+            configManager: { load: () => createLoadedConfig('test-key') },
+            sessionStore: {
+                findLatestSession: () => null,
+                getSession: () => null,
+                saveSession: () => ({ id: 'greeting-summary' }),
+            },
+            agentFactory: (config) => {
+                received.systemPrompt = String((config as Record<string, unknown>).systemPrompt ?? '');
+                return createFakeAgent({
+                    response: '我是 XQoder，你的终端 AI 编程助手。',
+                });
+            },
+        });
+
+        expect(received.systemPrompt).not.toContain('USER_PROMPT');
+        expect(received.systemPrompt).not.toContain('EXECUTION_LOG');
+        expect(received.systemPrompt).toContain('answer directly');
+        expect(received.systemPrompt).toContain('Do not claim that you read files');
+        expect(stdout.value).toContain('我是 XQoder');
+    });
+
+    it('injects the active provider and model for model identity questions', async () => {
+        const cwd = createTempDir();
+        const stdout = captureStream(process.stdout, 'write');
+        const received: {
+            systemPrompt?: string;
+        } = {};
+
+        await runNonInteractivePrompt({
+            prompt: '你是什么模型',
+            cwd,
+            outputFormat: 'text',
+            quiet: true,
+        }, {
+            configManager: { load: () => createLoadedConfig('dashscope-key', { provider: 'dashscope', model: 'qwen-plus' }) },
+            sessionStore: {
+                findLatestSession: () => null,
+                getSession: () => null,
+                saveSession: () => ({ id: 'model-summary' }),
+            },
+            agentFactory: (config) => {
+                received.systemPrompt = String((config as Record<string, unknown>).systemPrompt ?? '');
+                return createFakeAgent({
+                    response: '我是 XQoder，当前由 dashscope/qwen-plus 驱动。',
+                });
+            },
+        });
+
+        expect(received.systemPrompt).not.toContain('USER_PROMPT');
+        expect(received.systemPrompt).toContain('configured LLM provider/model: dashscope/qwen-plus');
+        expect(received.systemPrompt).toContain('do not say you are not a language model');
+        expect(stdout.value).toContain('dashscope/qwen-plus');
+    });
+
+    it('selects runtime profile by interaction route (casual -> mvp, engineering -> hybrid)', async () => {
+        const cwd = createTempDir();
+        const observedProfiles = new Map<string, string | undefined>();
+
+        for (const prompt of ['你好', '修复 src/utils.ts 的 TypeError']) {
+            await runNonInteractivePrompt({
+                prompt,
+                cwd,
+                outputFormat: 'text',
+                quiet: true,
+            }, {
+                configManager: { load: () => createLoadedConfig('test-key') },
+                sessionStore: {
+                    findLatestSession: () => null,
+                    getSession: () => null,
+                    saveSession: () => ({ id: `route-${prompt}` }),
+                },
+                agentFactory: (config) => {
+                    observedProfiles.set(prompt, (config as Record<string, unknown>).runtimeProfile as string | undefined);
+                    return createFakeAgent({
+                        response: `ACK:${prompt}`,
+                    });
+                },
+            });
+        }
+
+        expect(observedProfiles.get('你好')).toBe('mvp');
+        expect(observedProfiles.get('修复 src/utils.ts 的 TypeError')).toBe('hybrid');
+    });
+
+
+    it('adds local fallback guidance when a remote provider network call fails', async () => {
+        const cwd = createTempDir();
+
+        await expect(runNonInteractivePrompt({
+            prompt: 'hello',
+            cwd,
+            outputFormat: 'text',
+            quiet: true,
+        }, {
+            configManager: { load: () => createLoadedConfig('test-key') },
+            sessionStore: {
+                findLatestSession: () => null,
+                getSession: () => null,
+                saveSession: () => ({ id: 'unused' }),
+            },
+            agentFactory: () => ({
+                async run() {
+                    throw new Error('dashscope stream connection failed: timed out');
+                },
+                getSession() {
+                    return { id: 'failed-session' };
+                },
+                async dispose() {},
+            }),
+            localFallbackAdvisor: async () => 'Suggested fallback: local/qwen3:8b',
+        })).rejects.toThrow('Suggested fallback: local/qwen3:8b');
+    });
+
+    it('runs the TypeError demo through the non-interactive chat path into the engineering runtime profile', async () => {
+        const cwd = createMvpTypeErrorDemoWorkspace();
+        tempDirs.push(cwd);
+        const stdout = captureStream(process.stdout, 'write');
+        const savedCalls: Array<Record<string, unknown>> = [];
+        const received: { runtimeProfile?: string } = {};
+
+        await runNonInteractivePrompt({
+            prompt: MVP_TYPEERROR_DEMO_PROMPT,
+            cwd,
+            outputFormat: 'text',
+            quiet: true,
+        }, {
+            configManager: { load: () => createLoadedConfig('test-key') },
+            sessionStore: {
+                findLatestSession: () => null,
+                getSession: () => null,
+                saveSession: (input: Record<string, unknown>) => {
+                    savedCalls.push(input);
+                    return { id: 'demo-chat-summary' };
+                },
+            },
+            agentFactory: (config) => {
+                const provider = createMvpTypeErrorDemoProvider();
+                received.runtimeProfile = (config as Record<string, unknown>).runtimeProfile as string | undefined;
+                return new XQoderAgent({
+                    ...(config as unknown as ConstructorParameters<typeof XQoderAgent>[0]),
+                    rollbackStore: new FileRollbackStore(path.join(cwd, '.rollbacks')),
+                    providerFactory: async () => provider,
+                    permissions: {
+                        defaultMode: 'allow',
+                        tools: {},
+                    },
+                });
+            },
+        });
+
+        expect(received.runtimeProfile).toBe('hybrid');
+        expect(savedCalls).toHaveLength(1);
+        expect(stdout.value).toContain('修复完成：src/utils.ts 已补上 guard clause');
+        expect(fs.readFileSync(path.join(cwd, 'src/utils.ts'), 'utf-8')).toContain("return 'UNKNOWN';");
+    });
 });
 
-function createLoadedConfig(apiKey: string) {
+function createLoadedConfig(
+    apiKey: string,
+    options: {
+        provider?: 'openai' | 'local' | 'dashscope';
+        model?: string;
+    } = {},
+) {
+    const provider = options.provider ?? 'openai';
+    const model = options.model ?? 'gpt-4.1';
+
     return {
         llm: {
-            provider: 'openai',
-            model: 'gpt-4.1',
+            provider,
+            model,
             apiKey,
         },
         providers: {
-            openai: {
+            [provider]: {
                 apiKey,
-                defaultModel: 'gpt-4.1',
+                defaultModel: model,
+                ...(provider === 'local'
+                    ? { baseUrl: 'http://localhost:11434/v1' }
+                    : {}),
             },
         },
         defaultAgent: 'general',
         agents: {
             general: {
                 mode: 'primary',
-                provider: 'openai',
-                model: 'gpt-4.1',
+                provider,
+                model,
             },
         },
         sandbox: {

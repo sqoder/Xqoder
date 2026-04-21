@@ -1,15 +1,17 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
     ConfigManager,
     configManager,
+    resolveDefaultAgentName,
     resolveConfigWithEnvOverrides,
     formatOutput,
     createSpinner,
     type MessageAttachment,
     type OutputFormat,
-    type SandboxSettings,
 } from '@xqoder/shared';
+import {
+    resolveRuntimeDecision,
+} from '@xqoder/core-runtime';
 import {
     AgentSession,
     XQoderAgent,
@@ -17,12 +19,33 @@ import {
     type AgentCallbacks,
 } from '@xqoder/agent';
 import { MISSING_API_KEY_GUIDANCE } from '../config/api-key-guidance.js';
-import { buildProjectNotepadPromptAppendix } from '../system/notepad.js';
+import { llmProviderRequiresApiKey } from '../config/api-key-guidance.js';
 import type {
     ChatAgentFactoryConfig,
     ChatAgentInstance,
     ChatSessionStore,
 } from './ports.js';
+import {
+    buildChatPromptAppendixFromRoute,
+    maybeAugmentPromptWithProjectContextFromRoute,
+    resolveChatRuntimeIdentity,
+} from './prompt-composer.js';
+import { resolveChatInteraction } from './interaction-router.js';
+import { buildLocalFallbackGuidance, type LocalFallbackInput } from '../../shared/local-fallback.js';
+import {
+    buildInstructionAppendix,
+    resolveInstructionSet,
+} from '../instructions/index.js';
+export {
+    buildAutoProjectContext,
+    buildChatPromptAppendix,
+    buildChatSystemPrompt,
+    maybeAugmentPromptWithProjectContext,
+    resolveChatRuntimeIdentity,
+    shouldUseStructuredEngineeringResponse,
+    type ChatRuntimeIdentity,
+    type ChatSystemPromptOptions,
+} from './prompt-composer.js';
 
 export interface ChatRunOptions {
     dir: string;
@@ -39,6 +62,7 @@ export interface ChatServiceDependencies {
     sessionStore?: ChatSessionStore;
     createSessionStore?: () => ChatSessionStore | undefined;
     agentFactory?: (config: ChatAgentFactoryConfig) => ChatAgentInstance;
+    localFallbackAdvisor?: (input: LocalFallbackInput) => Promise<string | undefined>;
 }
 
 export interface NonInteractivePromptOptions {
@@ -48,126 +72,13 @@ export interface NonInteractivePromptOptions {
     quiet: boolean;
     model?: string;
     agent?: string;
-}
-
-const PROJECT_EXPLANATION_TRIGGER = /(?:this project|this repo|current project|current repo|workspace|codebase|这个项目|当前项目|这个仓库|当前仓库|这个代码库|当前代码库|解释.*项目|分析.*项目|解释.*仓库|分析.*仓库)/i;
-const MAX_PROJECT_ENTRIES = 24;
-const MAX_README_CHARS = 2400;
-
-export function buildChatSystemPrompt(sandbox: SandboxSettings, cwd?: string): string {
-    const permissionHint = sandbox.mode === 'full-access'
-        ? 'You are currently in full-access mode, which allows reading and writing files anywhere on this machine. Only operate on files outside the project directory when the user explicitly requests it.'
-        : sandbox.mode === 'paths'
-            ? `You can currently access the project directory and these additional paths: ${sandbox.allowedPaths.length > 0 ? sandbox.allowedPaths.join(', ') : 'none'}.`
-            : 'You can currently only access the project directory.';
-    const notepadAppendix = cwd ? buildProjectNotepadPromptAppendix(cwd) : '';
-    const projectHint = cwd
-        ? `The current project directory is: ${cwd}.`
-        : 'If a current project directory is available through runtime context, treat it as the default inspection target.';
-
-    return `You are XQoder, an AI programming assistant working in the terminal.
-
-How you work:
-- ${permissionHint}
-- ${projectHint}
-- For greetings, small talk, or clarification questions, reply directly without proactively calling tools.
-- For clear code tasks, read files, search code, execute commands, and modify files as needed.
-- If the user asks about "this project", "this repo", "the current codebase", or requests an explanation of the current workspace, proactively inspect the repository yourself by using tools like list_files, read_file, grep_content, or search_code before asking the user for more files.
-- Only ask the user to provide files or paths after you have already tried inspecting the current project and still lack enough information.
-- If the user asks you to generate an entire project, fix, run, test, or deploy, you can give a brief judgment first; the terminal also provides stable workflow commands like /build /fix /run /test /deploy.
-- If the user explicitly requests operations on paths outside the project directory (e.g., desktop), do not refuse outright or substitute with "project-internal alternatives"; instead, attempt the target path directly and trigger permission approval, letting the user decide whether to allow it.
-- If the user expresses "you can operate the entire computer / give full access", prioritize triggering approval and wait for the user's decision.
-- Keep replies concise, and prefer the user's language unless project instructions explicitly require another language.
-
-Response format (very important, try to follow):
-When answering coding-related questions, use the following 6-block structured output. Use the user's language unless project instructions require another language:
-
---------------------------------------------------
-USER_PROMPT
-Briefly restate or quote the user's question to help quickly recall context.
-
---------------------------------------------------
-PLAN
-List the steps you plan to take with numbers, for example:
-1. Locate relevant files and functions
-2. Read the current implementation to understand the issue
-3. Modify or add code
-4. Run relevant tests and summarize results
-
---------------------------------------------------
-EXECUTION_LOG
-Record the actions you actually performed here (which files were checked, which commands were run), in brief bullet points. Do not paste large code blocks.
-
---------------------------------------------------
-RESULT
-Summarize the key results of this operation in 1-3 lines, e.g., whether the issue was fixed, what risks were discovered, or conclusions.
-
---------------------------------------------------
-FILE_CHANGES
-When suggesting specific changes, provide Git-style diff code blocks per file ("FILE: path" + \`\`\`diff block).
-If this does not involve code changes, explicitly state "No actual code changes this time, only design/notes."
-
---------------------------------------------------
-NEXT_STEPS
-Provide 1-3 suggested follow-up steps for the user (e.g., run tests, check a specific file, provide additional info).
-
-When terminal width is limited, you can simplify the text appropriately, but still retain the 6 block titles in order.${notepadAppendix ? `\n\n${notepadAppendix}` : ''}`;
-}
-
-export function buildAutoProjectContext(cwd: string): string {
-    const resolvedCwd = path.resolve(cwd);
-    const sections: string[] = [`Project root: ${resolvedCwd}`];
-
-    try {
-        const entries = fs.readdirSync(resolvedCwd, { withFileTypes: true })
-            .filter((entry) => !['.git', 'node_modules', 'dist', '.xqoder'].includes(entry.name))
-            .sort((left, right) => left.name.localeCompare(right.name))
-            .slice(0, MAX_PROJECT_ENTRIES)
-            .map((entry) => `${entry.isDirectory() ? '[dir]' : '[file]'} ${entry.name}`);
-        if (entries.length > 0) {
-            sections.push(`Top-level entries:\n${entries.join('\n')}`);
-        }
-    } catch {
-        // ignore directory scan failures and fall back to other context
-    }
-
-    const readmeSnippet = readSnippet(path.join(resolvedCwd, 'README.md'), MAX_README_CHARS);
-    if (readmeSnippet) {
-        sections.push(`README.md snippet:\n${readmeSnippet}`);
-    }
-
-    const packageJsonSummary = summarizePackageJson(path.join(resolvedCwd, 'package.json'));
-    if (packageJsonSummary) {
-        sections.push(`package.json summary:\n${packageJsonSummary}`);
-    }
-
-    for (const candidate of ['pyproject.toml', 'Cargo.toml', 'go.mod']) {
-        const snippet = readSnippet(path.join(resolvedCwd, candidate), 1200);
-        if (snippet) {
-            sections.push(`${candidate} snippet:\n${snippet}`);
-        }
-    }
-
-    return sections.join('\n\n');
-}
-
-export function maybeAugmentPromptWithProjectContext(prompt: string, cwd: string): string {
-    if (!PROJECT_EXPLANATION_TRIGGER.test(prompt)) {
-        return prompt;
-    }
-
-    const projectContext = buildAutoProjectContext(cwd);
-    if (!projectContext.trim()) {
-        return prompt;
-    }
-
-    return `${prompt}
-
-[AutoProjectContext]
-The following workspace context was gathered automatically because the user asked about the current project/repo. Use it directly instead of asking the user to provide the same files again unless the request still cannot be resolved.
-
-${projectContext}
-[/AutoProjectContext]`;
+    resume?: string;
+    continue?: boolean;
+    forkSession?: boolean;
+    permissionMode?: string;
+    effort?: string;
+    maxTurns?: number;
+    noSessionPersistence?: boolean;
 }
 
 function resolveChatSession(
@@ -197,7 +108,11 @@ export async function runChatHeadless(
     dependencies: ChatServiceDependencies = {},
 ): Promise<{ response: string; sessionId: string }> {
     const resolvedDir = path.resolve(options.dir);
-    const preparedPrompt = maybeAugmentPromptWithProjectContext(prompt, resolvedDir);
+    const interaction = resolveChatInteraction(prompt);
+    const runtimeDecision = resolveRuntimeDecision(interaction);
+    const preparedPrompt = runtimeDecision.shouldAugmentProjectContext
+        ? maybeAugmentPromptWithProjectContextFromRoute(prompt, resolvedDir, interaction)
+        : prompt;
     const loadedConfig = dependencies.configManager?.load({ cwd: resolvedDir }) ?? configManager.load({ cwd: resolvedDir });
     const { config: effectiveConfig } = resolveConfigWithEnvOverrides(loadedConfig);
 
@@ -212,16 +127,30 @@ export async function runChatHeadless(
         sessionId: options.session,
         newSession: options.newSession ?? false,
     });
+    const instructionAppendix = buildResolvedInstructionAppendix(
+        effectiveConfig,
+        resolvedDir,
+        options.agent,
+    );
     const agentConfig = buildAgentConfigFromXQoderConfig(effectiveConfig, {
         agentName: options.agent,
         cwd: resolvedDir,
         projectRoot: resolvedDir,
         modelOverride: options.model,
-        promptAppendix: buildChatSystemPrompt(sandbox, resolvedDir),
+        promptAppendix: joinPromptAppendices(
+            buildChatPromptAppendixFromRoute(
+                interaction,
+                sandbox,
+                resolvedDir,
+                resolveChatRuntimeIdentity(effectiveConfig, options.agent, options.model),
+            ),
+            instructionAppendix,
+        ),
         session,
+        runtimeProfile: runtimeDecision.runtimeProfile,
     });
 
-    if (!agentConfig.llmConfig.apiKey.trim()) {
+    if (llmProviderRequiresApiKey(agentConfig.llmConfig.provider) && !agentConfig.llmConfig.apiKey.trim()) {
         throw new Error(MISSING_API_KEY_GUIDANCE);
     }
 
@@ -238,9 +167,15 @@ export async function runChatHeadless(
 
     let fullResponse = '';
     try {
-        await agent.run(preparedPrompt, {
-            onToken: (token: string) => { fullResponse += token; },
-        }, options.attachments ?? []);
+        let finalResponse: string;
+        try {
+            finalResponse = await agent.run(preparedPrompt, {
+                onToken: (token: string) => { fullResponse += token; },
+            }, options.attachments ?? []);
+        } catch (error) {
+            throw await enrichProviderFailure(error, agentConfig.llmConfig, options.agent, dependencies);
+        }
+        fullResponse = resolveAgentTextOutput(fullResponse, finalResponse);
         const summary = sessionStore.saveSession({
             session: agent.getSession(),
             projectRoot: resolvedDir,
@@ -260,7 +195,11 @@ export async function runChat(
     callbacksFactory: () => AgentCallbacks,
 ): Promise<void> {
     const resolvedDir = path.resolve(options.dir);
-    const preparedPrompt = maybeAugmentPromptWithProjectContext(prompt, resolvedDir);
+    const interaction = resolveChatInteraction(prompt);
+    const runtimeDecision = resolveRuntimeDecision(interaction);
+    const preparedPrompt = runtimeDecision.shouldAugmentProjectContext
+        ? maybeAugmentPromptWithProjectContextFromRoute(prompt, resolvedDir, interaction)
+        : prompt;
     const loadedConfig = dependencies.configManager?.load({ cwd: resolvedDir }) ?? configManager.load({ cwd: resolvedDir });
     const { config: effectiveConfig } = resolveConfigWithEnvOverrides(loadedConfig);
 
@@ -274,16 +213,34 @@ export async function runChat(
         sessionId: options.session,
         newSession: options.newSession ?? false,
     });
+    const instructionAppendix = buildResolvedInstructionAppendix(
+        effectiveConfig,
+        resolvedDir,
+        options.agent,
+    );
     const agentConfig = buildAgentConfigFromXQoderConfig(effectiveConfig, {
         agentName: options.agent,
         cwd: resolvedDir,
         projectRoot: resolvedDir,
         modelOverride: options.model,
-        promptAppendix: buildChatSystemPrompt(sandbox, resolvedDir),
+        promptAppendix: joinPromptAppendices(
+            buildChatPromptAppendixFromRoute(
+                interaction,
+                sandbox,
+                resolvedDir,
+                resolveChatRuntimeIdentity(effectiveConfig, options.agent, options.model),
+            ),
+            instructionAppendix,
+        ),
         session,
+        runtimeProfile: runtimeDecision.runtimeProfile,
     });
 
-    if (!dependencies.agentFactory && !agentConfig.llmConfig.apiKey.trim()) {
+    if (
+        !dependencies.agentFactory
+        && llmProviderRequiresApiKey(agentConfig.llmConfig.provider)
+        && !agentConfig.llmConfig.apiKey.trim()
+    ) {
         throw new Error(MISSING_API_KEY_GUIDANCE);
     }
 
@@ -308,7 +265,13 @@ export async function runChat(
             ? { ...callbacksFactory(), onToken: (token: string) => { fullResponse += token; } }
             : callbacksFactory();
 
-        await agent.run(preparedPrompt, callbacks, options.attachments ?? []);
+        let finalResponse: string;
+        try {
+            finalResponse = await agent.run(preparedPrompt, callbacks, options.attachments ?? []);
+        } catch (error) {
+            throw await enrichProviderFailure(error, agentConfig.llmConfig, options.agent, dependencies);
+        }
+        fullResponse = resolveAgentTextOutput(fullResponse, finalResponse);
         sessionStore?.saveSession({
             session: agent.getSession(),
             projectRoot: resolvedDir,
@@ -332,7 +295,11 @@ export async function runNonInteractivePrompt(
     dependencies: ChatServiceDependencies = {},
 ): Promise<void> {
     const resolvedDir = path.resolve(options.cwd);
-    const preparedPrompt = maybeAugmentPromptWithProjectContext(options.prompt, resolvedDir);
+    const interaction = resolveChatInteraction(options.prompt);
+    const runtimeDecision = resolveRuntimeDecision(interaction);
+    const preparedPrompt = runtimeDecision.shouldAugmentProjectContext
+        ? maybeAugmentPromptWithProjectContextFromRoute(options.prompt, resolvedDir, interaction)
+        : options.prompt;
     const loadedConfig = dependencies.configManager?.load({ cwd: resolvedDir }) ?? configManager.load({ cwd: resolvedDir });
     const { config: effectiveConfig } = resolveConfigWithEnvOverrides(loadedConfig);
 
@@ -341,21 +308,40 @@ export async function runNonInteractivePrompt(
         allowedPaths: [],
     };
     const sessionStore = dependencies.sessionStore ?? dependencies.createSessionStore?.();
+    const session = resolveChatSession(sessionStore, {
+        projectRoot: resolvedDir,
+        sessionId: options.resume,
+        newSession: options.forkSession || (!options.resume && !options.continue),
+    });
+
+    const instructionAppendix = buildResolvedInstructionAppendix(
+        effectiveConfig,
+        resolvedDir,
+        options.agent,
+    );
     const agentConfig = buildAgentConfigFromXQoderConfig(effectiveConfig, {
         agentName: options.agent,
         cwd: resolvedDir,
         projectRoot: resolvedDir,
         modelOverride: options.model,
-        promptAppendix: buildChatSystemPrompt(sandbox, resolvedDir),
+        promptAppendix: joinPromptAppendices(
+            buildChatPromptAppendixFromRoute(
+                interaction,
+                sandbox,
+                resolvedDir,
+                resolveChatRuntimeIdentity(effectiveConfig, options.agent, options.model),
+            ),
+            instructionAppendix,
+        ),
+        session,
         sessionTitle: buildNonInteractiveTitle(options.prompt),
-        autoApproveTools: true,
+        autoApproveTools: options.permissionMode === undefined
+            || options.permissionMode === 'allow'
+            || options.permissionMode === 'auto',
+        runtimeProfile: runtimeDecision.runtimeProfile,
     });
 
-    if (!dependencies.agentFactory && !agentConfig.llmConfig.apiKey.trim()) {
-        throw new Error(MISSING_API_KEY_GUIDANCE);
-    }
-
-    const factoryConfig = {
+    const agent = dependencies.agentFactory?.({
         ...agentConfig,
         cwd: resolvedDir,
         projectRoot: resolvedDir,
@@ -363,37 +349,78 @@ export async function runNonInteractivePrompt(
         sandboxMode: agentConfig.sandboxMode ?? sandbox.mode,
         allowedPaths: agentConfig.allowedPaths ?? sandbox.allowedPaths,
         shell: agentConfig.shell,
-        sessionTitle: agentConfig.sessionTitle,
         autoApproveTools: agentConfig.autoApproveTools,
-    };
-    const agent = dependencies.agentFactory?.(factoryConfig) ?? new XQoderAgent(agentConfig);
+    }) ?? new XQoderAgent(agentConfig);
 
+    const isStreamJson = options.outputFormat === 'stream-json';
     const spinner = !options.quiet && options.outputFormat === 'text'
         ? createSpinner('Thinking...')
         : null;
 
+    if (isStreamJson) {
+        process.stdout.write(JSON.stringify({ type: 'session_start', sessionId: agent.getSession().id }) + '\n');
+    }
+
     try {
         let fullResponse = '';
-        await agent.run(preparedPrompt, {
-            onToken: (token: string) => {
-                fullResponse += token;
-            },
-        });
+        let finalResponse: string;
+        try {
+            finalResponse = await agent.run(preparedPrompt, {
+                onToken: (token: string) => {
+                    fullResponse += token;
+                    if (isStreamJson) {
+                        process.stdout.write(JSON.stringify({ type: 'assistant_delta', text: token }) + '\n');
+                    }
+                },
+                onEvent: (event) => {
+                    if (isStreamJson) {
+                        process.stdout.write(JSON.stringify({ type: 'agent_event', event }) + '\n');
+                    }
+                }
+            });
+        } catch (error) {
+            throw await enrichProviderFailure(error, agentConfig.llmConfig, options.agent, dependencies);
+        }
+        fullResponse = resolveAgentTextOutput(fullResponse, finalResponse);
 
-        sessionStore?.saveSession({
-            session: agent.getSession(),
-            projectRoot: resolvedDir,
-            cwd: resolvedDir,
-            model: agentConfig.llmConfig.model,
-        });
+        if (!options.noSessionPersistence) {
+            sessionStore?.saveSession({
+                session: agent.getSession(),
+                projectRoot: resolvedDir,
+                cwd: resolvedDir,
+                model: agentConfig.llmConfig.model,
+            });
+        }
 
         spinner?.stop();
-        process.stdout.write(formatOutput(fullResponse, { format: options.outputFormat }));
-        process.stdout.write('\n');
+        if (isStreamJson) {
+            process.stdout.write(JSON.stringify({ type: 'final_result', response: fullResponse }) + '\n');
+        } else {
+            process.stdout.write(formatOutput(fullResponse, { format: options.outputFormat }));
+            process.stdout.write('\n');
+        }
     } finally {
         spinner?.stop();
         await agent.dispose?.();
     }
+}
+
+
+async function enrichProviderFailure(
+    error: unknown,
+    llmConfig: LocalFallbackInput['llmConfig'],
+    agentName: string | undefined,
+    dependencies: ChatServiceDependencies,
+): Promise<Error> {
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    const advisor = dependencies.localFallbackAdvisor ?? buildLocalFallbackGuidance;
+    const guidance = await advisor({ error: normalized, llmConfig, agentName });
+    if (!guidance) {
+        return normalized;
+    }
+    return new Error(`${normalized.message}
+
+${guidance}`);
 }
 
 function buildNonInteractiveTitle(prompt: string): string {
@@ -405,47 +432,23 @@ function buildNonInteractiveTitle(prompt: string): string {
     return `Non-interactive: ${titleSuffix}`;
 }
 
-function readSnippet(filePath: string, maxChars: number): string | undefined {
-    try {
-        if (!fs.existsSync(filePath)) {
-            return undefined;
-        }
-        const content = fs.readFileSync(filePath, 'utf-8').trim();
-        if (!content) {
-            return undefined;
-        }
-        return content.length > maxChars
-            ? `${content.slice(0, maxChars)}...`
-            : content;
-    } catch {
-        return undefined;
-    }
+function resolveAgentTextOutput(streamedResponse: string, finalResponse: string): string {
+    return streamedResponse.length > 0 ? streamedResponse : finalResponse;
 }
 
-function summarizePackageJson(filePath: string): string | undefined {
-    try {
-        if (!fs.existsSync(filePath)) {
-            return undefined;
-        }
-        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as {
-            name?: string;
-            version?: string;
-            description?: string;
-            scripts?: Record<string, string>;
-            dependencies?: Record<string, string>;
-            devDependencies?: Record<string, string>;
-        };
-        const lines = [
-            parsed.name ? `name=${parsed.name}` : undefined,
-            parsed.version ? `version=${parsed.version}` : undefined,
-            parsed.description ? `description=${parsed.description}` : undefined,
-            parsed.scripts ? `scripts=${Object.keys(parsed.scripts).join(', ') || '-'}` : undefined,
-            parsed.dependencies ? `dependencies=${Object.keys(parsed.dependencies).slice(0, 12).join(', ') || '-'}` : undefined,
-            parsed.devDependencies ? `devDependencies=${Object.keys(parsed.devDependencies).slice(0, 12).join(', ') || '-'}` : undefined,
-        ].filter((line): line is string => Boolean(line));
+function joinPromptAppendices(...appendices: Array<string | undefined>): string {
+    return appendices.filter((entry): entry is string => Boolean(entry?.trim())).join('\n\n');
+}
 
-        return lines.length > 0 ? lines.join('\n') : undefined;
-    } catch {
-        return undefined;
-    }
+function buildResolvedInstructionAppendix(
+    effectiveConfig: ReturnType<typeof resolveConfigWithEnvOverrides>['config'],
+    cwd: string,
+    agentName: string | undefined,
+): string | undefined {
+    const resolvedAgentName = agentName?.trim() || resolveDefaultAgentName(effectiveConfig);
+    return buildInstructionAppendix(resolveInstructionSet({
+        cwd,
+        projectConfigInstructions: effectiveConfig.agents?.[resolvedAgentName]?.instructions,
+        userConfigInstructions: effectiveConfig.instructions,
+    }));
 }

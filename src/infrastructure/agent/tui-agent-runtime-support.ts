@@ -1,7 +1,6 @@
 import {
     globalEventBus,
     type PermissionSettings,
-    type AgentPermissionMode,
     type LLMMessage,
     type MessageAttachment as SharedMessageAttachment,
 } from '@xqoder/shared';
@@ -30,8 +29,16 @@ import type {
 export function resolveRemoteToolPermissionMode(
     toolName: string,
     permissions: PermissionSettings | undefined,
-): AgentPermissionMode {
-    return resolveToolPermissionMode(toolName, permissions);
+): 'allow' | 'ask' | 'deny' {
+    const mode = resolveToolPermissionMode(toolName, permissions);
+    if (mode === 'allow' || mode === 'ask' || mode === 'deny') {
+        return mode;
+    }
+    if (mode === 'bypassPermissions') {
+        return 'allow';
+    }
+
+    return 'ask';
 }
 
 export function toProtocolAttachment(attachment: SharedMessageAttachment): ProtocolMessageAttachment {

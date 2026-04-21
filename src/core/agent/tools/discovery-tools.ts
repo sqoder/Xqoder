@@ -117,6 +117,20 @@ export class GlobFilesTool implements ITool {
     }
 }
 
+function formatGlobOutput(rawOutput: string, relativeRoot: string): string {
+    const prefix = relativeRoot && relativeRoot !== '.'
+        ? `${relativeRoot}${path.sep}`
+        : '';
+
+    return rawOutput
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(0, MAX_DISCOVERY_ITEMS)
+        .map((line) => `${prefix}${line}`.replaceAll(`${path.sep}${path.sep}`, path.sep))
+        .join('\n');
+}
+
 export class GrepContentTool implements ITool {
     readonly definition: ToolDefinition = {
         name: 'grep_content',
@@ -231,22 +245,49 @@ function walkDirectory(
     }
 }
 
-function formatGlobOutput(stdout: string, relativeRoot: string): string {
-    const trimmed = stdout.trim();
-    if (!trimmed) {
-        return 'No matching files found';
+export class DiscoverSkillsTool implements ITool {
+    readonly definition: ToolDefinition = {
+        name: 'discover_skills',
+        description: 'Discover reusable agent skills in the project or global store by searching for SKILL.md files.',
+        parameters: [],
+    };
+
+    async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+        const toolCallId = (args['toolCallId'] as string) ?? '';
+
+        try {
+            const skillPaths = [
+                path.join(context.projectRoot, '.xqoder', 'skills'),
+                path.join(context.projectRoot, 'skills'),
+            ];
+
+            const foundSkills: string[] = [];
+            for (const skillPath of skillPaths) {
+                if (fs.existsSync(skillPath) && fs.statSync(skillPath).isDirectory()) {
+                    const skillDirs = fs.readdirSync(skillPath);
+                    for (const dir of skillDirs) {
+                        const skillMd = path.join(skillPath, dir, 'SKILL.md');
+                        if (fs.existsSync(skillMd)) {
+                            foundSkills.push(`- ${dir} (at ${path.relative(context.projectRoot, skillMd)})`);
+                        }
+                    }
+                }
+            }
+
+            return {
+                toolCallId,
+                success: true,
+                output: foundSkills.length > 0
+                    ? `Found the following skills:\n${foundSkills.join('\n')}\n\nTo use a skill, read its SKILL.md for instructions.`
+                    : 'No skills found in the project. You can create a skill by adding a folder with a SKILL.md in .xqoder/skills/.',
+            };
+        } catch (err) {
+            return {
+                toolCallId,
+                success: false,
+                output: '',
+                error: `Failed to discover skills: ${err instanceof Error ? err.message : String(err)}`,
+            };
+        }
     }
-
-    const normalizedRoot = relativeRoot && relativeRoot !== '.'
-        ? relativeRoot.replace(/\\/g, '/')
-        : '';
-
-    return trimmed
-        .split('\n')
-        .filter(Boolean)
-        .map((entry) => {
-            const normalizedEntry = entry.replace(/\\/g, '/');
-            return normalizedRoot ? `${normalizedRoot}/${normalizedEntry}` : normalizedEntry;
-        })
-        .join('\n');
 }
