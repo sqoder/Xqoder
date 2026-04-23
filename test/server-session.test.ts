@@ -1,6 +1,7 @@
 import * as http from 'node:http';
 import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'bun:test';
+import { createConversationEventEnvelopeEmitter } from '@xqoder/protocol';
 import { AgentSession } from '../src/core/agent/session/session.js';
 import type { MessageAttachment } from '@xqoder/shared';
 import { handleMessageRoutes, handleSessionRoutes } from '../src/interfaces/http/server-session.js';
@@ -206,6 +207,67 @@ describe('HTTP session routes', () => {
             ],
         });
     });
+
+    it('prefers persisted envelope replay signals over stale legacy transcript events in session detail payloads', async () => {
+        const res = new MockServerResponse();
+        const createdAt = new Date('2026-04-19T11:00:00.000Z');
+        const updatedAt = new Date('2026-04-19T11:05:00.000Z');
+        const session = createEnvelopeReplaySession();
+        const store = {
+            getSessionSummary: () => ({
+                id: 'session-envelope-replay',
+                projectRoot: '/body-project',
+                cwd: '/body-project',
+                model: 'openai/gpt-4.1',
+                title: 'Envelope Replay',
+                createdAt,
+                updatedAt,
+                messageCount: 3,
+                usage: {
+                    promptTokens: 13,
+                    completionTokens: 5,
+                    totalTokens: 18,
+                    cacheReadTokens: 2,
+                    cacheCreationTokens: 1,
+                    cost: 0.07,
+                },
+            }),
+            getSession: () => session,
+        };
+
+        const handled = await handleSessionRoutes({
+            req: { method: 'GET' } as http.IncomingMessage,
+            res: res.asResponse(),
+            pathParts: ['session', 'session-envelope-replay'],
+            parsed: { query: {} } as any,
+            cwd: '/default-project',
+            defaultModel: 'openai/gpt-4.1',
+            store: store as any,
+            corsHeaders: { 'Access-Control-Allow-Origin': '*' },
+        });
+
+        expect(handled).toBe(true);
+        expect(parseJsonBody(res)).toMatchObject({
+            id: 'session-envelope-replay',
+            conversationSignals: [
+                { type: 'user', content: 'fresh envelope user' },
+                {
+                    type: 'tool',
+                    content: 'fresh envelope diff preview',
+                    toolName: 'preview_diff',
+                    success: true,
+                },
+                {
+                    type: 'verification',
+                    content: 'Verification passed: envelope replay parity',
+                    ok: true,
+                    blocked: false,
+                    summary: 'Verification passed: envelope replay parity',
+                },
+                { type: 'assistant', content: 'fresh envelope assistant' },
+            ],
+        });
+    });
 });
 
 describe('HTTP message routes', () => {
@@ -303,6 +365,73 @@ describe('HTTP message routes', () => {
         expect(parseJsonBody(res)).toEqual({
             response: 'done',
             sessionId: 'session-1',
+        });
+    });
+
+    it('resolves pending approval requests with the active stream id', async () => {
+        const res = new MockServerResponse();
+        const resolveCalls: Array<Record<string, unknown>> = [];
+
+        const handled = await handleMessageRoutes({
+            req: { method: 'POST' } as http.IncomingMessage,
+            res: res.asResponse(),
+            pathParts: ['session', 'session-1', 'approval', 'tool-call-1', 'resolve'],
+            corsHeaders: { 'Access-Control-Allow-Origin': '*' },
+            streamController: createStreamControllerStub({
+                resolveApprovalRequest: (params: Record<string, unknown>) => {
+                    resolveCalls.push(params);
+                    return { ok: true };
+                },
+            }),
+            readBodyImpl: async () => JSON.stringify({
+                decision: 'allow',
+                streamId: 'stream-1',
+            }),
+        });
+
+        expect(handled).toBe(true);
+        expect(resolveCalls).toEqual([{
+            sessionId: 'session-1',
+            requestId: 'tool-call-1',
+            decision: 'allow',
+            streamId: 'stream-1',
+        }]);
+        expect(parseJsonBody(res)).toEqual({
+            ok: true,
+            requestId: 'tool-call-1',
+        });
+    });
+
+    it('forwards deny approval resolutions when the client responds without a stream id', async () => {
+        const res = new MockServerResponse();
+        const resolveCalls: Array<Record<string, unknown>> = [];
+
+        const handled = await handleMessageRoutes({
+            req: { method: 'POST' } as http.IncomingMessage,
+            res: res.asResponse(),
+            pathParts: ['session', 'session-1', 'approval', 'tool-call-2', 'resolve'],
+            corsHeaders: { 'Access-Control-Allow-Origin': '*' },
+            streamController: createStreamControllerStub({
+                resolveApprovalRequest: (params: Record<string, unknown>) => {
+                    resolveCalls.push(params);
+                    return { ok: true };
+                },
+            }),
+            readBodyImpl: async () => JSON.stringify({
+                decision: 'deny',
+            }),
+        });
+
+        expect(handled).toBe(true);
+        expect(resolveCalls).toEqual([{
+            sessionId: 'session-1',
+            requestId: 'tool-call-2',
+            decision: 'deny',
+            streamId: undefined,
+        }]);
+        expect(parseJsonBody(res)).toEqual({
+            ok: true,
+            requestId: 'tool-call-2',
         });
     });
 
@@ -418,6 +547,7 @@ function createStreamControllerStub(overrides: Record<string, unknown> = {}): an
         cancelStreamOperation: () => ({ ok: true, streamId: 'stream-default' }),
         getStreamOperation: () => undefined,
         parseTimeoutMs: () => 120000,
+        resolveApprovalRequest: () => ({ ok: true }),
         resolveQuestionRequest: () => ({ ok: true }),
         ...overrides,
     };
@@ -454,6 +584,82 @@ function createInspectableSession(): AgentSession {
         role: 'assistant',
         content: 'session detail now exposes transcript and signals',
     });
+
+    return session;
+}
+
+function createEnvelopeReplaySession(): AgentSession {
+    const sessionId = 'session-envelope-replay';
+    const session = new AgentSession({
+        id: sessionId,
+        title: 'Envelope Replay',
+        systemPrompt: 'system',
+        createdAt: new Date('2026-04-19T11:00:00.000Z'),
+        maxMessages: 64,
+    });
+    const eventEmitter = createConversationEventEnvelopeEmitter(
+        sessionId,
+        `${sessionId}:turn:primary`,
+    );
+
+    session.addUserMessage('stale snapshot user');
+    session.addAssistantMessage({
+        role: 'assistant',
+        content: 'stale snapshot assistant',
+    });
+    session.recordConversationEnvelopeEvent(eventEmitter.emit({
+        type: 'message.completed',
+        sessionId,
+        timestamp: Date.parse('2026-04-19T11:00:00.000Z'),
+        source: 'agent',
+        message: {
+            id: `${sessionId}:user:1`,
+            sessionId,
+            role: 'user',
+            content: 'fresh envelope user',
+            createdAt: Date.parse('2026-04-19T11:00:00.000Z'),
+        },
+    }));
+    session.recordConversationEnvelopeEvent(eventEmitter.emit({
+        type: 'tool.output',
+        sessionId,
+        timestamp: Date.parse('2026-04-19T11:00:01.000Z'),
+        source: 'tool',
+        provider: 'local',
+        tool: 'preview_diff',
+        output: 'fresh envelope diff preview',
+    }));
+    session.recordConversationEnvelopeEvent(eventEmitter.emit({
+        type: 'tool.completed',
+        sessionId,
+        timestamp: Date.parse('2026-04-19T11:00:01.100Z'),
+        source: 'tool',
+        provider: 'local',
+        tool: 'preview_diff',
+        success: true,
+    }));
+    session.recordConversationEnvelopeEvent(eventEmitter.emit({
+        type: 'verification.completed',
+        sessionId,
+        timestamp: Date.parse('2026-04-19T11:00:02.000Z'),
+        source: 'agent',
+        ok: true,
+        blocked: false,
+        summary: 'Verification passed: envelope replay parity',
+    }));
+    session.recordConversationEnvelopeEvent(eventEmitter.emit({
+        type: 'message.completed',
+        sessionId,
+        timestamp: Date.parse('2026-04-19T11:00:03.000Z'),
+        source: 'agent',
+        message: {
+            id: `${sessionId}:assistant:1`,
+            sessionId,
+            role: 'assistant',
+            content: 'fresh envelope assistant',
+            createdAt: Date.parse('2026-04-19T11:00:03.000Z'),
+        },
+    }));
 
     return session;
 }

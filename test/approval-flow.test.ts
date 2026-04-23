@@ -59,6 +59,34 @@ describe('approval flow helpers', () => {
         expect(resolved).toEqual(['session-1:call-1:allow']);
     });
 
+    it('records denied interactive approvals with the preview payload for UI routing', async () => {
+        const requested: Array<{ requestId: string; payload?: string }> = [];
+        const resolved: string[] = [];
+
+        const allowed = await resolveRuntimeApprovalRequest({
+            request: baseApprovalRequest(),
+            sessionId: 'session-1b',
+            cwd: '/tmp/project',
+            permissionPolicy: {
+                evaluate: async () => 'allow',
+            },
+            requestToolApproval: async () => 'deny',
+            onApprovalRequested: (record) => {
+                requested.push({ requestId: record.requestId, payload: record.payload });
+            },
+            onApprovalResolved: (record) => {
+                resolved.push(`${record.requestId}:${record.decision}`);
+            },
+        });
+
+        expect(allowed).toBe(false);
+        expect(requested).toEqual([{
+            requestId: 'session-1b:call-1',
+            payload: '{"path":"a.txt"}',
+        }]);
+        expect(resolved).toEqual(['session-1b:call-1:deny']);
+    });
+
     it('falls back to permission policy when no interactive requester exists', async () => {
         const decisions: string[] = [];
 
@@ -76,6 +104,35 @@ describe('approval flow helpers', () => {
 
         expect(allowed).toBe(false);
         expect(decisions).toEqual(['ask']);
+    });
+
+    it('returns allow directly from permission policy without emitting a pending approval record', async () => {
+        const requested: string[] = [];
+        const resolved: string[] = [];
+        const payloads: Array<string | undefined> = [];
+
+        const allowed = await resolveRuntimeApprovalRequest({
+            request: baseApprovalRequest(),
+            sessionId: 'session-2b',
+            cwd: '/tmp/project',
+            permissionPolicy: {
+                evaluate: async (request) => {
+                    payloads.push(request.payload);
+                    return 'allow';
+                },
+            },
+            onApprovalRequested: (record) => {
+                requested.push(record.requestId);
+            },
+            onApprovalResolved: (record) => {
+                resolved.push(`${record.requestId}:${record.decision}`);
+            },
+        });
+
+        expect(allowed).toBe(true);
+        expect(payloads).toEqual(['{"path":"a.txt"}']);
+        expect(requested).toEqual([]);
+        expect(resolved).toEqual(['session-2b:call-1:allow']);
     });
 
     it('omits payload when no preview or reason is available', async () => {
