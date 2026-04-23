@@ -1,5 +1,6 @@
 import * as http from 'node:http';
 import type { MessageAttachment } from '@xqoder/shared';
+import type { ToolApprovalRequest } from '@xqoder/agent';
 import type { ConversationEventEnvelope } from '@xqoder/protocol';
 import type { QuestionAnswer, QuestionPrompt } from '@xqoder/plugin-sdk';
 
@@ -15,6 +16,15 @@ export interface PendingQuestionEntry {
     requestId: string;
     fallbackSelected: string[];
     resolve: (answer: QuestionAnswer) => void;
+    timeout: NodeJS.Timeout;
+}
+
+export interface PendingApprovalEntry {
+    sessionId: string;
+    streamId: string;
+    requestId: string;
+    fallbackDecision: 'allow' | 'deny';
+    resolve: (approved: boolean) => void;
     timeout: NodeJS.Timeout;
 }
 
@@ -73,6 +83,7 @@ export interface BeginStreamOperationParams {
         attachments?: MessageAttachment[];
         onEvent: (event: ConversationEventEnvelope) => void;
         requestQuestion: (prompt: QuestionPrompt) => Promise<QuestionAnswer>;
+        requestToolApproval: (request: ToolApprovalRequest) => Promise<boolean>;
         signal?: AbortSignal;
     }) => Promise<{ response: string; sessionId: string }>;
 }
@@ -94,7 +105,18 @@ interface ResolveQuestionRequestParams {
     streamId?: string;
 }
 
+interface ResolveApprovalRequestParams {
+    sessionId: string;
+    requestId: string;
+    decision: 'allow' | 'deny';
+    streamId?: string;
+}
+
 type ResolveQuestionRequestResult =
+    | { ok: true }
+    | { ok: false; status: 404 | 409; body: { error: string; sessionId: string; requestId: string } };
+
+type ResolveApprovalRequestResult =
     | { ok: true }
     | { ok: false; status: 404 | 409; body: { error: string; sessionId: string; requestId: string } };
 
@@ -114,6 +136,7 @@ export interface StreamController {
     cancelStreamOperation: (sessionId: string, streamId: string) => CancelStreamOperationResult;
     getStreamOperation: (streamId: string) => StreamOperation | undefined;
     parseTimeoutMs: (raw: unknown) => number;
+    resolveApprovalRequest: (params: ResolveApprovalRequestParams) => ResolveApprovalRequestResult;
     resolveQuestionRequest: (params: ResolveQuestionRequestParams) => ResolveQuestionRequestResult;
 }
 
@@ -137,6 +160,8 @@ export function isDuplicateStatusEvent(op: StreamOperation, event: ConversationE
 }
 
 export function createStreamController(options: StreamControllerOptions = {}): StreamController {
+    const pendingApprovals = new Map<string, PendingApprovalEntry>();
+    const pendingApprovalsByLegacyKey = new Map<string, Set<string>>();
     const pendingQuestions = new Map<string, PendingQuestionEntry>();
     const pendingQuestionsByLegacyKey = new Map<string, Set<string>>();
     const streamOperations = new Map<string, StreamOperation>();
@@ -169,6 +194,21 @@ export function createStreamController(options: StreamControllerOptions = {}): S
         index.delete(key);
         if (index.size === 0) {
             pendingQuestionsByLegacyKey.delete(legacyKey);
+        }
+    }
+
+    function removePendingApproval(key: string, pending: PendingApprovalEntry): void {
+        pendingApprovals.delete(key);
+        clearTimeout(pending.timeout);
+
+        const legacyKey = `${pending.sessionId}:${pending.requestId}`;
+        const index = pendingApprovalsByLegacyKey.get(legacyKey);
+        if (!index) {
+            return;
+        }
+        index.delete(key);
+        if (index.size === 0) {
+            pendingApprovalsByLegacyKey.delete(legacyKey);
         }
     }
 
@@ -366,6 +406,60 @@ export function createStreamController(options: StreamControllerOptions = {}): S
         }
     }
 
+    function waitForToolApproval(
+        sessionId: string,
+        streamId: string,
+        request: ToolApprovalRequest,
+    ): Promise<boolean> {
+        const requestId = typeof request.toolCallId === 'string' && request.toolCallId.trim().length > 0
+            ? request.toolCallId.trim()
+            : 'unknown-tool-call';
+        const key = `${streamId}:${requestId}`;
+        const legacyKey = `${sessionId}:${requestId}`;
+
+        return new Promise<boolean>((resolve) => {
+            const timeout = setTimeout(() => {
+                const pending = pendingApprovals.get(key);
+                if (!pending) {
+                    return;
+                }
+                removePendingApproval(key, pending);
+                resolve(pending.fallbackDecision === 'allow');
+            }, questionTimeoutMs);
+            unrefTimer(timeout);
+
+            const pending: PendingApprovalEntry = {
+                sessionId,
+                streamId,
+                requestId,
+                fallbackDecision: 'deny',
+                resolve: (approved) => {
+                    clearTimeout(timeout);
+                    resolve(approved);
+                },
+                timeout,
+            };
+
+            pendingApprovals.set(key, pending);
+            const index = pendingApprovalsByLegacyKey.get(legacyKey);
+            if (index) {
+                index.add(key);
+                return;
+            }
+            pendingApprovalsByLegacyKey.set(legacyKey, new Set([key]));
+        });
+    }
+
+    function resolvePendingApprovalsForStream(streamId: string): void {
+        for (const [key, pending] of pendingApprovals.entries()) {
+            if (pending.streamId !== streamId) {
+                continue;
+            }
+            removePendingApproval(key, pending);
+            pending.resolve(pending.fallbackDecision === 'allow');
+        }
+    }
+
     function beginStreamOperation(params: BeginStreamOperationParams): StreamOperation {
         const op: StreamOperation = {
             id: randomId('stream'),
@@ -402,6 +496,7 @@ export function createStreamController(options: StreamControllerOptions = {}): S
                 appendRecord(op, { type: 'event', event });
             },
             requestQuestion: (prompt) => waitForQuestionAnswer(params.sessionId, op.id, prompt),
+            requestToolApproval: (request) => waitForToolApproval(params.sessionId, op.id, request),
         }).then((result) => {
             op.completed = true;
             appendRecord(op, {
@@ -415,6 +510,7 @@ export function createStreamController(options: StreamControllerOptions = {}): S
             op.completed = true;
             const aborted = op.abortController.signal.aborted;
             if (aborted) {
+                resolvePendingApprovalsForStream(op.id);
                 resolvePendingQuestionsForStream(op.id);
                 const reason = op.abortController.signal.reason;
                 appendRecord(op, {
@@ -454,12 +550,77 @@ export function createStreamController(options: StreamControllerOptions = {}): S
         if (!op.abortController.signal.aborted) {
             op.abortController.abort(new Error('Cancelled by client'));
         }
+        resolvePendingApprovalsForStream(op.id);
         resolvePendingQuestionsForStream(op.id);
         return { ok: true, streamId };
     }
 
     function getStreamOperation(streamId: string): StreamOperation | undefined {
         return streamOperations.get(streamId);
+    }
+
+    function resolveApprovalRequest(
+        params: ResolveApprovalRequestParams,
+    ): ResolveApprovalRequestResult {
+        const trimmedStreamId = typeof params.streamId === 'string' && params.streamId.trim().length > 0
+            ? params.streamId.trim()
+            : undefined;
+        const candidates = trimmedStreamId
+            ? [`${trimmedStreamId}:${params.requestId}`]
+            : Array.from(pendingApprovalsByLegacyKey.get(`${params.sessionId}:${params.requestId}`) ?? []);
+
+        if (candidates.length === 0) {
+            return {
+                ok: false,
+                status: 404,
+                body: {
+                    error: 'Approval request not found',
+                    sessionId: params.sessionId,
+                    requestId: params.requestId,
+                },
+            };
+        }
+
+        if (candidates.length > 1) {
+            return {
+                ok: false,
+                status: 409,
+                body: {
+                    error: 'Multiple pending approval requests; specify streamId',
+                    sessionId: params.sessionId,
+                    requestId: params.requestId,
+                },
+            };
+        }
+
+        const key = candidates[0]!;
+        const pending = pendingApprovals.get(key);
+        if (!pending) {
+            return {
+                ok: false,
+                status: 404,
+                body: {
+                    error: 'Approval request not found',
+                    sessionId: params.sessionId,
+                    requestId: params.requestId,
+                },
+            };
+        }
+        if (pending.sessionId !== params.sessionId) {
+            return {
+                ok: false,
+                status: 404,
+                body: {
+                    error: 'Approval request not found',
+                    sessionId: params.sessionId,
+                    requestId: params.requestId,
+                },
+            };
+        }
+
+        removePendingApproval(key, pending);
+        pending.resolve(params.decision === 'allow');
+        return { ok: true };
     }
 
     function resolveQuestionRequest(
@@ -509,6 +670,17 @@ export function createStreamController(options: StreamControllerOptions = {}): S
                 },
             };
         }
+        if (pending.sessionId !== params.sessionId) {
+            return {
+                ok: false,
+                status: 404,
+                body: {
+                    error: 'Question request not found',
+                    sessionId: params.sessionId,
+                    requestId: params.requestId,
+                },
+            };
+        }
 
         const answer: QuestionAnswer = {
             requestId: params.requestId,
@@ -530,6 +702,7 @@ export function createStreamController(options: StreamControllerOptions = {}): S
         cancelStreamOperation,
         getStreamOperation,
         parseTimeoutMs,
+        resolveApprovalRequest,
         resolveQuestionRequest,
     };
 }

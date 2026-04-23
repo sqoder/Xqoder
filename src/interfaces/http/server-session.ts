@@ -4,6 +4,7 @@ import type { AgentSessionStore, PersistedSessionSummary } from '@xqoder/agent';
 import type { ConversationEventEnvelope } from '@xqoder/protocol';
 import type { QuestionAnswer, QuestionPrompt } from '@xqoder/plugin-sdk';
 import type { MessageAttachment } from '@xqoder/shared';
+import type { ToolApprovalRequest } from '../../domain/permissions/index.js';
 import { buildProjectedConversationTranscript } from '../../domain/conversation/index.js';
 import { selectConversationTranscriptProjectionSources } from '../../domain/conversation/index.js';
 import {
@@ -32,6 +33,7 @@ type RunMessageStream = (params: {
     attachments?: MessageAttachment[];
     onEvent: (event: ConversationEventEnvelope) => void;
     requestQuestion: (prompt: QuestionPrompt) => Promise<QuestionAnswer>;
+    requestToolApproval: (request: ToolApprovalRequest) => Promise<boolean>;
     signal?: AbortSignal;
 }) => Promise<{ response: string; sessionId: string }>;
 
@@ -303,6 +305,45 @@ export async function handleMessageRoutes(params: MessageRouteParams): Promise<b
     if (
         pathParts.length === 5
         && pathParts[1]
+        && pathParts[2] === 'approval'
+        && pathParts[3]
+        && pathParts[4] === 'resolve'
+        && req.method === 'POST'
+    ) {
+        const sessionId = pathParts[1];
+        const requestId = pathParts[3];
+        const parsedBody = await readJsonBody<{ decision?: string; streamId?: string }>(req, readBodyImpl);
+        if ('error' in parsedBody) {
+            jsonResponse(res, 400, { error: parsedBody.error }, corsHeaders);
+            return true;
+        }
+
+        const decision = typeof parsedBody.body.decision === 'string'
+            ? parsedBody.body.decision.trim().toLowerCase()
+            : '';
+        if (decision !== 'allow' && decision !== 'deny') {
+            jsonResponse(res, 400, { error: 'Missing or invalid approval decision' }, corsHeaders);
+            return true;
+        }
+
+        const result = streamController.resolveApprovalRequest({
+            sessionId,
+            requestId,
+            decision,
+            streamId: parsedBody.body.streamId,
+        });
+        if ('status' in result) {
+            jsonResponse(res, result.status, result.body, corsHeaders);
+            return true;
+        }
+
+        jsonResponse(res, 200, { ok: true, requestId }, corsHeaders);
+        return true;
+    }
+
+    if (
+        pathParts.length === 5
+        && pathParts[1]
         && pathParts[2] === 'question'
         && pathParts[3]
         && pathParts[4] === 'resolve'
@@ -331,7 +372,7 @@ export async function handleMessageRoutes(params: MessageRouteParams): Promise<b
             return true;
         }
 
-        jsonResponse(res, 200, { ok: true }, corsHeaders);
+        jsonResponse(res, 200, { ok: true, requestId }, corsHeaders);
         return true;
     }
 

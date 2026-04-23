@@ -136,6 +136,7 @@ export function createIdeSnapshot(
             'Start `xqoder serve` inside the project the IDE should control.',
             'Attach an interactive terminal with `xqoder tui --hostname ... --port ... --dir ...`.',
             'Use `xqoder run "<message>" --attach ... --dir ...` for non-interactive remote turns.',
+            'VS Code extension source lives in `apps/vscode-extension`; run `npm install && npm run build` there before launching an extension host.',
         ],
     };
 }
