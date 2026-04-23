@@ -307,17 +307,21 @@ class ScriptedTypeErrorDemoProvider implements ILLMProvider {
                     },
                 ]);
             case 2:
+                return createToolCallResponse('demo-reproduce-1', 'run_shell', {
+                    command: 'bun test',
+                });
+            case 3:
                 return createToolCallResponse('demo-write-utils-1', 'write_file', {
                     path: 'src/utils.ts',
                     content: INTERMEDIATE_UTILS_SOURCE,
                 });
-            case 3:
-                return createStopResponse('已修复 TypeError，应该可以结束了。');
             case 4:
+                return createStopResponse('已修复 TypeError，应该可以结束了。');
+            case 5:
                 return createToolCallResponse('demo-read-test-1', 'read_file', {
                     path: 'test/utils.test.ts',
                 });
-            case 5:
+            case 6:
                 return createToolCallResponse('demo-write-utils-2', 'write_file', {
                     path: 'src/utils.ts',
                     content: FINAL_UTILS_SOURCE,

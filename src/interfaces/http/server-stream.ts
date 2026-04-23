@@ -1,7 +1,13 @@
 import * as http from 'node:http';
 import type { MessageAttachment } from '@xqoder/shared';
-import type { AppEvent } from '@xqoder/protocol';
+import type { ConversationEventEnvelope } from '@xqoder/protocol';
 import type { QuestionAnswer, QuestionPrompt } from '@xqoder/plugin-sdk';
+
+/**
+ * Slice 0 boundary:
+ * - transport/subscriber/wire protocol only
+ * - no chat routing, tool policy, or agent-loop decisions should live here
+ */
 
 export interface PendingQuestionEntry {
     sessionId: string;
@@ -13,13 +19,13 @@ export interface PendingQuestionEntry {
 }
 
 export type StreamWireRecord =
-    | { type: 'event'; streamId: string; seq: number; cursor: number; event: AppEvent }
+    | { type: 'event'; streamId: string; seq: number; cursor: number; event: ConversationEventEnvelope }
     | { type: 'done'; streamId: string; seq: number; cursor: number; response: string; sessionId: string }
     | { type: 'error'; streamId: string; seq: number; cursor: number; message: string }
     | { type: 'cancelled'; streamId: string; seq: number; cursor: number; reason: string };
 
 type StreamAppendRecord =
-    | { type: 'event'; event: AppEvent }
+    | { type: 'event'; event: ConversationEventEnvelope }
     | { type: 'done'; response: string; sessionId: string }
     | { type: 'error'; message: string }
     | { type: 'cancelled'; reason: string };
@@ -65,7 +71,7 @@ export interface BeginStreamOperationParams {
         sessionId: string;
         message: string;
         attachments?: MessageAttachment[];
-        onEvent: (event: AppEvent) => void;
+        onEvent: (event: ConversationEventEnvelope) => void;
         requestQuestion: (prompt: QuestionPrompt) => Promise<QuestionAnswer>;
         signal?: AbortSignal;
     }) => Promise<{ response: string; sessionId: string }>;
@@ -119,7 +125,7 @@ function unrefTimer(timer: NodeJS.Timeout): void {
     timer.unref?.();
 }
 
-export function isDuplicateStatusEvent(op: StreamOperation, event: AppEvent): boolean {
+export function isDuplicateStatusEvent(op: StreamOperation, event: ConversationEventEnvelope): boolean {
     if (event.type !== 'status.changed') {
         return false;
     }
@@ -127,7 +133,7 @@ export function isDuplicateStatusEvent(op: StreamOperation, event: AppEvent): bo
     if (!latest || latest.type !== 'event' || latest.event.type !== 'status.changed') {
         return false;
     }
-    return latest.event.sessionId === event.sessionId && latest.event.status === event.status;
+    return latest.event.sessionId === event.sessionId && latest.event.payload.status === event.payload.status;
 }
 
 export function createStreamController(options: StreamControllerOptions = {}): StreamController {
@@ -196,7 +202,13 @@ export function createStreamController(options: StreamControllerOptions = {}): S
         op.nextSeq += 1;
 
         const wrapped: StreamWireRecord = record.type === 'event'
-            ? { type: 'event', event: record.event, streamId: op.id, seq, cursor: seq }
+            ? {
+                type: 'event',
+                event: record.event,
+                streamId: op.id,
+                seq,
+                cursor: seq,
+            }
             : record.type === 'done'
                 ? { type: 'done', response: record.response, sessionId: record.sessionId, streamId: op.id, seq, cursor: seq }
                 : record.type === 'error'
@@ -286,7 +298,7 @@ export function createStreamController(options: StreamControllerOptions = {}): S
         res.once('error', release);
     }
 
-    function publishEvent(event: AppEvent): void {
+    function publishEvent(event: ConversationEventEnvelope): void {
         const payload = `data: ${JSON.stringify(event)}\n\n`;
         for (const subscriber of eventSubscribers) {
             try {

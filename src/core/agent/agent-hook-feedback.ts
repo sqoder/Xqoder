@@ -102,6 +102,7 @@ export function buildHookBlockedResult(
         output: section ?? '',
         error,
         metadata: {
+            stopReason: 'permission_denied',
             hookFeedback: {
                 event: 'PreToolUse',
                 decision: hookResult.permissionDecision,
@@ -125,14 +126,17 @@ export function buildPermissionDeniedResult(
         success: false,
         output: section ?? '',
         error,
-        metadata: additionalContexts.length > 0
-            ? {
+        metadata: {
+            stopReason: 'permission_denied',
+            ...(additionalContexts.length > 0
+                ? {
                 hookFeedback: {
                     event: 'PreToolUse',
                     additionalContexts,
                 },
             }
-            : undefined,
+                : {}),
+        },
     };
 }
 

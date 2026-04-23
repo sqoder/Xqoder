@@ -101,6 +101,7 @@ export function runListSessionsCommand(
             updatedAt: s.updatedAt.toISOString(),
             model: s.model,
             messageCount: s.messageCount,
+            usage: s.usage,
             totalTokens: s.usage.totalTokens,
         })), null, 2));
         return;

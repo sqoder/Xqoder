@@ -1,5 +1,5 @@
 import type { PermissionPolicy } from '@xqoder/permissions';
-import type { AppEvent, CoreMessage, JsonRecord, JsonValue, MessageAttachment } from '@xqoder/protocol';
+import type { ConversationEventEnvelope, CoreMessage, JsonRecord, JsonValue, MessageAttachment } from '@xqoder/protocol';
 import type { ToolApprovalPrompt } from '../../domain/permissions/index.js';
 
 export type { ToolApprovalPrompt } from '../../domain/permissions/index.js';
@@ -7,10 +7,11 @@ export type { ToolApprovalPrompt } from '../../domain/permissions/index.js';
 export interface RuntimeDescriptor {
   sessionId: string;
   cwd: string;
+  turnId?: string;
   workspaceId?: string;
   userId?: string;
   permissionPolicy: PermissionPolicy;
-  emit?(event: AppEvent): void | Promise<void>;
+  emit?(event: ConversationEventEnvelope): void | Promise<void>;
   requestToolApproval?(request: ToolApprovalPrompt): Promise<'allow' | 'deny'> | 'allow' | 'deny';
   requestQuestion?(request: QuestionPrompt): Promise<QuestionAnswer> | QuestionAnswer;
 }
@@ -79,11 +80,11 @@ export interface NamedCapability {
 }
 
 export interface ModelProvider extends NamedCapability {
-  stream(input: ModelInput, runtime: RuntimeDescriptor): AsyncIterable<AppEvent>;
+  stream(input: ModelInput, runtime: RuntimeDescriptor): AsyncIterable<ConversationEventEnvelope>;
 }
 
 export interface AgentProvider extends NamedCapability {
-  run(task: AgentTask, runtime: RuntimeDescriptor): AsyncIterable<AppEvent>;
+  run(task: AgentTask, runtime: RuntimeDescriptor): AsyncIterable<ConversationEventEnvelope>;
 }
 
 export interface ToolProvider extends NamedCapability {
@@ -92,7 +93,7 @@ export interface ToolProvider extends NamedCapability {
 }
 
 export interface SyncProvider extends NamedCapability {
-  connect(options: SyncConnectionOptions, runtime: RuntimeDescriptor): AsyncIterable<AppEvent>;
+  connect(options: SyncConnectionOptions, runtime: RuntimeDescriptor): AsyncIterable<ConversationEventEnvelope>;
 }
 
 export interface AuthProvider extends NamedCapability {

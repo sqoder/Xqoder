@@ -4,6 +4,7 @@ export * as chat from './chat/index.js';
 export * as config from './config/index.js';
 export * as deploy from './deploy/index.js';
 export * as integrations from './integrations/index.js';
+export * as instructions from './instructions/index.js';
 export * as memory from './memory/index.js';
 export * as permissions from './permissions/index.js';
 export * as runtime from './runtime/index.js';

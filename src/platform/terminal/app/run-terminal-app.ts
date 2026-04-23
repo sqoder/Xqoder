@@ -5,6 +5,7 @@ import type {
     TuiAgentSettings,
     AgentRuntimeEvent,
 } from '../../../application/agent/index.js';
+import type { ConversationTranscriptEntry } from '../../../domain/conversation/messages.js';
 import {
     createTerminalAgentRuntime,
     createTerminalSession,
@@ -24,6 +25,7 @@ import {
     createTerminalToolOutputState,
     finishStreamingConversationBlock,
     formatTerminalInlineValue,
+    formatTerminalUsageNote,
     formatTerminalStatusNote,
     getTerminalToolKey,
     shouldShowToolArgs,
@@ -58,6 +60,7 @@ export interface TerminalScrollbackShellDependencies {
         terminal: boolean;
     }) => TerminalShellReadline;
     createSession?: typeof createTerminalSession;
+    createPermissionsSummary?: (cwd: string) => string;
 }
 
 export { TERMINAL_LOCAL_COMMANDS, resolveTerminalLocalCommand };
@@ -130,6 +133,7 @@ export async function runTerminalScrollbackShell(
     try {
         if (restoredSession?.sessionId) {
             stdout.write(`[resumed ${restoredSession.title ?? restoredSession.sessionId}]\n\n`);
+            renderRestoredConversationSignals(stdout, restoredSession.conversationSignals);
         }
 
         const askApproval = async (summary: string): Promise<boolean> => {
@@ -155,6 +159,10 @@ export async function runTerminalScrollbackShell(
             if (!trimmed) return;
 
             const localCommand = resolveTerminalLocalCommand(trimmed);
+            const [localCommandToken] = trimmed.split(/\s+/, 1);
+            const localCommandArgs = localCommand && localCommandToken
+                ? trimmed.slice(localCommandToken.length).trim()
+                : '';
 
             if (localCommand === 'exit') {
                 throw new Error('__XQODER_EXIT__');
@@ -172,12 +180,56 @@ export async function runTerminalScrollbackShell(
                 return;
             }
 
+            if (localCommand === 'help') {
+                stdout.write('\nAvailable Slash Commands:\n');
+                stdout.write('  /help, /?       - Show this help message\n');
+                stdout.write('  /exit, /quit    - Exit the application\n');
+                stdout.write('  /new, /reset    - Start a new session\n');
+                stdout.write('  /clear          - Clear terminal (simulated)\n');
+                stdout.write('  /compact        - Compact the active session\n');
+                stdout.write('  /memory         - Show project instructions (xqoder.md)\n');
+                stdout.write('  /status         - Show current session status\n');
+                stdout.write('  /model [name]   - Show or update the active model for this terminal session\n');
+                stdout.write('  /plan <goal>    - Route the next turn through the planning workflow prompt\n');
+                stdout.write('  /review <scope> - Route the next turn through the review workflow prompt\n');
+                stdout.write('  /permissions    - Show effective permission summary for the current project\n\n');
+                return;
+            }
+
+            if (localCommand === 'memory') {
+                stdout.write(`\n[memory] Project instructions loaded from xqoder.md\n`);
+                return;
+            }
+
+            if (localCommand === 'status') {
+                // Routed through the shared TUI service direct-command path below.
+            } else if (localCommand === 'clear') {
+                stdout.write('\x1Bc');
+                return;
+            } else if (localCommand === 'model') {
+                if (!localCommandArgs) {
+                    stdout.write(`\n[model] ${settings.model}\n\n`);
+                    return;
+                }
+
+                settings.model = localCommandArgs;
+                stdout.write(`\n[model] Active model set to ${settings.model}\n\n`);
+                return;
+            } else if (localCommand === 'plan' || localCommand === 'review') {
+                if (!localCommandArgs) {
+                    const target = localCommand === 'plan' ? 'goal' : 'scope';
+                    stdout.write(`\n[xqoder] Usage: /${localCommand} <${target}>\n\n`);
+                    return;
+                }
+            }
+
             writeConversationBlock(stdout, 'You', trimmed);
 
             let assistantReply = '';
             let assistantStreamed = false;
             let assistantDelivered = false;
             let announcedThinking = false;
+            let pendingUsageNote: string | null = null;
             const assistantStream = createTerminalStreamingBlockState();
             const toolOutputs = new Map<string, ReturnType<typeof createTerminalToolOutputState>>();
 
@@ -205,15 +257,15 @@ export async function runTerminalScrollbackShell(
             };
 
             const handleAssistantEvent = (event: AgentRuntimeEvent): void => {
-                if (event.type === 'message.delta' && event.role === 'assistant') {
+                if (event.type === 'message.delta' && event.payload.role === 'assistant') {
                     assistantStreamed = true;
-                    assistantReply += event.text;
-                    writeStreamingConversationChunk(stdout, 'XQoder', assistantStream, event.text);
+                    assistantReply += event.payload.text;
+                    writeStreamingConversationChunk(stdout, 'XQoder', assistantStream, event.payload.text);
                     return;
                 }
 
-                if (event.type === 'message.completed' && event.message.role === 'assistant') {
-                    assistantReply = event.message.content;
+                if (event.type === 'message.completed' && event.payload.message.role === 'assistant') {
+                    assistantReply = event.payload.message.content;
                     if (assistantStreamed) {
                         finishStreamingConversationBlock(stdout, assistantStream);
                     } else {
@@ -226,41 +278,55 @@ export async function runTerminalScrollbackShell(
             const handleToolEvent = (event: AgentRuntimeEvent): void => {
                 if (event.type === 'tool.called') {
                     finishStreamingConversationBlock(stdout, assistantStream);
-                    const key = getTerminalToolKey(event);
-                    toolOutputs.set(key, createTerminalToolOutputState(event.tool));
-                    const argsSummary = shouldShowToolArgs(event.args)
-                        ? ` ${formatTerminalInlineValue(event.args, TERMINAL_INLINE_EVENT_MAX_LENGTH)}`
+                    const key = getTerminalToolKey(event.payload);
+                    toolOutputs.set(key, createTerminalToolOutputState(event.payload.tool));
+                    const argsSummary = shouldShowToolArgs(event.payload.args)
+                        ? ` ${formatTerminalInlineValue(event.payload.args, TERMINAL_INLINE_EVENT_MAX_LENGTH)}`
                         : '';
-                    writeTerminalInlineNote(stdout, `[tool] ${event.tool}${argsSummary}`);
+                    writeTerminalInlineNote(stdout, `[tool] ${event.payload.tool}${argsSummary}`);
                     return;
                 }
 
                 if (event.type === 'tool.output') {
-                    const key = getTerminalToolKey(event);
-                    const toolState = toolOutputs.get(key) ?? createTerminalToolOutputState(event.tool);
+                    const key = getTerminalToolKey(event.payload);
+                    const toolState = toolOutputs.get(key) ?? createTerminalToolOutputState(event.payload.tool);
                     toolOutputs.set(key, toolState);
 
-                    if (event.partial) {
+                    if (event.payload.partial) {
                         toolState.sawPartial = true;
-                        toolState.buffer += event.output;
+                        toolState.buffer += event.payload.output;
                         flushToolOutput(toolState, false);
                         return;
                     }
 
                     if (!toolState.sawPartial) {
-                        toolState.buffer += event.output;
+                        toolState.buffer += event.payload.output;
                         flushToolOutput(toolState, true);
                     }
                     return;
                 }
 
                 if (event.type === 'tool.completed') {
-                    const key = getTerminalToolKey(event);
-                    const toolState = toolOutputs.get(key) ?? createTerminalToolOutputState(event.tool);
+                    const key = getTerminalToolKey(event.payload);
+                    const toolState = toolOutputs.get(key) ?? createTerminalToolOutputState(event.payload.tool);
                     flushToolOutput(toolState, true);
                     toolOutputs.delete(key);
-                    writeTerminalInlineNote(stdout, `[tool] ${event.tool} ${event.success ? 'done' : 'failed'}`);
+                    writeTerminalInlineNote(stdout, `[tool] ${event.payload.tool} ${event.payload.success ? 'done' : 'failed'}`);
                 }
+            };
+
+            const handleUsageEvent = (event: AgentRuntimeEvent): void => {
+                if (event.type !== 'usage') {
+                    return;
+                }
+
+                pendingUsageNote = formatTerminalUsageNote({
+                    model: event.payload.model,
+                    promptTokens: event.payload.promptTokens,
+                    completionTokens: event.payload.completionTokens,
+                    totalTokens: event.payload.totalTokens,
+                    ...(event.payload.cost !== undefined ? { cost: event.payload.cost } : {}),
+                });
             };
 
             const sendSettings = { ...settings };
@@ -268,13 +334,14 @@ export async function runTerminalScrollbackShell(
                 onEvent: (event) => {
                     handleAssistantEvent(event);
                     handleToolEvent(event);
+                    handleUsageEvent(event);
 
                     if (event.type === 'status.changed') {
-                        const note = formatTerminalStatusNote(event.status, announcedThinking);
+                        const note = formatTerminalStatusNote(event.payload.status, announcedThinking);
                         if (note) {
                             finishStreamingConversationBlock(stdout, assistantStream);
                             writeTerminalInlineNote(stdout, note);
-                            if (event.status === 'thinking') {
+                            if (event.payload.status === 'thinking') {
                                 announcedThinking = true;
                             }
                         }
@@ -283,7 +350,7 @@ export async function runTerminalScrollbackShell(
 
                     if (event.type === 'error') {
                         flushPendingOutput();
-                        assistantReply = `Error: ${event.message}`;
+                        assistantReply = `Error: ${event.payload.message}`;
                         writeConversationBlock(stdout, 'XQoder', assistantReply);
                         assistantDelivered = true;
                     }
@@ -298,10 +365,21 @@ export async function runTerminalScrollbackShell(
                 },
             });
 
-            activeSessionId = result.sessionId;
+            if (
+                (localCommand === 'status' || localCommand === 'permissions')
+                && !activeSessionId
+                && result.sessionId.startsWith('direct:')
+            ) {
+                // Direct commands should not create a synthetic active session in the shell.
+            } else {
+                activeSessionId = result.sessionId;
+            }
             flushPendingOutput();
             if (!assistantDelivered) {
                 writeConversationBlock(stdout, 'XQoder', assistantReply || '(No response)');
+            }
+            if (pendingUsageNote) {
+                writeTerminalInlineNote(stdout, pendingUsageNote);
             }
         };
 
@@ -330,6 +408,53 @@ export async function runTerminalScrollbackShell(
     } finally {
         rl.close();
     }
+}
+
+function renderRestoredConversationSignals(
+    stdout: NodeJS.WriteStream,
+    conversationSignals: ConversationTranscriptEntry[] | undefined,
+): void {
+    const recentSignals = (conversationSignals ?? [])
+        .slice(-4)
+        .map(formatResumeConversationSignal)
+        .filter((line): line is string => Boolean(line));
+
+    if (recentSignals.length === 0) {
+        return;
+    }
+
+    writeTerminalInlineNote(stdout, '[resume] Recent conversation signals:');
+    for (const line of recentSignals) {
+        writeTerminalInlineNote(stdout, line);
+    }
+    stdout.write('\n');
+}
+
+function formatResumeConversationSignal(
+    signal: ConversationTranscriptEntry,
+): string | undefined {
+    const content = truncateTerminalInlineText(
+        String(signal.content ?? '').replace(/\s+/g, ' ').trim(),
+        TERMINAL_INLINE_OUTPUT_MAX_LENGTH,
+    );
+    if (!content) {
+        return undefined;
+    }
+
+    if (signal.type === 'tool') {
+        return `[resume:tool${signal.toolName ? `:${signal.toolName}` : ''}] ${content}`;
+    }
+
+    if (signal.type === 'verification') {
+        const status = signal.blocked === true
+            ? 'verification:block'
+            : signal.ok === false
+                ? 'verification:fail'
+                : 'verification:ok';
+        return `[resume:${status}] ${content}`;
+    }
+
+    return `[resume:${signal.type}] ${content}`;
 }
 
 export async function runTerminalApp(

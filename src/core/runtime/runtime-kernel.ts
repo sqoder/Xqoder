@@ -1,5 +1,6 @@
 import type { PermissionPolicy, PermissionRequest } from '@xqoder/permissions';
-import type { AppEvent, CoreMessage, JsonValue } from '@xqoder/protocol';
+import { createConversationTurnId } from '@xqoder/protocol';
+import type { ConversationEventEnvelope, CoreMessage, JsonValue } from '@xqoder/protocol';
 import type {
   AgentProvider,
   AgentTask,
@@ -63,7 +64,11 @@ export class RuntimeKernel {
     };
   }
 
-  async *runModel(providerName: string, input: ModelInput, runtime: RuntimeDescriptor): AsyncIterable<AppEvent> {
+  async *runModel(
+    providerName: string,
+    input: ModelInput,
+    runtime: RuntimeDescriptor,
+  ): AsyncIterable<ConversationEventEnvelope> {
     const provider = this.models.get(providerName);
     if (!provider) {
       throw new Error(`Unknown model provider: ${providerName}`);
@@ -72,7 +77,11 @@ export class RuntimeKernel {
     yield* this.emitStream(provider.stream(input, this.attachRuntime(runtime)));
   }
 
-  async *runAgent(providerName: string, task: AgentTask, runtime: RuntimeDescriptor): AsyncIterable<AppEvent> {
+  async *runAgent(
+    providerName: string,
+    task: AgentTask,
+    runtime: RuntimeDescriptor,
+  ): AsyncIterable<ConversationEventEnvelope> {
     const provider = this.agents.get(providerName);
     if (!provider) {
       throw new Error(`Unknown agent provider: ${providerName}`);
@@ -136,8 +145,11 @@ export class RuntimeKernel {
   }
 
   private attachRuntime(runtime: RuntimeDescriptor): RuntimeDescriptor {
+    const turnId = runtime.turnId ?? createConversationTurnId(runtime.sessionId);
+
     return {
       ...runtime,
+      turnId,
       permissionPolicy: runtime.permissionPolicy ?? this.options.permissionPolicy,
       emit: async (event) => {
         await this.events.emit(event);
@@ -153,7 +165,9 @@ export class RuntimeKernel {
     }
   }
 
-  private async *emitStream(source: AsyncIterable<AppEvent>): AsyncIterable<AppEvent> {
+  private async *emitStream(
+    source: AsyncIterable<ConversationEventEnvelope>,
+  ): AsyncIterable<ConversationEventEnvelope> {
     for await (const event of source) {
       await this.events.emit(event);
       yield event;

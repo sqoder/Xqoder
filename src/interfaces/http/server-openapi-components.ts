@@ -237,6 +237,94 @@ export function createOpenApiComponents() {
                 },
                 required: ['config', 'appliedEnvVars'],
             },
+            SessionUsage: {
+                type: 'object',
+                properties: {
+                    promptTokens: { type: 'number' },
+                    completionTokens: { type: 'number' },
+                    totalTokens: { type: 'number' },
+                    cacheReadTokens: { type: 'number' },
+                    cacheCreationTokens: { type: 'number' },
+                    cost: { type: 'number' },
+                },
+                required: ['promptTokens', 'completionTokens', 'totalTokens'],
+            },
+            SessionTranscriptMessage: {
+                type: 'object',
+                properties: {
+                    role: { type: 'string', enum: ['system', 'user', 'assistant', 'tool'] },
+                    content: { type: 'string' },
+                    toolCallId: { type: 'string' },
+                },
+                required: ['role', 'content'],
+            },
+            ConversationSignal: {
+                type: 'object',
+                properties: {
+                    type: { type: 'string', enum: ['user', 'assistant', 'tool', 'verification'] },
+                    content: { type: 'string' },
+                    toolCallId: { type: 'string' },
+                    toolName: { type: 'string' },
+                    success: { type: 'boolean' },
+                    ok: { type: 'boolean' },
+                    blocked: { type: 'boolean' },
+                    summary: { type: 'string' },
+                },
+                required: ['type', 'content'],
+            },
+            StopReason: {
+                type: 'string',
+                enum: [
+                    'completed',
+                    'max_turns',
+                    'max_tool_calls',
+                    'max_wall_time',
+                    'duplicate_tool_call',
+                    'no_progress',
+                    'user_cancelled',
+                    'permission_denied',
+                    'verification_failed',
+                    'provider_error',
+                ],
+            },
+            ConversationEventEnvelope: {
+                type: 'object',
+                properties: {
+                    schemaVersion: { type: 'number', const: 1 },
+                    eventId: { type: 'string' },
+                    sessionId: { type: 'string' },
+                    turnId: { type: 'string' },
+                    timestamp: { type: 'string', format: 'date-time' },
+                    type: {
+                        type: 'string',
+                        enum: [
+                            'session.started',
+                            'session.resumed',
+                            'message.started',
+                            'message.delta',
+                            'message.completed',
+                            'tool.called',
+                            'tool.output',
+                            'tool.completed',
+                            'approval.requested',
+                            'approval.resolved',
+                            'question.requested',
+                            'question.resolved',
+                            'status.changed',
+                            'thought',
+                            'usage',
+                            'verification.completed',
+                            'error',
+                        ],
+                    },
+                    payload: {
+                        type: 'object',
+                        description: 'Stable event payload. Terminal status/error payloads may include stopReason and message.',
+                        additionalProperties: true,
+                    },
+                },
+                required: ['schemaVersion', 'eventId', 'sessionId', 'turnId', 'timestamp', 'type', 'payload'],
+            },
             SessionSummary: {
                 type: 'object',
                 properties: {
@@ -248,8 +336,28 @@ export function createOpenApiComponents() {
                     createdAt: { type: 'string', format: 'date-time' },
                     updatedAt: { type: 'string', format: 'date-time' },
                     messageCount: { type: 'number' },
+                    usage: { $ref: '#/components/schemas/SessionUsage' },
                 },
                 required: ['id', 'projectRoot', 'cwd', 'model', 'title', 'createdAt', 'updatedAt', 'messageCount'],
+            },
+            SessionDetailResponse: {
+                allOf: [
+                    { $ref: '#/components/schemas/SessionSummary' },
+                    {
+                        type: 'object',
+                        properties: {
+                            transcript: {
+                                type: 'array',
+                                items: { $ref: '#/components/schemas/SessionTranscriptMessage' },
+                            },
+                            conversationSignals: {
+                                type: 'array',
+                                items: { $ref: '#/components/schemas/ConversationSignal' },
+                            },
+                        },
+                        required: ['transcript', 'conversationSignals'],
+                    },
+                ],
             },
             SymbolMatch: {
                 type: 'object',
@@ -270,7 +378,7 @@ export function createOpenApiComponents() {
                     streamId: { type: 'string' },
                     seq: { type: 'number' },
                     cursor: { type: 'number' },
-                    event: { type: 'object' },
+                    event: { $ref: '#/components/schemas/ConversationEventEnvelope' },
                 },
                 required: ['type', 'streamId', 'seq', 'cursor', 'event'],
             },
@@ -370,10 +478,14 @@ export function createOpenApiComponents() {
                 properties: {
                     messages: {
                         type: 'array',
-                        items: { type: 'object' },
+                        items: { $ref: '#/components/schemas/SessionTranscriptMessage' },
+                    },
+                    conversationSignals: {
+                        type: 'array',
+                        items: { $ref: '#/components/schemas/ConversationSignal' },
                     },
                 },
-                required: ['messages'],
+                required: ['messages', 'conversationSignals'],
             },
             StreamCancelResponse: {
                 type: 'object',

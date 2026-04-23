@@ -6,11 +6,13 @@ import {
 } from '@xqoder/shared';
 import {
     XQoderAgent,
+    AgentSession,
     type AgentConfig,
 } from '@xqoder/agent';
 import { RuntimeKernel } from '@xqoder/core-runtime';
 import { createRuntimeSessionStoreAdapter, type AgentSessionStore } from '@xqoder/storage-sqlite';
 import type {
+    ConversationEventEnvelope,
     CoreMessage,
     MessageAttachment as ProtocolMessageAttachment,
 } from '@xqoder/protocol';
@@ -22,7 +24,6 @@ import {
 import type {
     AgentQuestionAnswer,
     AgentQuestionRequest,
-    AgentRuntimeEvent,
     SendMessageCallbacks,
 } from '../../application/agent/index.js';
 
@@ -103,7 +104,7 @@ export function createTuiAgentRuntime(
 }
 
 export interface TuiRuntimeEventRelay {
-    emit(event: AgentRuntimeEvent): void;
+    emit(event: ConversationEventEnvelope): void;
     getState(): { lastAssistantResponse: string; errorEmitted: boolean };
 }
 
@@ -111,7 +112,8 @@ export function createTuiRuntimeEventRelay(
     callbacks: SendMessageCallbacks,
     dependencies: {
         eventBus?: { emit(eventName: string, payload: unknown): void };
-    } = {},
+        session?: AgentSession;
+    },
 ): TuiRuntimeEventRelay {
     const eventBus = dependencies.eventBus ?? globalEventBus;
     let lastAssistantResponse = '';
@@ -123,14 +125,15 @@ export function createTuiRuntimeEventRelay(
                 errorEmitted = true;
             }
 
+            dependencies.session?.recordConversationEnvelopeEvent(event);
             callbacks.onEvent(event);
 
             if (event.type === 'tool.called') {
                 try {
                     eventBus.emit('tool:start', {
-                        toolName: event.tool,
-                        args: typeof event.args === 'object' && event.args && !Array.isArray(event.args)
-                            ? event.args as Record<string, unknown>
+                        toolName: event.payload.tool,
+                        args: typeof event.payload.args === 'object' && event.payload.args && !Array.isArray(event.payload.args)
+                            ? event.payload.args as Record<string, unknown>
                             : {},
                     });
                 } catch {
@@ -141,16 +144,16 @@ export function createTuiRuntimeEventRelay(
             if (event.type === 'tool.completed') {
                 try {
                     eventBus.emit('tool:end', {
-                        toolName: event.tool,
-                        success: event.success,
+                        toolName: event.payload.tool,
+                        success: event.payload.success,
                     });
                 } catch {
                     // ignore event bus failures
                 }
             }
 
-            if (event.type === 'message.completed' && event.message.role === 'assistant') {
-                lastAssistantResponse = event.message.content;
+            if (event.type === 'message.completed' && event.payload.message.role === 'assistant') {
+                lastAssistantResponse = event.payload.message.content;
             }
         },
         getState() {

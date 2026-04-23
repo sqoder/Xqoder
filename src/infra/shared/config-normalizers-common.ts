@@ -1,4 +1,5 @@
 import {
+    type ApprovalPolicy,
     type CommandTemplateSettings,
     type PermissionSettings,
 } from './types.js';
@@ -53,12 +54,47 @@ export function normalizeCommandTemplates(
 }
 
 export function normalizePermissionSettings(settings: PermissionSettings | undefined): PermissionSettings {
+    const defaultMode = settings?.defaultMode === 'allow' || settings?.defaultMode === 'ask' || settings?.defaultMode === 'deny'
+        ? settings.defaultMode
+        : 'ask';
+    const approvalPolicy = normalizeApprovalPolicy(settings?.approvalPolicy, defaultMode);
+    const allowedTools = normalizeToolNameList(settings?.allowedTools);
+    const disallowedTools = normalizeToolNameList(settings?.disallowedTools);
+
     return {
-        defaultMode: settings?.defaultMode ?? 'ask',
+        defaultMode,
         tools: Object.fromEntries(
             Object.entries(settings?.tools ?? {})
                 .map(([toolName, mode]) => [toolName.trim(), mode] as const)
                 .filter(([toolName, mode]) => toolName.length > 0 && (mode === 'allow' || mode === 'ask' || mode === 'deny')),
         ),
+        approvalPolicy,
+        ...(allowedTools.length > 0 ? { allowedTools } : {}),
+        ...(disallowedTools.length > 0 ? { disallowedTools } : {}),
     };
+}
+
+function normalizeApprovalPolicy(
+    value: ApprovalPolicy | undefined,
+    defaultMode: PermissionSettings['defaultMode'],
+): Extract<ApprovalPolicy, 'strict' | 'balanced' | 'workspace_auto'> {
+    if (value === 'strict' || value === 'balanced' || value === 'workspace_auto') {
+        return value;
+    }
+
+    if (defaultMode === 'allow') {
+        return 'workspace_auto';
+    }
+
+    if (defaultMode === 'deny' || defaultMode === 'ask') {
+        return 'strict';
+    }
+
+    return 'balanced';
+}
+
+function normalizeToolNameList(values: string[] | undefined): string[] {
+    return (values ?? [])
+        .map((value) => value.trim())
+        .filter(Boolean);
 }

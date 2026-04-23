@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import {
+    createConversationEventEnvelopeEmitter,
+} from '@xqoder/protocol';
 import type { AgentRuntimeEvent, TuiAgentSettings } from '../../../src/application/agent/index.js';
 import { RemoteTuiAgentService } from '../../../src/infrastructure/agent/remote-tui-agent-service.js';
 
@@ -18,6 +21,33 @@ afterEach(() => {
 });
 
 describe('RemoteTuiAgentService', () => {
+    it('returns remote session messages together with conversation signals for inspect flows', async () => {
+        setGlobalFetch(async () => createJsonResponse({
+            messages: [
+                { role: 'user', content: 'inspect remotely' },
+                { role: 'assistant', content: 'remote transcript ready' },
+            ],
+            conversationSignals: [
+                { type: 'user', content: 'inspect remotely' },
+                { type: 'assistant', content: 'remote transcript ready' },
+            ],
+        }));
+
+        const service = new RemoteTuiAgentService('http://example.test');
+        const result = await service.getSessionMessages('session-1');
+
+        expect(result).toEqual({
+            messages: [
+                { role: 'user', content: 'inspect remotely' },
+                { role: 'assistant', content: 'remote transcript ready' },
+            ],
+            conversationSignals: [
+                { type: 'user', content: 'inspect remotely' },
+                { type: 'assistant', content: 'remote transcript ready' },
+            ],
+        });
+    });
+
     it('emits synthetic user events before forwarding remote stream events', async () => {
         const calls: FetchCall[] = [];
         setGlobalFetch(async (input, init) => {
@@ -71,6 +101,7 @@ describe('RemoteTuiAgentService', () => {
         setGlobalFetch(async (input, init) => {
             const call = toFetchCall(input, init);
             calls.push(call);
+            const eventEmitter = createConversationEventEnvelopeEmitter('session-1', 'session-1:turn:remote-question');
 
             if (call.url.endsWith('/resolve')) {
                 return createJsonResponse({ ok: true });
@@ -82,15 +113,12 @@ describe('RemoteTuiAgentService', () => {
                     streamId: 'stream-9',
                     seq: 1,
                     cursor: 1,
-                    event: {
-                        type: 'question.requested',
-                        sessionId: 'session-1',
-                        timestamp: 1,
+                    event: eventEmitter.emitRecord('question.requested', {
                         source: 'agent',
                         requestId: 'question-1',
                         question: 'Continue?',
                         options: [{ label: 'Allow' }, { label: 'Deny' }],
-                    },
+                    }),
                 },
                 {
                     type: 'done',
@@ -189,6 +217,100 @@ describe('RemoteTuiAgentService', () => {
         expect(cancelCall?.init?.method).toBe('POST');
         expect(JSON.parse(String(cancelCall?.init?.body))).toEqual({});
     });
+
+    it('forwards remote usage events without dropping token statistics', async () => {
+        const eventEmitter = createConversationEventEnvelopeEmitter('session-1', 'session-1:turn:remote-usage');
+        setGlobalFetch(async () => createNdjsonResponse([
+            {
+                type: 'event',
+                streamId: 'stream-usage',
+                seq: 1,
+                cursor: 1,
+                event: eventEmitter.emitRecord('usage', {
+                    source: 'agent',
+                    model: 'gpt-4.1',
+                    promptTokens: 21,
+                    completionTokens: 4,
+                    totalTokens: 25,
+                    cost: 0.45,
+                }),
+            },
+            {
+                type: 'done',
+                streamId: 'stream-usage',
+                seq: 2,
+                cursor: 2,
+                sessionId: 'session-1',
+                response: 'done',
+            },
+        ]));
+
+        const service = new RemoteTuiAgentService('http://example.test');
+        const events: AgentRuntimeEvent[] = [];
+
+        const result = await service.sendMessage('hello', 'session-1', settings, [], {
+            onEvent: (event) => {
+                events.push(event);
+            },
+        });
+
+        expect(result).toEqual({ sessionId: 'session-1' });
+        expect(events.find((event) => event.type === 'usage')).toMatchObject({
+            type: 'usage',
+            payload: {
+                model: 'gpt-4.1',
+                promptTokens: 21,
+                completionTokens: 4,
+                totalTokens: 25,
+                cost: 0.45,
+            },
+        });
+    });
+
+    it('forwards remote verification envelopes without relying on extra conversation-event metadata', async () => {
+        const eventEmitter = createConversationEventEnvelopeEmitter('session-1', 'session-1:turn:remote-verification');
+        setGlobalFetch(async () => createNdjsonResponse([
+            {
+                type: 'event',
+                streamId: 'stream-conversation-event',
+                seq: 1,
+                cursor: 1,
+                event: eventEmitter.emitRecord('verification.completed', {
+                    source: 'agent',
+                    ok: true,
+                    blocked: false,
+                    summary: 'Verification passed remotely',
+                }),
+            },
+            {
+                type: 'done',
+                streamId: 'stream-conversation-event',
+                seq: 2,
+                cursor: 2,
+                sessionId: 'session-1',
+                response: 'done',
+            },
+        ]));
+
+        const service = new RemoteTuiAgentService('http://example.test');
+        const events: AgentRuntimeEvent[] = [];
+
+        const result = await service.sendMessage('hello', 'session-1', settings, [], {
+            onEvent: (event) => {
+                events.push(event);
+            },
+        });
+
+        expect(result).toEqual({ sessionId: 'session-1' });
+        expect(events.find((event) => event.type === 'verification.completed')).toMatchObject({
+            type: 'verification.completed',
+            payload: {
+                ok: true,
+                blocked: false,
+                summary: 'Verification passed remotely',
+            },
+        });
+    });
 });
 
 type FetchCall = {
@@ -219,13 +341,10 @@ function toFetchCall(input: RequestInfo | URL, init?: RequestInit): FetchCall {
 }
 
 function createStatusChangedEvent(sessionId: string, status: 'thinking' | 'done'): AgentRuntimeEvent {
-    return {
-        type: 'status.changed',
-        sessionId,
-        timestamp: Date.now(),
+    return createConversationEventEnvelopeEmitter(sessionId, `${sessionId}:turn:test`).emitRecord('status.changed', {
         source: 'agent',
         status,
-    };
+    });
 }
 
 function createJsonResponse(value: unknown): Response {

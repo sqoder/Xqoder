@@ -26,6 +26,7 @@ import {
     type BuildProjectFlowRuntime,
 } from '@xqoder/workflow';
 import { MISSING_API_KEY_GUIDANCE } from '../application/config/api-key-guidance.js';
+import { llmProviderRequiresApiKey } from '../application/config/api-key-guidance.js';
 import { createCliToolApprovalHandler, createCliToolStreamHandler } from '../ux/tool-approval.js';
 
 interface BuildCommandOptions {
@@ -83,9 +84,14 @@ export async function runBuildCommand(
         projectRoot: resolvedDir,
         modelOverride: options.model,
         promptAppendix: BUILD_SYSTEM_PROMPT,
+        runtimeProfile: 'mvp',
     });
 
-    if (!dependencies.agentFactory && !agentConfig.llmConfig.apiKey.trim()) {
+    if (
+        !dependencies.agentFactory
+        && llmProviderRequiresApiKey(agentConfig.llmConfig.provider)
+        && !agentConfig.llmConfig.apiKey.trim()
+    ) {
         throw new Error(MISSING_API_KEY_GUIDANCE);
     }
 

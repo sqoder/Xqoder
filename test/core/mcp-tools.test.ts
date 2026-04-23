@@ -118,6 +118,44 @@ describe('mcp tool adapters', () => {
             uri: 'file://README.md',
         });
     });
+
+    it('exposes trust-aware security metadata and approval risk for MCP tools', () => {
+        const client = createClient();
+        const remoteTool = new McpRemoteTool(
+            'deploy_preview',
+            'deployer',
+            {
+                name: 'deploy.preview',
+                description: 'Deploy preview',
+                inputSchema: { type: 'object' },
+            },
+            client,
+            'untrusted',
+        );
+        const resourceTool = new McpListResourcesTool('repo', 'resources_list', client, 'trusted');
+
+        expect(remoteTool.getSecurityPolicyContext?.()).toMatchObject({
+            source: 'mcp',
+            serverName: 'deployer',
+            trust: 'untrusted',
+            operation: 'tool_call',
+        });
+        expect(remoteTool.buildApprovalRequest({ branch: 'main' }, {} as never)).toMatchObject({
+            risk: 'high',
+        });
+        expect(remoteTool.buildApprovalRequest({ branch: 'main' }, {} as never).reason).toContain('untrusted MCP server');
+
+        expect(resourceTool.getSecurityPolicyContext?.()).toMatchObject({
+            source: 'mcp',
+            serverName: 'repo',
+            trust: 'trusted',
+            operation: 'list_resources',
+        });
+        expect(resourceTool.buildApprovalRequest({}, {} as never)).toMatchObject({
+            risk: 'low',
+        });
+        expect(resourceTool.buildApprovalRequest({}, {} as never).reason).toContain('trusted MCP server');
+    });
 });
 
 function createClient(overrides: Partial<McpClientAdapter> = {}): McpClientAdapter {

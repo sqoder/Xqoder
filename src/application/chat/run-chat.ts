@@ -1,41 +1,51 @@
-import * as path from 'node:path';
 import {
-    ConfigManager,
     configManager,
-    resolveDefaultAgentName,
-    resolveConfigWithEnvOverrides,
+    type ConfigManager,
     formatOutput,
     createSpinner,
     type MessageAttachment,
     type OutputFormat,
+    type PermissionSettings,
 } from '@xqoder/shared';
 import {
-    resolveRuntimeDecision,
-} from '@xqoder/core-runtime';
-import {
-    AgentSession,
     XQoderAgent,
-    buildAgentConfigFromXQoderConfig,
     type AgentCallbacks,
 } from '@xqoder/agent';
+import {
+    createConversationEventEnvelopeEmitter,
+} from '@xqoder/protocol';
+import type {
+    AppEvent,
+    ConversationEventEnvelope,
+    JsonValue,
+} from '@xqoder/protocol';
+import type { QuestionAnswer, QuestionPrompt } from '@xqoder/plugin-sdk';
 import { MISSING_API_KEY_GUIDANCE } from '../config/api-key-guidance.js';
 import { llmProviderRequiresApiKey } from '../config/api-key-guidance.js';
 import type {
     ChatAgentFactoryConfig,
     ChatAgentInstance,
-    ChatSessionStore,
 } from './ports.js';
-import {
-    buildChatPromptAppendixFromRoute,
-    maybeAugmentPromptWithProjectContextFromRoute,
-    resolveChatRuntimeIdentity,
-} from './prompt-composer.js';
-import { resolveChatInteraction } from './interaction-router.js';
+import { ConversationEngineStopError } from './turn-stop.js';
 import { buildLocalFallbackGuidance, type LocalFallbackInput } from '../../shared/local-fallback.js';
+import type { ConversationStopReason } from '../../domain/conversation/stop-reason.js';
 import {
-    buildInstructionAppendix,
-    resolveInstructionSet,
-} from '../instructions/index.js';
+    buildConversationTurnInput,
+    normalizeWorkflowGoal,
+    prepareChatExecution,
+    type PreparedChatExecution,
+    type ChatTurnIntakeDependencies,
+    type ConversationTurnEntrypoint,
+} from './turn-intake.js';
+import {
+    resolveDirectChatCommandResponse,
+} from './direct-command.js';
+import {
+    createCoreMessage,
+    createEnvelopeCallbackBridge,
+    emitDirectChatMessageStream,
+    getSessionMessageCount,
+} from './run-chat-events.js';
 export {
     buildAutoProjectContext,
     buildChatPromptAppendix,
@@ -55,12 +65,10 @@ export interface ChatRunOptions {
     newSession?: boolean;
     format?: OutputFormat;
     attachments?: MessageAttachment[];
+    title?: string;
 }
 
-export interface ChatServiceDependencies {
-    configManager?: Pick<ConfigManager, 'load'>;
-    sessionStore?: ChatSessionStore;
-    createSessionStore?: () => ChatSessionStore | undefined;
+export interface ChatServiceDependencies extends ChatTurnIntakeDependencies {
     agentFactory?: (config: ChatAgentFactoryConfig) => ChatAgentInstance;
     localFallbackAdvisor?: (input: LocalFallbackInput) => Promise<string | undefined>;
 }
@@ -76,116 +84,62 @@ export interface NonInteractivePromptOptions {
     continue?: boolean;
     forkSession?: boolean;
     permissionMode?: string;
+    approvalPolicy?: string;
     effort?: string;
     maxTurns?: number;
     noSessionPersistence?: boolean;
+    allowedTools?: string[];
+    disallowedTools?: string[];
 }
 
-function resolveChatSession(
-    sessionStore: Pick<ChatSessionStore, 'findLatestSession' | 'getSession'> | undefined,
-    options: {
-        projectRoot: string;
-        sessionId?: string;
-        newSession: boolean;
-    },
-): AgentSession | undefined {
-    if (!sessionStore || options.newSession) {
-        return undefined;
-    }
-    if (options.sessionId) {
-        const explicitSession = sessionStore.getSession(options.sessionId);
-        if (!explicitSession) {
-            throw new Error(`Specified session not found: ${options.sessionId}`);
-        }
-        return explicitSession;
-    }
-    return sessionStore.findLatestSession(options.projectRoot) ?? undefined;
+export interface ChatMessageStreamOptions {
+    prompt: string;
+    cwd: string;
+    entrypoint?: ConversationTurnEntrypoint;
+    sessionId?: string;
+    startNewSession?: boolean;
+    shouldPersistSession?: boolean;
+    sessionTitle?: string;
+    autoApproveTools?: boolean;
+    model?: string;
+    agent?: string;
+    attachments?: MessageAttachment[];
+    onEvent: (event: ConversationEventEnvelope) => void;
+    requestQuestion?: (prompt: QuestionPrompt) => Promise<QuestionAnswer>;
+    requestToolApproval?: AgentCallbacks['onToolApproval'];
+    signal?: AbortSignal;
 }
+
+/**
+ * Chat use cases sit on top of turn intake:
+ * - raw entrypoint normalization lives in ./turn-intake.ts
+ * - CLI, headless, and HTTP streaming share the same event-oriented turn helper
+ */
 
 export async function runChatHeadless(
     prompt: string,
     options: ChatRunOptions,
     dependencies: ChatServiceDependencies = {},
 ): Promise<{ response: string; sessionId: string }> {
-    const resolvedDir = path.resolve(options.dir);
-    const interaction = resolveChatInteraction(prompt);
-    const runtimeDecision = resolveRuntimeDecision(interaction);
-    const preparedPrompt = runtimeDecision.shouldAugmentProjectContext
-        ? maybeAugmentPromptWithProjectContextFromRoute(prompt, resolvedDir, interaction)
-        : prompt;
-    const loadedConfig = dependencies.configManager?.load({ cwd: resolvedDir }) ?? configManager.load({ cwd: resolvedDir });
-    const { config: effectiveConfig } = resolveConfigWithEnvOverrides(loadedConfig);
-
-    const sandbox = effectiveConfig.sandbox ?? { mode: 'project', allowedPaths: [] };
-    const sessionStore = dependencies.sessionStore ?? dependencies.createSessionStore?.();
-    if (!sessionStore) {
-        throw new Error('Session storage unavailable');
-    }
-
-    const session = resolveChatSession(sessionStore, {
-        projectRoot: resolvedDir,
+    const turnInput = buildConversationTurnInput({
+        prompt,
+        cwd: options.dir,
+        attachments: options.attachments,
+        outputFormat: options.format,
+        model: options.model,
+        agent: options.agent,
         sessionId: options.session,
-        newSession: options.newSession ?? false,
+        startNewSession: options.newSession ?? false,
+        sessionTitle: options.title,
+        requireSessionStore: true,
+        entrypoint: 'headless',
     });
-    const instructionAppendix = buildResolvedInstructionAppendix(
-        effectiveConfig,
-        resolvedDir,
-        options.agent,
-    );
-    const agentConfig = buildAgentConfigFromXQoderConfig(effectiveConfig, {
-        agentName: options.agent,
-        cwd: resolvedDir,
-        projectRoot: resolvedDir,
-        modelOverride: options.model,
-        promptAppendix: joinPromptAppendices(
-            buildChatPromptAppendixFromRoute(
-                interaction,
-                sandbox,
-                resolvedDir,
-                resolveChatRuntimeIdentity(effectiveConfig, options.agent, options.model),
-            ),
-            instructionAppendix,
-        ),
-        session,
-        runtimeProfile: runtimeDecision.runtimeProfile,
+    const execution = prepareChatExecution(turnInput, dependencies);
+    return await runPreparedChatTurn(execution, dependencies, {
+        callbacks: {
+            onToken: () => {},
+        },
     });
-
-    if (llmProviderRequiresApiKey(agentConfig.llmConfig.provider) && !agentConfig.llmConfig.apiKey.trim()) {
-        throw new Error(MISSING_API_KEY_GUIDANCE);
-    }
-
-    const factoryConfig = {
-        ...agentConfig,
-        cwd: resolvedDir,
-        projectRoot: resolvedDir,
-        systemPrompt: agentConfig.systemPrompt ?? '',
-        sandboxMode: agentConfig.sandboxMode ?? sandbox.mode,
-        allowedPaths: agentConfig.allowedPaths ?? sandbox.allowedPaths,
-        shell: agentConfig.shell,
-    };
-    const agent = dependencies.agentFactory?.(factoryConfig) ?? new XQoderAgent(agentConfig);
-
-    let fullResponse = '';
-    try {
-        let finalResponse: string;
-        try {
-            finalResponse = await agent.run(preparedPrompt, {
-                onToken: (token: string) => { fullResponse += token; },
-            }, options.attachments ?? []);
-        } catch (error) {
-            throw await enrichProviderFailure(error, agentConfig.llmConfig, options.agent, dependencies);
-        }
-        fullResponse = resolveAgentTextOutput(fullResponse, finalResponse);
-        const summary = sessionStore.saveSession({
-            session: agent.getSession(),
-            projectRoot: resolvedDir,
-            cwd: resolvedDir,
-            model: agentConfig.llmConfig.model,
-        });
-        return { response: fullResponse, sessionId: summary.id };
-    } finally {
-        await agent.dispose?.();
-    }
 }
 
 export async function runChat(
@@ -193,100 +147,45 @@ export async function runChat(
     options: ChatRunOptions,
     dependencies: ChatServiceDependencies = {},
     callbacksFactory: () => AgentCallbacks,
-): Promise<void> {
-    const resolvedDir = path.resolve(options.dir);
-    const interaction = resolveChatInteraction(prompt);
-    const runtimeDecision = resolveRuntimeDecision(interaction);
-    const preparedPrompt = runtimeDecision.shouldAugmentProjectContext
-        ? maybeAugmentPromptWithProjectContextFromRoute(prompt, resolvedDir, interaction)
-        : prompt;
-    const loadedConfig = dependencies.configManager?.load({ cwd: resolvedDir }) ?? configManager.load({ cwd: resolvedDir });
-    const { config: effectiveConfig } = resolveConfigWithEnvOverrides(loadedConfig);
-
-    const sandbox = effectiveConfig.sandbox ?? {
-        mode: 'project',
-        allowedPaths: [],
-    };
-    const sessionStore = dependencies.sessionStore ?? dependencies.createSessionStore?.();
-    const session = resolveChatSession(sessionStore, {
-        projectRoot: resolvedDir,
+): Promise<{ response: string; sessionId: string }> {
+    const turnInput = buildConversationTurnInput({
+        prompt,
+        cwd: options.dir,
+        attachments: options.attachments,
+        outputFormat: options.format,
+        model: options.model,
+        agent: options.agent,
         sessionId: options.session,
-        newSession: options.newSession ?? false,
+        startNewSession: options.newSession ?? false,
+        sessionTitle: options.title,
+        entrypoint: 'cli',
     });
-    const instructionAppendix = buildResolvedInstructionAppendix(
-        effectiveConfig,
-        resolvedDir,
-        options.agent,
-    );
-    const agentConfig = buildAgentConfigFromXQoderConfig(effectiveConfig, {
-        agentName: options.agent,
-        cwd: resolvedDir,
-        projectRoot: resolvedDir,
-        modelOverride: options.model,
-        promptAppendix: joinPromptAppendices(
-            buildChatPromptAppendixFromRoute(
-                interaction,
-                sandbox,
-                resolvedDir,
-                resolveChatRuntimeIdentity(effectiveConfig, options.agent, options.model),
-            ),
-            instructionAppendix,
-        ),
-        session,
-        runtimeProfile: runtimeDecision.runtimeProfile,
-    });
-
-    if (
-        !dependencies.agentFactory
-        && llmProviderRequiresApiKey(agentConfig.llmConfig.provider)
-        && !agentConfig.llmConfig.apiKey.trim()
-    ) {
-        throw new Error(MISSING_API_KEY_GUIDANCE);
-    }
-
-    const factoryConfig = {
-        ...agentConfig,
-        cwd: resolvedDir,
-        projectRoot: resolvedDir,
-        systemPrompt: agentConfig.systemPrompt ?? '',
-        sandboxMode: agentConfig.sandboxMode ?? sandbox.mode,
-        allowedPaths: agentConfig.allowedPaths ?? sandbox.allowedPaths,
-        shell: agentConfig.shell,
-    };
-    const agent = dependencies.agentFactory?.(factoryConfig) ?? new XQoderAgent(agentConfig);
-
-    const outputFormat: OutputFormat = options.format ?? 'text';
+    const execution = prepareChatExecution(turnInput, dependencies);
+    const outputFormat = execution.turnInput.outputFormat;
     const isJson = outputFormat === 'json';
-
+    const directResponse = await resolveDirectChatCommandResponse(execution, dependencies);
     const spinner = isJson ? createSpinner('Thinking...') : null;
     try {
-        let fullResponse = '';
+        const baseCallbacks = callbacksFactory();
         const callbacks = isJson
-            ? { ...callbacksFactory(), onToken: (token: string) => { fullResponse += token; } }
-            : callbacksFactory();
-
-        let finalResponse: string;
-        try {
-            finalResponse = await agent.run(preparedPrompt, callbacks, options.attachments ?? []);
-        } catch (error) {
-            throw await enrichProviderFailure(error, agentConfig.llmConfig, options.agent, dependencies);
-        }
-        fullResponse = resolveAgentTextOutput(fullResponse, finalResponse);
-        sessionStore?.saveSession({
-            session: agent.getSession(),
-            projectRoot: resolvedDir,
-            cwd: resolvedDir,
-            model: agentConfig.llmConfig.model,
+            ? { ...baseCallbacks, onToken: () => {} }
+            : baseCallbacks;
+        const envelopeBridge = createEnvelopeCallbackBridge(callbacks);
+        const result = await runPreparedChatTurn(execution, dependencies, {
+            callbacks,
+            onEvent: envelopeBridge.onEvent,
         });
 
         spinner?.stop();
         if (isJson) {
-            process.stdout.write(formatOutput(fullResponse, { format: 'json' }));
+            process.stdout.write(formatOutput(result.response, { format: 'json' }));
+        } else if (directResponse !== undefined) {
+            process.stdout.write(result.response);
         }
         process.stdout.write('\n');
+        return result;
     } finally {
         spinner?.stop();
-        await agent.dispose?.();
     }
 }
 
@@ -294,117 +193,90 @@ export async function runNonInteractivePrompt(
     options: NonInteractivePromptOptions,
     dependencies: ChatServiceDependencies = {},
 ): Promise<void> {
-    const resolvedDir = path.resolve(options.cwd);
-    const interaction = resolveChatInteraction(options.prompt);
-    const runtimeDecision = resolveRuntimeDecision(interaction);
-    const preparedPrompt = runtimeDecision.shouldAugmentProjectContext
-        ? maybeAugmentPromptWithProjectContextFromRoute(options.prompt, resolvedDir, interaction)
-        : options.prompt;
-    const loadedConfig = dependencies.configManager?.load({ cwd: resolvedDir }) ?? configManager.load({ cwd: resolvedDir });
-    const { config: effectiveConfig } = resolveConfigWithEnvOverrides(loadedConfig);
-
-    const sandbox = effectiveConfig.sandbox ?? {
-        mode: 'project',
-        allowedPaths: [],
-    };
-    const sessionStore = dependencies.sessionStore ?? dependencies.createSessionStore?.();
-    const session = resolveChatSession(sessionStore, {
-        projectRoot: resolvedDir,
-        sessionId: options.resume,
-        newSession: options.forkSession || (!options.resume && !options.continue),
-    });
-
-    const instructionAppendix = buildResolvedInstructionAppendix(
-        effectiveConfig,
-        resolvedDir,
-        options.agent,
-    );
-    const agentConfig = buildAgentConfigFromXQoderConfig(effectiveConfig, {
-        agentName: options.agent,
-        cwd: resolvedDir,
-        projectRoot: resolvedDir,
-        modelOverride: options.model,
-        promptAppendix: joinPromptAppendices(
-            buildChatPromptAppendixFromRoute(
-                interaction,
-                sandbox,
-                resolvedDir,
-                resolveChatRuntimeIdentity(effectiveConfig, options.agent, options.model),
-            ),
-            instructionAppendix,
-        ),
-        session,
-        sessionTitle: buildNonInteractiveTitle(options.prompt),
-        autoApproveTools: options.permissionMode === undefined
-            || options.permissionMode === 'allow'
-            || options.permissionMode === 'auto',
-        runtimeProfile: runtimeDecision.runtimeProfile,
-    });
-
-    const agent = dependencies.agentFactory?.({
-        ...agentConfig,
-        cwd: resolvedDir,
-        projectRoot: resolvedDir,
-        systemPrompt: agentConfig.systemPrompt ?? '',
-        sandboxMode: agentConfig.sandboxMode ?? sandbox.mode,
-        allowedPaths: agentConfig.allowedPaths ?? sandbox.allowedPaths,
-        shell: agentConfig.shell,
-        autoApproveTools: agentConfig.autoApproveTools,
-    }) ?? new XQoderAgent(agentConfig);
-
     const isStreamJson = options.outputFormat === 'stream-json';
+    const scopedDependencies = withPromptPermissionOverrides(options, dependencies);
     const spinner = !options.quiet && options.outputFormat === 'text'
         ? createSpinner('Thinking...')
         : null;
 
-    if (isStreamJson) {
-        process.stdout.write(JSON.stringify({ type: 'session_start', sessionId: agent.getSession().id }) + '\n');
-    }
-
     try {
-        let fullResponse = '';
-        let finalResponse: string;
-        try {
-            finalResponse = await agent.run(preparedPrompt, {
-                onToken: (token: string) => {
-                    fullResponse += token;
-                    if (isStreamJson) {
-                        process.stdout.write(JSON.stringify({ type: 'assistant_delta', text: token }) + '\n');
-                    }
-                },
-                onEvent: (event) => {
-                    if (isStreamJson) {
-                        process.stdout.write(JSON.stringify({ type: 'agent_event', event }) + '\n');
-                    }
-                }
-            });
-        } catch (error) {
-            throw await enrichProviderFailure(error, agentConfig.llmConfig, options.agent, dependencies);
-        }
-        fullResponse = resolveAgentTextOutput(fullResponse, finalResponse);
-
-        if (!options.noSessionPersistence) {
-            sessionStore?.saveSession({
-                session: agent.getSession(),
-                projectRoot: resolvedDir,
-                cwd: resolvedDir,
-                model: agentConfig.llmConfig.model,
-            });
-        }
-
-        spinner?.stop();
         if (isStreamJson) {
-            process.stdout.write(JSON.stringify({ type: 'final_result', response: fullResponse }) + '\n');
+            const result = await runChatMessageStream({
+                prompt: options.prompt,
+                cwd: options.cwd,
+                model: options.model,
+                agent: options.agent,
+                sessionId: options.resume,
+                startNewSession: options.forkSession || (!options.resume && !options.continue),
+                shouldPersistSession: !options.noSessionPersistence,
+                sessionTitle: buildNonInteractiveTitle(options.prompt),
+                autoApproveTools: false,
+                entrypoint: 'cli',
+                onEvent: (event) => {
+                    process.stdout.write(JSON.stringify({ type: 'event', event }) + '\n');
+                },
+            }, scopedDependencies);
+            spinner?.stop();
+            process.stdout.write(JSON.stringify({
+                type: 'done',
+                response: result.response,
+                sessionId: result.sessionId,
+            }) + '\n');
         } else {
-            process.stdout.write(formatOutput(fullResponse, { format: options.outputFormat }));
+            const turnInput = buildConversationTurnInput({
+                prompt: options.prompt,
+                cwd: options.cwd,
+                outputFormat: options.outputFormat,
+                model: options.model,
+                agent: options.agent,
+                sessionId: options.resume,
+                startNewSession: options.forkSession || (!options.resume && !options.continue),
+                shouldPersistSession: !options.noSessionPersistence,
+                sessionTitle: buildNonInteractiveTitle(options.prompt),
+                autoApproveTools: false,
+                entrypoint: 'cli',
+            });
+            const execution = prepareChatExecution(turnInput, scopedDependencies);
+            const result = await runPreparedChatTurn(execution, scopedDependencies, {
+                callbacks: {
+                    onToken: () => {},
+                },
+            });
+            spinner?.stop();
+            process.stdout.write(formatOutput(result.response, { format: execution.turnInput.outputFormat }));
             process.stdout.write('\n');
         }
     } finally {
         spinner?.stop();
-        await agent.dispose?.();
     }
 }
 
+export async function runChatMessageStream(
+    options: ChatMessageStreamOptions,
+    dependencies: ChatServiceDependencies = {},
+): Promise<{ response: string; sessionId: string }> {
+    const turnInput = buildConversationTurnInput({
+        prompt: options.prompt,
+        cwd: options.cwd,
+        attachments: options.attachments,
+        model: options.model,
+        agent: options.agent,
+        sessionId: options.sessionId,
+        startNewSession: options.startNewSession ?? false,
+        shouldPersistSession: options.shouldPersistSession ?? true,
+        requireSessionStore: options.shouldPersistSession ?? true,
+        sessionTitle: options.sessionTitle,
+        autoApproveTools: options.autoApproveTools,
+        entrypoint: options.entrypoint ?? 'headless',
+    });
+    const execution = prepareChatExecution(turnInput, dependencies);
+    return await runPreparedChatMessageStream(execution, dependencies, {
+        onEvent: options.onEvent,
+        requestQuestion: options.requestQuestion,
+        requestToolApproval: options.requestToolApproval,
+        signal: options.signal,
+    });
+}
 
 async function enrichProviderFailure(
     error: unknown,
@@ -418,9 +290,7 @@ async function enrichProviderFailure(
     if (!guidance) {
         return normalized;
     }
-    return new Error(`${normalized.message}
-
-${guidance}`);
+    return new Error(`${normalized.message}\n\n${guidance}`);
 }
 
 function buildNonInteractiveTitle(prompt: string): string {
@@ -436,19 +306,668 @@ function resolveAgentTextOutput(streamedResponse: string, finalResponse: string)
     return streamedResponse.length > 0 ? streamedResponse : finalResponse;
 }
 
-function joinPromptAppendices(...appendices: Array<string | undefined>): string {
-    return appendices.filter((entry): entry is string => Boolean(entry?.trim())).join('\n\n');
+function resolveTerminalStopReason(
+    error: unknown,
+    observedStopReason: ConversationStopReason | undefined,
+): ConversationStopReason | undefined {
+    if (error instanceof ConversationEngineStopError) {
+        return error.stopReason;
+    }
+
+    return observedStopReason;
 }
 
-function buildResolvedInstructionAppendix(
-    effectiveConfig: ReturnType<typeof resolveConfigWithEnvOverrides>['config'],
-    cwd: string,
-    agentName: string | undefined,
-): string | undefined {
-    const resolvedAgentName = agentName?.trim() || resolveDefaultAgentName(effectiveConfig);
-    return buildInstructionAppendix(resolveInstructionSet({
-        cwd,
-        projectConfigInstructions: effectiveConfig.agents?.[resolvedAgentName]?.instructions,
-        userConfigInstructions: effectiveConfig.instructions,
-    }));
+function persistChatSession(
+    execution: PreparedChatExecution,
+    agent: ChatAgentInstance,
+): string {
+    if (!execution.turnInput.shouldPersistSession) {
+        return agent.getSession().id;
+    }
+
+    const summary = execution.sessionStore?.saveSession({
+        session: agent.getSession(),
+        projectRoot: execution.turnInput.resolvedDir,
+        cwd: execution.turnInput.resolvedDir,
+        model: execution.agentConfig.llmConfig.model,
+    });
+    return summary?.id ?? agent.getSession().id;
+}
+
+function recordCompletedWorkflowState(
+    execution: PreparedChatExecution,
+    session: ReturnType<ChatAgentInstance['getSession']>,
+    sourceTurnId?: string,
+): void {
+    const route = execution.turnInput.runtime.commandRoute;
+    if (route.kind !== 'workflow' || route.mode !== 'plan') {
+        return;
+    }
+    if (typeof (session as { recordWorkflowState?: unknown }).recordWorkflowState !== 'function') {
+        return;
+    }
+
+    session.recordWorkflowState({
+        kind: 'plan',
+        rawGoal: route.input,
+        normalizedGoal: normalizeWorkflowGoal(route.input),
+        completedAt: new Date(),
+        sourceTurnId: sourceTurnId ?? `${session.id}:turn:${Date.now()}`,
+    });
+}
+
+function assertProviderReady(
+    execution: PreparedChatExecution,
+    dependencies: ChatServiceDependencies,
+): void {
+    if (dependencies.agentFactory) {
+        return;
+    }
+
+    const { provider, apiKey } = execution.agentConfig.llmConfig;
+    if (llmProviderRequiresApiKey(provider) && !apiKey.trim()) {
+        throw new Error(MISSING_API_KEY_GUIDANCE);
+    }
+}
+
+async function runPreparedChatTurn(
+    execution: PreparedChatExecution,
+    dependencies: ChatServiceDependencies,
+    options: {
+        callbacks: AgentCallbacks;
+        onEvent?: (event: ConversationEventEnvelope) => void;
+    },
+): Promise<{ response: string; sessionId: string }> {
+    return await runPreparedChatMessageStream(execution, dependencies, {
+        onEvent: options.onEvent ?? (() => {}),
+        requestQuestion: options.callbacks.onQuestion
+            ? async (prompt) => await Promise.resolve(options.callbacks.onQuestion?.(prompt) ?? {
+                requestId: prompt.requestId,
+                selected: prompt.options.length > 0 ? [prompt.options[0]!.label] : [],
+            })
+            : undefined,
+        requestToolApproval: options.callbacks.onToolApproval,
+    });
+}
+
+async function runPreparedChatMessageStream(
+    execution: PreparedChatExecution,
+    dependencies: ChatServiceDependencies,
+    options: {
+        onEvent: (event: ConversationEventEnvelope) => void;
+        requestQuestion?: (prompt: QuestionPrompt) => Promise<QuestionAnswer>;
+        requestToolApproval?: AgentCallbacks['onToolApproval'];
+        signal?: AbortSignal;
+    },
+): Promise<{ response: string; sessionId: string }> {
+    const directResponse = await resolveDirectChatCommandResponse(execution, dependencies);
+    if (directResponse !== undefined) {
+        return emitDirectChatMessageStream(execution, {
+            onEvent: options.onEvent,
+        }, directResponse);
+    }
+
+    assertProviderReady(execution, dependencies);
+
+    const agent = createChatAgent(execution, dependencies);
+    if (agent.streamTurn) {
+        return await consumeCanonicalAgentStream(
+            execution,
+            dependencies,
+            agent as ChatAgentInstance & {
+                streamTurn: NonNullable<ChatAgentInstance['streamTurn']>;
+                cancel?: () => void;
+                abort?: () => Promise<void>;
+            },
+            options,
+        );
+    }
+
+    const session = agent.getSession();
+    const sessionId = session.id;
+    const provider = execution.turnInput.agent ?? 'xqoder-agent';
+    const assistantMessageId = `${sessionId}:assistant:${Date.now()}`;
+    const userMessageId = `${sessionId}:user:${Date.now()}`;
+    const createdAt = Date.now();
+    const eventEmitter = createConversationEventEnvelopeEmitter(sessionId);
+    const userMessage = createCoreMessage({
+        id: userMessageId,
+        sessionId,
+        role: 'user',
+        content: execution.turnInput.preparedPrompt,
+        createdAt,
+        attachments: execution.turnInput.attachments,
+    });
+    let assistantStarted = false;
+    let assistantText = '';
+    let emittedError = false;
+    let terminalStopReason: ConversationStopReason | undefined;
+
+    const emitEvent = (event: AppEvent): void => {
+        const envelope = eventEmitter.emit(event);
+        session.recordConversationEnvelopeEvent?.(envelope);
+        options.onEvent(envelope);
+    };
+    const emitErrorEvent = (message: string, stopReason?: ConversationStopReason): void => {
+        if (emittedError) {
+            return;
+        }
+        emittedError = true;
+        emitEvent({
+            type: 'error',
+            sessionId,
+            timestamp: Date.now(),
+            source: 'agent',
+            message,
+            recoverable: false,
+            ...(stopReason !== undefined ? { stopReason } : {}),
+        });
+    };
+    const ensureAssistantStarted = (): void => {
+        if (assistantStarted) {
+            return;
+        }
+        assistantStarted = true;
+        emitEvent({
+            type: 'message.started',
+            sessionId,
+            timestamp: Date.now(),
+            source: 'agent',
+            message: {
+                id: assistantMessageId,
+                sessionId,
+                role: 'assistant',
+                content: '',
+                createdAt: Date.now(),
+            },
+        });
+    };
+
+    emitEvent(
+        execution.agentConfig.session
+            ? {
+                type: 'session.resumed',
+                sessionId,
+                timestamp: Date.now(),
+                source: 'agent',
+                messageCount: getSessionMessageCount(execution.agentConfig.session),
+            }
+            : {
+                type: 'session.started',
+                sessionId,
+                timestamp: Date.now(),
+                source: 'agent',
+                cwd: execution.turnInput.resolvedDir,
+            },
+    );
+    emitEvent({
+        type: 'message.started',
+        sessionId,
+        timestamp: Date.now(),
+        source: 'agent',
+        message: userMessage,
+    });
+    emitEvent({
+        type: 'message.completed',
+        sessionId,
+        timestamp: Date.now(),
+        source: 'agent',
+        message: userMessage,
+    });
+    emitEvent({
+        type: 'status.changed',
+        sessionId,
+        timestamp: Date.now(),
+        source: 'agent',
+        status: 'thinking',
+    });
+
+    const abortableAgent = agent as ChatAgentInstance & {
+        cancel?: () => void;
+        abort?: () => Promise<void>;
+    };
+    const abortListener = () => {
+        abortableAgent.cancel?.();
+        void abortableAgent.abort?.();
+    };
+    options.signal?.addEventListener('abort', abortListener, { once: true });
+
+    try {
+        const finalResponse = await agent.run(execution.turnInput.preparedPrompt, {
+            onIteration: () => {
+                emitEvent({
+                    type: 'status.changed',
+                    sessionId,
+                    timestamp: Date.now(),
+                    source: 'agent',
+                    status: 'thinking',
+                });
+            },
+            onToken: (token) => {
+                ensureAssistantStarted();
+                assistantText += token;
+                emitEvent({
+                    type: 'message.delta',
+                    sessionId,
+                    timestamp: Date.now(),
+                    source: 'agent',
+                    messageId: assistantMessageId,
+                    role: 'assistant',
+                    text: token,
+                });
+            },
+            onThinkingToken: (token) => {
+                emitEvent({
+                    type: 'thought',
+                    sessionId,
+                    timestamp: Date.now(),
+                    source: 'agent',
+                    text: token,
+                });
+            },
+            onToolStart: (name, args) => {
+                emitEvent({
+                    type: 'tool.called',
+                    sessionId,
+                    timestamp: Date.now(),
+                    source: 'agent',
+                    provider,
+                    tool: name,
+                    args: args as JsonValue,
+                });
+                emitEvent({
+                    type: 'status.changed',
+                    sessionId,
+                    timestamp: Date.now(),
+                    source: 'agent',
+                    status: 'running-tool',
+                });
+            },
+            onToolStream: (name, chunk) => {
+                emitEvent({
+                    type: 'tool.output',
+                    sessionId,
+                    timestamp: Date.now(),
+                    source: 'agent',
+                    provider,
+                    tool: name,
+                    output: chunk,
+                    partial: true,
+                });
+            },
+            onToolEnd: (name, result, success) => {
+                emitEvent({
+                    type: 'tool.output',
+                    sessionId,
+                    timestamp: Date.now(),
+                    source: 'agent',
+                    provider,
+                    tool: name,
+                    output: result,
+                });
+                emitEvent({
+                    type: 'tool.completed',
+                    sessionId,
+                    timestamp: Date.now(),
+                    source: 'agent',
+                    provider,
+                    tool: name,
+                    success,
+                });
+                emitEvent({
+                    type: 'status.changed',
+                    sessionId,
+                    timestamp: Date.now(),
+                    source: 'agent',
+                    status: 'thinking',
+                });
+            },
+            onToolApproval: options.requestToolApproval,
+            onQuestion: async (prompt) => {
+                emitEvent({
+                    type: 'question.requested',
+                    sessionId,
+                    timestamp: Date.now(),
+                    source: 'agent',
+                    requestId: prompt.requestId,
+                    question: prompt.question,
+                    ...(prompt.header ? { header: prompt.header } : {}),
+                    options: prompt.options,
+                    ...(prompt.multiple ? { multiple: true } : {}),
+                    ...(prompt.allowCustom ? { allowCustom: true } : {}),
+                });
+
+                const answer = options.requestQuestion
+                    ? await options.requestQuestion(prompt)
+                    : {
+                        requestId: prompt.requestId,
+                        selected: prompt.options.length > 0 ? [prompt.options[0]!.label] : [],
+                    };
+
+                emitEvent({
+                    type: 'question.resolved',
+                    sessionId,
+                    timestamp: Date.now(),
+                    source: 'agent',
+                    requestId: prompt.requestId,
+                    selected: answer.selected ?? [],
+                    ...(answer.customText ? { customText: answer.customText } : {}),
+                    answerSource: options.requestQuestion ? 'ui' : 'fallback',
+                });
+                return answer;
+            },
+            onError: (error) => {
+                emitErrorEvent(error.message, terminalStopReason);
+            },
+            onStop: (stopReason) => {
+                terminalStopReason = stopReason;
+            },
+            onEvent: (event: Parameters<NonNullable<AgentCallbacks['onEvent']>>[0]) => {
+                if (event.type === 'usage') {
+                    emitEvent({
+                        type: 'usage',
+                        sessionId,
+                        timestamp: Date.now(),
+                        source: 'agent',
+                        model: event.model,
+                        promptTokens: event.promptTokens,
+                        completionTokens: event.completionTokens,
+                        totalTokens: event.totalTokens,
+                        ...(event.cost !== undefined ? { cost: event.cost } : {}),
+                    });
+                    return;
+                }
+                if (event.type === 'verification') {
+                    emitEvent({
+                        type: 'verification.completed',
+                        sessionId,
+                        timestamp: Date.now(),
+                        source: 'agent',
+                        ok: event.ok,
+                        blocked: event.blocked,
+                        summary: event.summary,
+                    });
+                    return;
+                }
+                if (event.type === 'error') {
+                    emitErrorEvent(event.message, terminalStopReason);
+                }
+            },
+        }, execution.turnInput.attachments);
+
+        ensureAssistantStarted();
+        const resolvedResponse = resolveAgentTextOutput(assistantText, finalResponse);
+        const assistantMessage = createCoreMessage({
+            id: assistantMessageId,
+            sessionId,
+            role: 'assistant',
+            content: resolvedResponse,
+            createdAt: Date.now(),
+        });
+        emitEvent({
+            type: 'message.completed',
+            sessionId,
+            timestamp: Date.now(),
+            source: 'agent',
+            message: assistantMessage,
+        });
+        emitEvent({
+            type: 'status.changed',
+            sessionId,
+            timestamp: Date.now(),
+            source: 'agent',
+            status: 'done',
+            stopReason: terminalStopReason ?? 'completed',
+        });
+
+        recordCompletedWorkflowState(execution, agent.getSession());
+        const persistedSessionId = persistChatSession(execution, agent);
+        return {
+            response: resolvedResponse,
+            sessionId: persistedSessionId,
+        };
+    } catch (error) {
+        const stopReason = resolveTerminalStopReason(error, terminalStopReason);
+        const enriched = await enrichProviderFailure(
+            error,
+            execution.agentConfig.llmConfig,
+            execution.turnInput.agent,
+            dependencies,
+        );
+        emitErrorEvent(enriched.message, stopReason);
+        emitEvent({
+            type: 'status.changed',
+            sessionId,
+            timestamp: Date.now(),
+            source: 'agent',
+            status: 'error',
+            ...(stopReason !== undefined ? { stopReason } : {}),
+            message: enriched.message,
+        });
+        throw enriched;
+    } finally {
+        options.signal?.removeEventListener('abort', abortListener);
+        await agent.dispose?.();
+    }
+}
+
+function createChatAgent(
+    execution: PreparedChatExecution,
+    dependencies: ChatServiceDependencies,
+): ChatAgentInstance {
+    const factoryConfig: ChatAgentFactoryConfig = {
+        ...execution.agentConfig,
+        cwd: execution.turnInput.resolvedDir,
+        projectRoot: execution.turnInput.resolvedDir,
+        systemPrompt: execution.agentConfig.systemPrompt ?? '',
+        sandboxMode: execution.agentConfig.sandboxMode ?? execution.sandbox.mode,
+        allowedPaths: execution.agentConfig.allowedPaths ?? execution.sandbox.allowedPaths,
+    };
+
+    return dependencies.agentFactory?.(factoryConfig) ?? new XQoderAgent(execution.agentConfig);
+}
+
+async function consumeCanonicalAgentStream(
+    execution: PreparedChatExecution,
+    dependencies: ChatServiceDependencies,
+    agent: ChatAgentInstance & {
+        streamTurn: NonNullable<ChatAgentInstance['streamTurn']>;
+        cancel?: () => void;
+        abort?: () => Promise<void>;
+    },
+    options: {
+        onEvent: (event: ConversationEventEnvelope) => void;
+        requestQuestion?: (prompt: QuestionPrompt) => Promise<QuestionAnswer>;
+        requestToolApproval?: AgentCallbacks['onToolApproval'];
+        signal?: AbortSignal;
+    },
+): Promise<{ response: string; sessionId: string }> {
+    const session = agent.getSession();
+    const abortableAgent = agent as ChatAgentInstance & {
+        cancel?: () => void;
+        abort?: () => Promise<void>;
+    };
+    const abortListener = () => {
+        abortableAgent.cancel?.();
+        void abortableAgent.abort?.();
+    };
+    options.signal?.addEventListener('abort', abortListener, { once: true });
+
+    let assistantResponse = '';
+    let lastTurnId: string | undefined;
+    let terminalStopReason: ConversationStopReason | undefined;
+    let terminalMessage: string | undefined;
+    let terminalEventSeen = false;
+    let errorEventSeen = false;
+
+    try {
+        for await (const event of agent.streamTurn(
+            execution.turnInput.preparedPrompt,
+            {
+                onToolApproval: options.requestToolApproval,
+                onQuestion: options.requestQuestion,
+            },
+            execution.turnInput.attachments,
+        )) {
+            session.recordConversationEnvelopeEvent?.(event);
+            options.onEvent(event);
+            lastTurnId = event.turnId;
+
+            if (event.type === 'message.completed' && event.payload.message.role === 'assistant') {
+                assistantResponse = event.payload.message.content;
+            }
+
+            if (event.type === 'error') {
+                errorEventSeen = true;
+                terminalStopReason = event.payload.stopReason ?? terminalStopReason;
+                terminalMessage = event.payload.message;
+            }
+
+            if (event.type === 'status.changed' && (event.payload.status === 'done' || event.payload.status === 'error')) {
+                terminalEventSeen = true;
+                terminalStopReason = event.payload.stopReason ?? terminalStopReason;
+                terminalMessage = event.payload.message ?? terminalMessage;
+            }
+        }
+
+        if (terminalStopReason === 'permission_denied' || terminalStopReason === 'provider_error') {
+            throw new Error(terminalMessage ?? 'Agent turn failed');
+        }
+
+        recordCompletedWorkflowState(execution, agent.getSession(), lastTurnId);
+        const persistedSessionId = persistChatSession(execution, agent);
+        return {
+            response: assistantResponse,
+            sessionId: persistedSessionId,
+        };
+    } catch (error) {
+        const stopReason = resolveTerminalStopReason(error, terminalStopReason);
+        const enriched = await enrichProviderFailure(
+            error,
+            execution.agentConfig.llmConfig,
+            execution.turnInput.agent,
+            dependencies,
+        );
+
+        if (!terminalEventSeen && !errorEventSeen) {
+            options.onEvent(createConversationEventEnvelopeEmitter(session.id).emitRecord('error', {
+                source: 'agent',
+                message: enriched.message,
+                recoverable: false,
+                ...(stopReason !== undefined ? { stopReason } : {}),
+            }));
+            options.onEvent(createConversationEventEnvelopeEmitter(session.id).emitRecord('status.changed', {
+                source: 'agent',
+                status: 'error',
+                stopReason: stopReason ?? 'provider_error',
+                message: enriched.message,
+            }));
+        }
+
+        throw enriched;
+    } finally {
+        options.signal?.removeEventListener('abort', abortListener);
+        await agent.dispose?.();
+    }
+}
+
+function withPromptPermissionOverrides(
+    options: NonInteractivePromptOptions,
+    dependencies: ChatServiceDependencies,
+): ChatServiceDependencies {
+    const permissionOverrides = buildPromptPermissionOverrides(options);
+    if (!permissionOverrides) {
+        return dependencies;
+    }
+
+    const baseManager = dependencies.configManager ?? configManager;
+    const mergedManager = {
+        load: (...args: Parameters<Pick<ConfigManager, 'load'>['load']>) => {
+            const loaded = baseManager.load(...args);
+            return {
+                ...loaded,
+                permissions: mergePermissionOverrides(loaded.permissions, permissionOverrides),
+            };
+        },
+        ...(
+            typeof (baseManager as { getLoadMetadata?: unknown }).getLoadMetadata === 'function'
+                ? {
+                    getLoadMetadata: () => (baseManager as unknown as Pick<ConfigManager, 'getLoadMetadata'>).getLoadMetadata(),
+                }
+                : {}
+        ),
+    };
+
+    return {
+        ...dependencies,
+        configManager: mergedManager,
+    };
+}
+
+function buildPromptPermissionOverrides(
+    options: NonInteractivePromptOptions,
+): PermissionSettings | undefined {
+    const approvalPolicy = resolvePromptApprovalPolicy(options.permissionMode, options.approvalPolicy);
+    const allowedTools = normalizeToolNameList(options.allowedTools);
+    const disallowedTools = normalizeToolNameList(options.disallowedTools);
+
+    if (!approvalPolicy && allowedTools.length === 0 && disallowedTools.length === 0) {
+        return undefined;
+    }
+
+    return {
+        ...(approvalPolicy ? { approvalPolicy } : {}),
+        ...(allowedTools.length > 0 ? { allowedTools } : {}),
+        ...(disallowedTools.length > 0 ? { disallowedTools } : {}),
+    };
+}
+
+function resolvePromptApprovalPolicy(
+    permissionMode: string | undefined,
+    approvalPolicy: string | undefined,
+): Extract<PermissionSettings['approvalPolicy'], 'strict' | 'balanced' | 'workspace_auto'> | undefined {
+    const normalizedPolicy = approvalPolicy?.trim().toLowerCase();
+    if (normalizedPolicy === 'strict' || normalizedPolicy === 'balanced' || normalizedPolicy === 'workspace_auto') {
+        return normalizedPolicy;
+    }
+
+    const normalizedMode = permissionMode?.trim().toLowerCase();
+    if (normalizedMode === 'allow' || normalizedMode === 'auto') {
+        return 'workspace_auto';
+    }
+    if (normalizedMode === 'ask' || normalizedMode === 'deny') {
+        return 'strict';
+    }
+
+    return undefined;
+}
+
+function mergePermissionOverrides(
+    base: PermissionSettings | undefined,
+    override: PermissionSettings,
+): PermissionSettings {
+    return {
+        ...(base ?? {}),
+        ...override,
+        tools: {
+            ...(base?.tools ?? {}),
+            ...(override.tools ?? {}),
+        },
+        ...(override.allowedTools
+            ? { allowedTools: [...override.allowedTools] }
+            : base?.allowedTools
+                ? { allowedTools: [...base.allowedTools] }
+                : {}),
+        ...(override.disallowedTools
+            ? { disallowedTools: [...override.disallowedTools] }
+            : base?.disallowedTools
+                ? { disallowedTools: [...base.disallowedTools] }
+                : {}),
+    };
+}
+
+function normalizeToolNameList(values: string[] | undefined): string[] {
+    return (values ?? [])
+        .map((value) => value.trim())
+        .filter(Boolean);
 }

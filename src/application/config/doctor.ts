@@ -16,9 +16,15 @@ import {
     type CommandPluginDiscoveryResult,
 } from '../../plugins/command-plugins.js';
 import { getXQoderVersion } from '../../cli/version.js';
-import { MISSING_API_KEY_GUIDANCE } from './api-key-guidance.js';
+import {
+    createProviderDoctorChecks,
+} from './provider-doctor.js';
+import type { ProviderConnectivityProbe } from './provider-bootstrap.js';
+import type { ProxyResolutionOptions } from '../../shared/network-proxy.js';
 
 interface ConfigDoctorDependencies {
+    systemProxyReader?: ProxyResolutionOptions['systemProxyReader'];
+    providerConnectivityProbe?: ProviderConnectivityProbe;
     discoverPlugins?: (options: {
         cwd?: string;
         pluginConfig?: XQoderConfig['plugins'];
@@ -99,6 +105,8 @@ export function createConfigDoctorReport(
         hasExecutable?: (command: string) => boolean;
         configExists?: (configPath: string) => boolean;
         discoverPlugins?: ConfigDoctorDependencies['discoverPlugins'];
+        systemProxyReader?: ConfigDoctorDependencies['systemProxyReader'];
+        providerConnectivityProbe?: ConfigDoctorDependencies['providerConnectivityProbe'];
     } = {},
 ): Promise<ConfigDoctorReport> {
     const env = options.env ?? process.env;
@@ -131,14 +139,14 @@ export function createConfigDoctorReport(
         message: resolveDefaultAgentName(effectiveConfig),
     });
 
-    const llmKeyFromEnv = snapshot.appliedEnvVars.includes('XQODER_LLM_API_KEY');
-    const hasApiKey = effectivePrimaryModel.apiKey.trim().length > 0 || llmKeyFromEnv;
-    checks.push({
-        name: 'LLM API key',
-        status: hasApiKey ? 'ok' : 'error',
-        message: hasApiKey
-            ? `Configured (${llmKeyFromEnv ? 'env' : 'config'})`
-            : MISSING_API_KEY_GUIDANCE,
+    const providerChecksPromise = createProviderDoctorChecks({
+        provider: effectivePrimaryModel.provider,
+        model: effectivePrimaryModel.model,
+        baseUrl: effectivePrimaryModel.baseUrl,
+        apiKey: effectivePrimaryModel.apiKey,
+        env,
+        systemProxyReader: options.systemProxyReader,
+        connectivityProbe: options.providerConnectivityProbe,
     });
 
     const enabledProviders = Object.entries(effectiveConfig.providers ?? {})
@@ -220,8 +228,8 @@ export function createConfigDoctorReport(
         name: 'LSP servers',
         status: enabledLspServers.length > 0 ? 'ok' : 'warn',
         message: enabledLspServers.length > 0
-            ? `${enabledLspServers.length} LSP server(s) enabled. Run xqoder lsp doctor to check capabilities`
-            : 'No LSP server enabled. For multi-language code understanding, run xqoder lsp add ...',
+            ? `${enabledLspServers.length} LSP server(s) enabled from config lsp.servers; agent runtime will use them for code intelligence`
+            : 'No LSP server enabled. Configure lsp.servers in config for multi-language code understanding.',
     });
 
     for (const server of enabledLspServers) {
@@ -259,14 +267,17 @@ export function createConfigDoctorReport(
             productName: 'xqoder',
         });
 
-    return Promise.resolve(pluginResult).then((plugins) => ({
-        ok: checks.every((check) => check.status !== 'error'),
-        configPath: snapshot.configPath,
-        appliedEnvVars: snapshot.appliedEnvVars,
-        sources: snapshot.sources,
-        checks,
-        plugins: plugins.report,
-    }));
+    return Promise.all([providerChecksPromise, Promise.resolve(pluginResult)]).then(([providerChecks, plugins]) => {
+        checks.push(...providerChecks);
+        return {
+            ok: checks.every((check) => check.status !== 'error'),
+            configPath: snapshot.configPath,
+            appliedEnvVars: snapshot.appliedEnvVars,
+            sources: snapshot.sources,
+            checks,
+            plugins: plugins.report,
+        };
+    });
 }
 
 function maskSecret(value: string): string {

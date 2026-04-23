@@ -3,6 +3,7 @@ import type { ITool } from './tools/tool.js';
 import {
     createReservedAlias,
     createToolAlias,
+    resolveMcpServerTrust,
 } from './mcp-utils.js';
 import {
     McpGetPromptTool,
@@ -47,21 +48,24 @@ export class McpServerManager {
 
             try {
                 const client = this.getClient(server);
+                const trust = resolveMcpServerTrust(server);
                 const remoteTools = await client.listTools();
                 for (const descriptor of remoteTools) {
                     const alias = createToolAlias(server.name, descriptor.name, aliases);
-                    tools.push(new McpRemoteTool(alias, server.name, descriptor, client));
+                    tools.push(new McpRemoteTool(alias, server.name, descriptor, client, trust));
                 }
                 if (client.supportsResources()) {
                     tools.push(new McpListResourcesTool(
                         server.name,
                         createReservedAlias(server.name, 'resources.list', aliases),
                         client,
+                        trust,
                     ));
                     tools.push(new McpReadResourceTool(
                         server.name,
                         createReservedAlias(server.name, 'resources.read', aliases),
                         client,
+                        trust,
                     ));
                 }
                 if (client.supportsPrompts()) {
@@ -69,11 +73,13 @@ export class McpServerManager {
                         server.name,
                         createReservedAlias(server.name, 'prompts.list', aliases),
                         client,
+                        trust,
                     ));
                     tools.push(new McpGetPromptTool(
                         server.name,
                         createReservedAlias(server.name, 'prompts.get', aliases),
                         client,
+                        trust,
                     ));
                 }
             } catch (error) {

@@ -18,6 +18,7 @@ export interface RootShellOptions {
     continue?: boolean;
     forkSession?: boolean;
     permissionMode?: string;
+    approvalPolicy?: string;
     effort?: string;
     maxTurns?: number;
     noSessionPersistence?: boolean;
@@ -37,6 +38,7 @@ export interface RootShellDependencies {
         continue?: boolean;
         forkSession?: boolean;
         permissionMode?: string;
+        approvalPolicy?: string;
         effort?: string;
         maxTurns?: number;
         noSessionPersistence?: boolean;
@@ -59,7 +61,8 @@ export function applyRootShellOptions(program: Command): void {
         .option('--resume <idOrName>', 'Resume a specific session')
         .option('--continue', 'Resume the most recent session')
         .option('--fork-session', 'Fork the session being resumed')
-        .option('--permission-mode <mode>', 'Permission mode: auto, allow, ask, deny', 'ask')
+        .option('--permission-mode <mode>', 'Legacy compatibility alias: auto, allow, ask, deny', 'ask')
+        .option('--approval-policy <policy>', 'Approval policy: strict, balanced, workspace_auto')
         .option('--effort <level>', 'Specify effort level: low, medium, high, xhigh, max')
         .option('--max-turns <n>', 'Maximum number of turns in non-interactive mode', parseInt)
         .option('--no-session-persistence', 'Disable session persistence')
@@ -117,6 +120,7 @@ export async function runRootShellAction(
             continue: options.continue,
             forkSession: options.forkSession,
             permissionMode: options.permissionMode,
+            approvalPolicy: options.approvalPolicy,
             effort: options.effort,
             maxTurns: options.maxTurns,
             noSessionPersistence: options.noSessionPersistence,

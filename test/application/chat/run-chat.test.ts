@@ -2,12 +2,16 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'bun:test';
+import type { ConversationEventEnvelope } from '@xqoder/protocol';
 import {
     runChat,
     runChatHeadless,
+    runChatMessageStream,
     runNonInteractivePrompt,
 } from '../../../src/application/chat/run-chat.js';
+import type { AgentCallbacks } from '../../../src/core/agent/agent.js';
 import { XQoderAgent } from '../../../src/core/agent/agent.js';
+import { AgentSession } from '../../../src/core/agent/session/session.js';
 import {
     createMvpTypeErrorDemoProvider,
     createMvpTypeErrorDemoWorkspace,
@@ -103,6 +107,27 @@ describe('chat runtime helpers', () => {
         })).rejects.toThrow('auth login');
     });
 
+    it('allows injected headless chat runtimes to bypass the API key gate for tests and local adapters', async () => {
+        const cwd = createTempDir();
+
+        const result = await runChatHeadless('hello', { dir: cwd }, {
+            configManager: { load: () => createLoadedConfig('') },
+            sessionStore: {
+                findLatestSession: () => null,
+                getSession: () => null,
+                saveSession: () => ({ id: 'injected-headless-summary' }),
+            },
+            agentFactory: () => createFakeAgent({
+                response: 'INJECTED_HEADLESS_RESPONSE',
+            }),
+        });
+
+        expect(result).toEqual({
+            response: 'INJECTED_HEADLESS_RESPONSE',
+            sessionId: 'injected-headless-summary',
+        });
+    });
+
     it('allows local provider headless chat to proceed without an api key', async () => {
         const cwd = createTempDir();
 
@@ -122,6 +147,43 @@ describe('chat runtime helpers', () => {
             response: 'LOCAL_RESPONSE',
             sessionId: 'local-summary',
         });
+    });
+
+    it('persists envelope-backed session state for headless turns', async () => {
+        const cwd = createTempDir();
+        const persistedSessions: AgentSession[] = [];
+        const agentSession = new AgentSession({
+            id: 'headless-envelope-session',
+            systemPrompt: 'system',
+        });
+
+        const result = await runChatHeadless('hello envelope headless', { dir: cwd }, {
+            configManager: { load: () => createLoadedConfig('test-key') },
+            sessionStore: {
+                findLatestSession: () => null,
+                getSession: () => null,
+                saveSession: (input: Record<string, unknown>) => {
+                    persistedSessions.push(input.session as AgentSession);
+                    return { id: 'headless-envelope-summary' };
+                },
+            },
+            agentFactory: () => createFakeAgent({
+                session: agentSession,
+                response: 'HEADLESS_ENVELOPE_RESPONSE',
+            }),
+        });
+
+        expect(result).toEqual({
+            response: 'HEADLESS_ENVELOPE_RESPONSE',
+            sessionId: 'headless-envelope-summary',
+        });
+        expect(persistedSessions).toHaveLength(1);
+        expect(persistedSessions[0]?.getConversationEventEnvelopes().map((event) => event.type)).toEqual(expect.arrayContaining([
+            'session.started',
+            'message.started',
+            'message.completed',
+            'status.changed',
+        ]));
     });
 
     it('renders JSON output for interactive chat through the injected runtime and persists the session', async () => {
@@ -160,7 +222,42 @@ describe('chat runtime helpers', () => {
         expect(stderr.value).toContain('\r');
     });
 
-    it('runs non-interactive prompts with auto-approved tools, a generated session title, and formatted text output', async () => {
+    it('renders /permissions as a direct response without creating an agent', async () => {
+        const cwd = createTempDir();
+        const stdout = captureStream(process.stdout, 'write');
+        let agentFactoryCalled = false;
+
+        await runChat('/permissions', {
+            dir: cwd,
+            format: 'text',
+        }, {
+            configManager: {
+                load: () => createLoadedConfig('', {
+                    permissions: {
+                        defaultMode: 'allow',
+                        tools: { bash: 'deny' },
+                    },
+                }),
+                getLoadMetadata: () => ({ sources: [] }),
+            },
+            agentFactory: () => {
+                agentFactoryCalled = true;
+                return createFakeAgent({
+                    response: 'UNUSED',
+                });
+            },
+        }, () => ({
+            onToken() {},
+        }));
+
+        expect(agentFactoryCalled).toBe(false);
+        expect(stdout.value).toContain(`cwd=${cwd}`);
+        expect(stdout.value).toContain('effectiveApprovalPolicy=workspace_auto');
+        expect(stdout.value).toContain('effectiveDefaultMode=allow');
+        expect(stdout.value).toContain('effectiveTools=bash:deny');
+    });
+
+    it('runs non-interactive prompts with scoped permission overrides, a generated session title, and formatted text output', async () => {
         const cwd = createTempDir();
         const stdout = captureStream(process.stdout, 'write');
         const received: {
@@ -173,6 +270,9 @@ describe('chat runtime helpers', () => {
             cwd,
             outputFormat: 'text',
             quiet: true,
+            permissionMode: 'allow',
+            allowedTools: ['read_file', 'write_file'],
+            disallowedTools: ['bash'],
         }, {
             configManager: { load: () => createLoadedConfig('test-key') },
             sessionStore: {
@@ -192,21 +292,27 @@ describe('chat runtime helpers', () => {
             },
         });
 
-        expect(received.config?.autoApproveTools).toBe(true);
+        expect(received.config?.autoApproveTools).toBe(false);
+        expect(received.config?.permissions).toMatchObject({
+            approvalPolicy: 'workspace_auto',
+            allowedTools: ['read_file', 'write_file'],
+            disallowedTools: ['bash'],
+        });
         expect(String(received.config?.sessionTitle)).toContain('Non-interactive: Summarize the repo status');
         expect(received.prompt).toBe('Summarize the repo status');
         expect(stdout.value).toContain('TEXT_RESPONSE');
     });
 
-    it('does not force the engineering report template for plain greetings', async () => {
+    it('routes /plan through the shared workflow command path before agent execution', async () => {
         const cwd = createTempDir();
         const stdout = captureStream(process.stdout, 'write');
         const received: {
-            systemPrompt?: string;
+            config?: Record<string, unknown>;
+            prompt?: string;
         } = {};
 
         await runNonInteractivePrompt({
-            prompt: '你好 你是谁',
+            prompt: '/plan stabilize the command router',
             cwd,
             outputFormat: 'text',
             quiet: true,
@@ -215,88 +321,151 @@ describe('chat runtime helpers', () => {
             sessionStore: {
                 findLatestSession: () => null,
                 getSession: () => null,
-                saveSession: () => ({ id: 'greeting-summary' }),
+                saveSession: () => ({ id: 'plan-summary' }),
             },
             agentFactory: (config) => {
-                received.systemPrompt = String((config as Record<string, unknown>).systemPrompt ?? '');
+                received.config = config as unknown as Record<string, unknown>;
                 return createFakeAgent({
-                    response: '我是 XQoder，你的终端 AI 编程助手。',
+                    onRun: (prompt, callbacks) => {
+                        received.prompt = prompt;
+                        callbacks?.onToken?.('PLAN_RESPONSE');
+                    },
+                    response: 'PLAN_RESPONSE',
                 });
             },
         });
 
-        expect(received.systemPrompt).not.toContain('USER_PROMPT');
-        expect(received.systemPrompt).not.toContain('EXECUTION_LOG');
-        expect(received.systemPrompt).toContain('answer directly');
-        expect(received.systemPrompt).toContain('Do not claim that you read files');
-        expect(stdout.value).toContain('我是 XQoder');
+        expect(received.config?.agentName).toBe('plan');
+        expect(received.config?.runtimeProfile).toBe('hybrid');
+        expect(received.prompt).toContain('Mode: PLAN');
+        expect(received.prompt).toContain('User request: stabilize the command router');
+        expect(received.prompt).not.toContain('/plan stabilize the command router');
+        expect(stdout.value).toContain('PLAN_RESPONSE');
     });
 
-    it('injects the active provider and model for model identity questions', async () => {
+    it('records the latest successful /plan turn as session-scoped workflow approval metadata', async () => {
         const cwd = createTempDir();
-        const stdout = captureStream(process.stdout, 'write');
+        const session = new AgentSession({
+            id: 'plan-approval-session',
+            systemPrompt: 'system',
+        });
+
+        await runChatHeadless('/plan stabilize the command router', {
+            dir: cwd,
+            session: session.id,
+        }, {
+            configManager: { load: () => createLoadedConfig('test-key') },
+            sessionStore: {
+                findLatestSession: () => session,
+                getSession: () => session,
+                saveSession: () => ({ id: session.id }),
+            },
+            agentFactory: () => createFakeAgent({
+                session,
+                response: 'PLAN_RECORDED',
+            }),
+        });
+
+        expect(session.getWorkflowState()).toMatchObject({
+            kind: 'plan',
+            rawGoal: 'stabilize the command router',
+            normalizedGoal: 'stabilize the command router',
+            sourceTurnId: expect.stringContaining(`${session.id}:turn:`),
+        });
+    });
+
+    it('routes /implement through the planning workflow when there is no matching approved plan in the session', async () => {
+        const cwd = createTempDir();
         const received: {
-            systemPrompt?: string;
+            config?: Record<string, unknown>;
+            prompt?: string;
         } = {};
 
         await runNonInteractivePrompt({
-            prompt: '你是什么模型',
+            prompt: '/implement stabilize the command router',
             cwd,
             outputFormat: 'text',
             quiet: true,
         }, {
-            configManager: { load: () => createLoadedConfig('dashscope-key', { provider: 'dashscope', model: 'qwen-plus' }) },
+            configManager: { load: () => createLoadedConfig('test-key') },
             sessionStore: {
                 findLatestSession: () => null,
                 getSession: () => null,
-                saveSession: () => ({ id: 'model-summary' }),
+                saveSession: () => ({ id: 'implement-plan-summary' }),
             },
             agentFactory: (config) => {
-                received.systemPrompt = String((config as Record<string, unknown>).systemPrompt ?? '');
+                received.config = config as unknown as Record<string, unknown>;
                 return createFakeAgent({
-                    response: '我是 XQoder，当前由 dashscope/qwen-plus 驱动。',
+                    onRun: (prompt) => {
+                        received.prompt = prompt;
+                    },
+                    response: 'IMPLEMENT_REROUTED_TO_PLAN',
                 });
             },
         });
 
-        expect(received.systemPrompt).not.toContain('USER_PROMPT');
-        expect(received.systemPrompt).toContain('configured LLM provider/model: dashscope/qwen-plus');
-        expect(received.systemPrompt).toContain('do not say you are not a language model');
-        expect(stdout.value).toContain('dashscope/qwen-plus');
+        expect(received.config?.agentName).toBe('plan');
+        expect(received.prompt).toContain('Mode: PLAN');
+        expect(received.prompt).toContain('User request: stabilize the command router');
     });
 
-    it('selects runtime profile by interaction route (casual -> mvp, engineering -> hybrid)', async () => {
+    it('lets /implement enter engineering mode when the current session has a matching approved plan', async () => {
         const cwd = createTempDir();
-        const observedProfiles = new Map<string, string | undefined>();
+        const session = new AgentSession({
+            id: 'implement-approved-session',
+            systemPrompt: 'system',
+        });
+        session.recordWorkflowState({
+            kind: 'plan',
+            rawGoal: 'stabilize the command router',
+            normalizedGoal: 'stabilize the command router',
+            completedAt: new Date('2026-04-23T00:00:00.000Z'),
+            sourceTurnId: `${session.id}:turn:plan`,
+        });
+        const received: {
+            config?: Record<string, unknown>;
+            prompt?: string;
+        } = {};
 
-        for (const prompt of ['你好', '修复 src/utils.ts 的 TypeError']) {
-            await runNonInteractivePrompt({
-                prompt,
-                cwd,
-                outputFormat: 'text',
-                quiet: true,
-            }, {
-                configManager: { load: () => createLoadedConfig('test-key') },
-                sessionStore: {
-                    findLatestSession: () => null,
-                    getSession: () => null,
-                    saveSession: () => ({ id: `route-${prompt}` }),
-                },
-                agentFactory: (config) => {
-                    observedProfiles.set(prompt, (config as Record<string, unknown>).runtimeProfile as string | undefined);
-                    return createFakeAgent({
-                        response: `ACK:${prompt}`,
-                    });
-                },
-            });
-        }
+        await runNonInteractivePrompt({
+            prompt: '/implement stabilize the command router',
+            cwd,
+            outputFormat: 'text',
+            quiet: true,
+            continue: true,
+        }, {
+            configManager: {
+                load: () => createLoadedConfig('test-key', {
+                    permissions: {
+                        defaultMode: 'allow',
+                        tools: {},
+                    },
+                }),
+            },
+            sessionStore: {
+                findLatestSession: () => session,
+                getSession: () => session,
+                saveSession: () => ({ id: session.id }),
+            },
+            agentFactory: (config) => {
+                received.config = config as unknown as Record<string, unknown>;
+                return createFakeAgent({
+                    onRun: (prompt) => {
+                        received.prompt = prompt;
+                    },
+                    response: 'IMPLEMENT_EXECUTES',
+                    session,
+                });
+            },
+        });
 
-        expect(observedProfiles.get('你好')).toBe('mvp');
-        expect(observedProfiles.get('修复 src/utils.ts 的 TypeError')).toBe('hybrid');
+        expect(received.config?.taskMode).toBe('engineering_edit');
+        expect(received.prompt).toBe('stabilize the command router');
+        expect(received.prompt).not.toContain('Mode: PLAN');
+        expect(session.getWorkflowState()).toBeUndefined();
     });
 
-
-    it('adds local fallback guidance when a remote provider network call fails', async () => {
+    it('surfaces the current API key guidance for non-interactive prompts before provider execution', async () => {
         const cwd = createTempDir();
 
         await expect(runNonInteractivePrompt({
@@ -305,6 +474,223 @@ describe('chat runtime helpers', () => {
             outputFormat: 'text',
             quiet: true,
         }, {
+            configManager: { load: () => createLoadedConfig('') },
+            sessionStore: {
+                findLatestSession: () => null,
+                getSession: () => null,
+                saveSession: () => ({ id: 'unused' }),
+            },
+        })).rejects.toThrow('auth login');
+    });
+
+    it('emits standard app events from the shared chat message stream helper', async () => {
+        const cwd = createTempDir();
+        const events: ConversationEventEnvelope[] = [];
+
+        const result = await runChatMessageStream({
+            prompt: 'hello stream',
+            cwd,
+            startNewSession: true,
+            onEvent: (event) => {
+                events.push(event);
+            },
+        }, {
+            configManager: { load: () => createLoadedConfig('test-key') },
+            sessionStore: {
+                findLatestSession: () => null,
+                getSession: () => null,
+                saveSession: () => ({ id: 'stream-summary' }),
+            },
+            agentFactory: () => createFakeAgent({
+                onRun: (_prompt, callbacks) => {
+                    callbacks?.onThinkingToken?.('plan');
+                    callbacks?.onToken?.('Hel');
+                    callbacks?.onToken?.('lo');
+                    callbacks?.onToolStart?.('search_code', { query: 'hello' });
+                    callbacks?.onToolStream?.('search_code', 'match line', 'stdout');
+                    callbacks?.onToolEnd?.('search_code', 'search complete', true);
+                },
+                response: 'Hello',
+            }),
+        });
+
+        expect(result).toEqual({
+            response: 'Hello',
+            sessionId: 'stream-summary',
+        });
+        expect(events.map((event) => event.type)).toEqual([
+            'session.started',
+            'message.started',
+            'message.completed',
+            'status.changed',
+            'thought',
+            'message.started',
+            'message.delta',
+            'message.delta',
+            'tool.called',
+            'status.changed',
+            'tool.output',
+            'tool.output',
+            'tool.completed',
+            'status.changed',
+            'message.completed',
+            'status.changed',
+        ]);
+        for (const event of events) {
+            expectStandardEnvelopeShape(event, event.type);
+        }
+        expect(events.find((event) => event.type === 'tool.called')).toMatchObject({
+            type: 'tool.called',
+            payload: {
+                tool: 'search_code',
+            },
+        });
+        expect(events.at(-1)).toMatchObject({
+            type: 'status.changed',
+            payload: {
+                status: 'done',
+                stopReason: 'completed',
+            },
+        });
+    });
+
+    it('bridges fallback agent callback events through the interactive envelope stream', async () => {
+        const cwd = createTempDir();
+        const observed: string[] = [];
+
+        await runChat('bridge callbacks', {
+            dir: cwd,
+            format: 'text',
+        }, {
+            configManager: { load: () => createLoadedConfig('test-key') },
+            sessionStore: {
+                findLatestSession: () => null,
+                getSession: () => null,
+                saveSession: () => ({ id: 'callback-bridge-summary' }),
+            },
+            agentFactory: () => createFakeAgent({
+                onRun: (_prompt, callbacks) => {
+                    callbacks?.onIteration?.(1);
+                    callbacks?.onThinkingToken?.('thinking');
+                    callbacks?.onToolStart?.('read_file', { path: 'src/index.ts' });
+                    callbacks?.onToolStream?.('read_file', 'partial output', 'stdout');
+                    callbacks?.onToolEnd?.('read_file', 'complete output', true);
+                    callbacks?.onEvent?.({
+                        id: 'usage-1',
+                        streamId: 'callback-bridge',
+                        timestamp: new Date(0).toISOString(),
+                        type: 'usage',
+                        model: 'gpt-4.1',
+                        promptTokens: 1,
+                        completionTokens: 2,
+                        totalTokens: 3,
+                    } as any);
+                    callbacks?.onEvent?.({
+                        id: 'error-1',
+                        streamId: 'callback-bridge',
+                        timestamp: new Date(0).toISOString(),
+                        type: 'error',
+                        message: 'side-channel error',
+                        fatal: false,
+                    } as any);
+                    callbacks?.onToken?.('BRIDGED');
+                },
+                response: 'BRIDGED',
+            }),
+        }, () => ({
+            onToken: (token) => observed.push(`token:${token}`),
+            onThinkingToken: (token) => observed.push(`thought:${token}`),
+            onToolStart: (name, args) => observed.push(`tool-start:${name}:${args.path}`),
+            onToolStream: (name, chunk, stream) => observed.push(`tool-stream:${name}:${stream}:${chunk}`),
+            onToolEnd: (name, output, success) => observed.push(`tool-end:${name}:${success}:${output}`),
+            onError: (error) => observed.push(`error:${error.message}`),
+        }));
+
+        expect(observed).toEqual(expect.arrayContaining([
+            'thought:thinking',
+            'tool-start:read_file:src/index.ts',
+            'tool-stream:read_file:stdout:partial output',
+            'tool-end:read_file:true:complete output',
+            'error:side-channel error',
+            'token:BRIDGED',
+        ]));
+    });
+
+    it('emits question request and resolution events from the fallback agent path', async () => {
+        const cwd = createTempDir();
+        const events: ConversationEventEnvelope[] = [];
+
+        const result = await runChatMessageStream({
+            prompt: 'ask a structured question',
+            cwd,
+            startNewSession: true,
+            onEvent: (event) => {
+                events.push(event);
+            },
+            requestQuestion: async (prompt) => ({
+                requestId: prompt.requestId,
+                selected: ['Use strict mode'],
+                customText: 'custom answer',
+            }),
+        }, {
+            configManager: { load: () => createLoadedConfig('test-key') },
+            sessionStore: {
+                findLatestSession: () => null,
+                getSession: () => null,
+                saveSession: () => ({ id: 'question-summary' }),
+            },
+            agentFactory: () => createFakeAgent({
+                async onRun(_prompt, callbacks) {
+                    await callbacks?.onQuestion?.({
+                        requestId: 'question-1',
+                        question: 'Which mode?',
+                        header: 'Mode',
+                        options: [{ label: 'Use strict mode' }],
+                        multiple: true,
+                        allowCustom: true,
+                    });
+                    callbacks?.onToken?.('QUESTION_DONE');
+                },
+                response: 'QUESTION_DONE',
+            }),
+        });
+
+        expect(result.response).toBe('QUESTION_DONE');
+        expect(events.find((event) => event.type === 'question.requested')).toMatchObject({
+            payload: {
+                requestId: 'question-1',
+                question: 'Which mode?',
+                header: 'Mode',
+                multiple: true,
+                allowCustom: true,
+            },
+        });
+        expect(events.find((event) => event.type === 'question.resolved')).toMatchObject({
+            payload: {
+                requestId: 'question-1',
+                selected: ['Use strict mode'],
+                customText: 'custom answer',
+                answerSource: 'ui',
+            },
+        });
+    });
+
+    it('emits synthetic terminal events when a canonical stream fails before terminal metadata', async () => {
+        const cwd = createTempDir();
+        const events: ConversationEventEnvelope[] = [];
+        const session = new AgentSession({
+            id: 'canonical-stream-failure-session',
+            systemPrompt: 'system',
+        });
+
+        await expect(runChatMessageStream({
+            prompt: 'stream failure',
+            cwd,
+            startNewSession: true,
+            onEvent: (event) => {
+                events.push(event);
+            },
+        }, {
             configManager: { load: () => createLoadedConfig('test-key') },
             sessionStore: {
                 findLatestSession: () => null,
@@ -312,60 +698,113 @@ describe('chat runtime helpers', () => {
                 saveSession: () => ({ id: 'unused' }),
             },
             agentFactory: () => ({
-                async run() {
-                    throw new Error('dashscope stream connection failed: timed out');
+                async *streamTurn() {
+                    throw new Error('canonical stream broke');
                 },
                 getSession() {
-                    return { id: 'failed-session' };
+                    return session;
                 },
                 async dispose() {},
             }),
-            localFallbackAdvisor: async () => 'Suggested fallback: local/qwen3:8b',
-        })).rejects.toThrow('Suggested fallback: local/qwen3:8b');
+        })).rejects.toThrow('canonical stream broke');
+
+        expect(events.at(-2)).toMatchObject({
+            type: 'error',
+            payload: {
+                message: 'canonical stream broke',
+            },
+        });
+        expect(events.at(-1)).toMatchObject({
+            type: 'status.changed',
+            payload: {
+                status: 'error',
+                stopReason: 'provider_error',
+                message: 'canonical stream broke',
+            },
+        });
     });
 
-    it('runs the TypeError demo through the non-interactive chat path into the engineering runtime profile', async () => {
-        const cwd = createMvpTypeErrorDemoWorkspace();
-        tempDirs.push(cwd);
-        const stdout = captureStream(process.stdout, 'write');
-        const savedCalls: Array<Record<string, unknown>> = [];
-        const received: { runtimeProfile?: string } = {};
+    it('handles /status through a direct runtime response without invoking an agent', async () => {
+        const cwd = createTempDir();
+        const events: ConversationEventEnvelope[] = [];
+        let agentFactoryCalled = false;
 
-        await runNonInteractivePrompt({
-            prompt: MVP_TYPEERROR_DEMO_PROMPT,
+        const result = await runChatMessageStream({
+            prompt: '/status',
             cwd,
-            outputFormat: 'text',
-            quiet: true,
-        }, {
-            configManager: { load: () => createLoadedConfig('test-key') },
-            sessionStore: {
-                findLatestSession: () => null,
-                getSession: () => null,
-                saveSession: (input: Record<string, unknown>) => {
-                    savedCalls.push(input);
-                    return { id: 'demo-chat-summary' };
-                },
+            startNewSession: true,
+            onEvent: (event) => {
+                events.push(event);
             },
-            agentFactory: (config) => {
-                const provider = createMvpTypeErrorDemoProvider();
-                received.runtimeProfile = (config as Record<string, unknown>).runtimeProfile as string | undefined;
-                return new XQoderAgent({
-                    ...(config as unknown as ConstructorParameters<typeof XQoderAgent>[0]),
-                    rollbackStore: new FileRollbackStore(path.join(cwd, '.rollbacks')),
-                    providerFactory: async () => provider,
-                    permissions: {
-                        defaultMode: 'allow',
-                        tools: {},
-                    },
+        }, {
+            configManager: { load: () => createLoadedConfig('') },
+            agentFactory: () => {
+                agentFactoryCalled = true;
+                return createFakeAgent({
+                    response: 'UNUSED',
                 });
             },
         });
 
-        expect(received.runtimeProfile).toBe('hybrid');
-        expect(savedCalls).toHaveLength(1);
-        expect(stdout.value).toContain('修复完成：src/utils.ts 已补上 guard clause');
-        expect(fs.readFileSync(path.join(cwd, 'src/utils.ts'), 'utf-8')).toContain("return 'UNKNOWN';");
+        expect(agentFactoryCalled).toBe(false);
+        expect(result.response).toContain('Runtime status:');
+        expect(result.response).toContain('model=gpt-4.1');
+        expect(result.response).toContain('persistence=disabled');
+        expect(events.map((event) => event.type)).toEqual([
+            'session.started',
+            'message.started',
+            'message.completed',
+            'status.changed',
+            'message.started',
+            'message.completed',
+            'status.changed',
+        ]);
+        expect(events.at(-1)).toMatchObject({
+            type: 'status.changed',
+            payload: {
+                status: 'done',
+                source: 'runtime',
+                stopReason: 'completed',
+            },
+        });
     });
+
+    it('handles /tools through a shared direct runtime response without invoking the model', async () => {
+        const cwd = createTempDir();
+        const events: ConversationEventEnvelope[] = [];
+
+        const result = await runChatMessageStream({
+            prompt: '/tools',
+            cwd,
+            startNewSession: true,
+            onEvent: (event) => {
+                events.push(event);
+            },
+        }, {
+            configManager: {
+                load: () => createLoadedConfig('', {
+                    permissions: {
+                        defaultMode: 'allow',
+                        tools: {
+                            bash: 'deny',
+                        },
+                    },
+                }),
+            },
+        });
+
+        expect(result.response).toContain('Visible tools for this turn:');
+        expect(result.response).toContain('read_file (');
+        expect(result.response).toContain('search_code (');
+        expect(events.at(-1)).toMatchObject({
+            type: 'status.changed',
+            payload: {
+                status: 'done',
+                stopReason: 'completed',
+            },
+        });
+    });
+
 });
 
 function createLoadedConfig(
@@ -373,6 +812,13 @@ function createLoadedConfig(
     options: {
         provider?: 'openai' | 'local' | 'dashscope';
         model?: string;
+        permissions?: {
+            defaultMode?: 'allow' | 'ask' | 'deny';
+            tools?: Record<string, 'allow' | 'ask' | 'deny'>;
+            approvalPolicy?: 'strict' | 'balanced' | 'workspace_auto';
+            allowedTools?: string[];
+            disallowedTools?: string[];
+        };
     } = {},
 ) {
     const provider = options.provider ?? 'openai';
@@ -405,6 +851,11 @@ function createLoadedConfig(
             mode: 'project',
             allowedPaths: [],
         },
+        ...(options.permissions
+            ? {
+                permissions: options.permissions,
+            }
+            : {}),
     };
 }
 
@@ -413,18 +864,18 @@ function createFakeAgent(options: {
     session?: Record<string, unknown>;
     onRun?: (
         prompt: string,
-        callbacks?: { onToken?: (token: string) => void },
+        callbacks?: AgentCallbacks,
         attachments?: Array<Record<string, unknown>>,
-    ) => void;
+    ) => void | Promise<void>;
 }) {
     return {
         async run(
             prompt: string,
-            callbacks?: { onToken?: (token: string) => void },
+            callbacks?: AgentCallbacks,
             attachments?: Array<Record<string, unknown>>,
         ) {
             if (options.onRun) {
-                options.onRun(prompt, callbacks, attachments);
+                await options.onRun(prompt, callbacks, attachments);
             } else if (options.response) {
                 callbacks?.onToken?.(options.response);
             }
@@ -436,6 +887,35 @@ function createFakeAgent(options: {
         },
         async dispose() {},
     };
+}
+
+function createAgentWithStreamingUsage(config: Record<string, unknown>): XQoderAgent {
+    return new XQoderAgent({
+        ...(config as any),
+        providerFactory: async () => ({
+            name: 'fake-provider',
+            model: 'fake-model',
+            async complete() {
+                throw new Error('complete() should not be used');
+            },
+            async stream(_request: unknown, callbacks?: AgentCallbacks) {
+                callbacks?.onToken?.('USAGE_');
+                callbacks?.onToken?.('CHAIN');
+                return {
+                    finishReason: 'stop',
+                    message: {
+                        role: 'assistant',
+                        content: 'USAGE_CHAIN',
+                    },
+                    usage: {
+                        promptTokens: 17,
+                        completionTokens: 4,
+                        totalTokens: 21,
+                    },
+                };
+            },
+        }),
+    });
 }
 
 function createProjectDir(): string {
@@ -482,4 +962,19 @@ function captureStream<
     });
 
     return captured;
+}
+
+function expectStandardEnvelopeShape(
+    event: ConversationEventEnvelope | undefined,
+    type: ConversationEventEnvelope['type'],
+): void {
+    expect(event).toMatchObject({
+        schemaVersion: 1,
+        type,
+        eventId: expect.any(String),
+        sessionId: expect.any(String),
+        turnId: expect.any(String),
+        timestamp: expect.any(String),
+        payload: expect.any(Object),
+    });
 }

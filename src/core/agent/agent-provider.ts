@@ -1,6 +1,14 @@
 import { Buffer } from 'node:buffer';
 import type { AgentProvider, AgentTask, QuestionAnswer, QuestionPrompt, RuntimeDescriptor, ToolApprovalPrompt } from '@xqoder/plugin-sdk';
-import type { AppEvent, CoreMessage, JsonValue, MessageAttachment as ProtocolAttachment } from '@xqoder/protocol';
+import {
+  createConversationEventEnvelopeEmitter,
+} from '@xqoder/protocol';
+import type {
+  ConversationEventEnvelope,
+  CoreMessage,
+  JsonValue,
+  MessageAttachment as ProtocolAttachment,
+} from '@xqoder/protocol';
 import type { LLMMessage, MessageAttachment as SharedAttachment } from '@xqoder/shared';
 import { AgentSession } from './session/session.js';
 import { DEFAULT_SYSTEM_PROMPT, XQoderAgent, type AgentCallbacks, type AgentConfig } from '@xqoder/agent';
@@ -10,11 +18,13 @@ import {
   createApprovalRequestedRecord,
   createApprovalResolvedRecord,
 } from '../../domain/permissions/index.js';
+import type { ConversationStopReason } from '../../domain/conversation/stop-reason.js';
 
 type AgentTaskWithAttachments = AgentTask & { attachments?: ProtocolAttachment[] };
 
 interface AgentLike {
   run(userMessage: string, callbacks?: AgentCallbacks, attachments?: SharedAttachment[]): Promise<string>;
+  streamTurn?(userMessage: string, callbacks?: AgentCallbacks, attachments?: SharedAttachment[]): AsyncIterable<ConversationEventEnvelope>;
   dispose?(): Promise<void>;
 }
 
@@ -169,19 +179,35 @@ function createSessionForTask(task: AgentTask, runtime: RuntimeDescriptor, confi
   });
 }
 
-function createEventBase(type: AppEvent['type'], runtime: RuntimeDescriptor): Omit<AppEvent, never> {
+function resolvePlanWorkflowState(task: AgentTask, sourceTurnId: string | undefined) {
+  const workflow = (task.metadata as { workflow?: unknown } | undefined)?.workflow;
+  if (!workflow || typeof workflow !== 'object') {
+    return undefined;
+  }
+
+  const candidate = workflow as {
+    kind?: unknown;
+    rawGoal?: unknown;
+    normalizedGoal?: unknown;
+  };
+  if (candidate.kind !== 'plan' || typeof candidate.rawGoal !== 'string' || typeof candidate.normalizedGoal !== 'string') {
+    return undefined;
+  }
+
   return {
-    type,
-    sessionId: runtime.sessionId,
-    timestamp: Date.now(),
-    source: 'agent',
-  } as AppEvent;
+    kind: 'plan' as const,
+    rawGoal: candidate.rawGoal,
+    normalizedGoal: candidate.normalizedGoal,
+    completedAt: new Date(),
+    sourceTurnId: sourceTurnId ?? `provider:${Date.now()}`,
+  };
 }
 
 async function resolveApprovalDecision(
     request: ToolApprovalRequest,
     runtime: RuntimeDescriptor,
-    events: AsyncEventQueue<AppEvent>,
+    events: AsyncEventQueue<ConversationEventEnvelope>,
+    eventEmitter: ReturnType<typeof createConversationEventEnvelopeEmitter>,
 ): Promise<boolean> {
     return resolveRuntimeApprovalRequest({
         request,
@@ -191,23 +217,21 @@ async function resolveApprovalDecision(
         requestToolApproval: runtime.requestToolApproval as ((request: ToolApprovalPrompt) => Promise<'allow' | 'deny'> | 'allow' | 'deny') | undefined,
         onApprovalRequested: (record) => {
             const payload = createApprovalRequestedRecord(record.requestId, request);
-            events.push({
-                ...createEventBase('approval.requested', runtime),
-                type: 'approval.requested',
+            events.push(eventEmitter.emitRecord('approval.requested', {
+                source: 'agent',
                 requestId: payload.requestId,
                 kind: payload.kind,
                 summary: payload.summary,
                 payload: payload.payload as JsonValue | undefined,
-            });
+            }));
         },
         onApprovalResolved: (record) => {
             const payload = createApprovalResolvedRecord(record.requestId, record.decision);
-            events.push({
-                ...createEventBase('approval.resolved', runtime),
-                type: 'approval.resolved',
+            events.push(eventEmitter.emitRecord('approval.resolved', {
+                source: 'agent',
                 requestId: payload.requestId,
                 decision: payload.decision,
-            });
+            }));
         },
     });
 }
@@ -215,18 +239,18 @@ async function resolveApprovalDecision(
 async function resolveQuestionDecision(
     request: QuestionPrompt,
     runtime: RuntimeDescriptor,
-    events: AsyncEventQueue<AppEvent>,
+    events: AsyncEventQueue<ConversationEventEnvelope>,
+    eventEmitter: ReturnType<typeof createConversationEventEnvelopeEmitter>,
 ): Promise<QuestionAnswer> {
-    events.push({
-        ...createEventBase('question.requested', runtime),
-        type: 'question.requested',
+    events.push(eventEmitter.emitRecord('question.requested', {
+        source: 'agent',
         requestId: request.requestId,
         question: request.question,
         ...(request.header ? { header: request.header } : {}),
         options: request.options,
         ...(request.multiple ? { multiple: true } : {}),
         ...(request.allowCustom ? { allowCustom: true } : {}),
-    });
+    }));
 
     if (runtime.requestQuestion) {
         const answer = await runtime.requestQuestion(request);
@@ -235,14 +259,13 @@ async function resolveQuestionDecision(
             selected: answer.selected ?? [],
             ...(answer.customText ? { customText: answer.customText } : {}),
         } satisfies QuestionAnswer;
-        events.push({
-            ...createEventBase('question.resolved', runtime),
-            type: 'question.resolved',
+        events.push(eventEmitter.emitRecord('question.resolved', {
+            source: 'agent',
             requestId: request.requestId,
             selected: normalized.selected,
             ...(normalized.customText ? { customText: normalized.customText } : {}),
             answerSource: 'ui',
-        });
+        }));
         return normalized;
     }
 
@@ -250,13 +273,12 @@ async function resolveQuestionDecision(
         requestId: request.requestId,
         selected: request.options.length > 0 ? [request.options[0]!.label] : [],
     };
-    events.push({
-        ...createEventBase('question.resolved', runtime),
-        type: 'question.resolved',
+    events.push(eventEmitter.emitRecord('question.resolved', {
+        source: 'agent',
         requestId: request.requestId,
         selected: fallback.selected,
         answerSource: 'fallback',
-    });
+    }));
     return fallback;
 }
 
@@ -272,7 +294,7 @@ export class XQoderAgentProvider implements AgentProvider {
     this.createAgent = options.createAgent ?? ((config) => new XQoderAgent(config));
   }
 
-  async *run(task: AgentTask, runtime: RuntimeDescriptor): AsyncIterable<AppEvent> {
+  async *run(task: AgentTask, runtime: RuntimeDescriptor): AsyncIterable<ConversationEventEnvelope> {
     const config = await resolveAgentConfig(this.configResolver, task, runtime);
     const session = createSessionForTask(task, runtime, config);
     const agent = this.createAgent({
@@ -282,7 +304,8 @@ export class XQoderAgentProvider implements AgentProvider {
       session,
     });
 
-    const events = new AsyncEventQueue<AppEvent>();
+    const eventEmitter = createConversationEventEnvelopeEmitter(runtime.sessionId, runtime.turnId);
+    const events = new AsyncEventQueue<ConversationEventEnvelope>();
     const userMessageId = `${runtime.sessionId}:user:${Date.now()}`;
     const assistantMessageId = `${runtime.sessionId}:assistant:${Date.now()}`;
     const createdAt = Date.now();
@@ -294,11 +317,59 @@ export class XQoderAgentProvider implements AgentProvider {
       ...(attachments.length > 0 ? { attachments } : {}),
     }, runtime.sessionId, userMessageId, createdAt);
 
+    if (agent.streamTurn) {
+      let terminalStatus: 'done' | 'error' | undefined;
+      let terminalStopReason: ConversationStopReason | undefined;
+      let observedTurnId = runtime.turnId;
+
+      try {
+        for await (const event of agent.streamTurn(task.prompt, {
+          onToolApproval: async (request) => {
+            return await resolveRuntimeApprovalRequest({
+              request,
+              sessionId: runtime.sessionId,
+              cwd: runtime.cwd,
+              permissionPolicy: runtime.permissionPolicy,
+              requestToolApproval: runtime.requestToolApproval as ((request: ToolApprovalPrompt) => Promise<'allow' | 'deny'> | 'allow' | 'deny') | undefined,
+            });
+          },
+          onQuestion: async (request) => {
+            if (runtime.requestQuestion) {
+              return await runtime.requestQuestion(request);
+            }
+            return {
+              requestId: request.requestId,
+              selected: request.options.length > 0 ? [request.options[0]!.label] : [],
+            };
+          },
+        }, attachments)) {
+          observedTurnId = event.turnId;
+          session.recordConversationEnvelopeEvent(event);
+          if (event.type === 'status.changed' && (event.payload.status === 'done' || event.payload.status === 'error')) {
+            terminalStatus = event.payload.status;
+            terminalStopReason = event.payload.stopReason;
+          }
+          yield event;
+        }
+
+        if (terminalStatus === 'done' && terminalStopReason === 'completed') {
+          const workflowState = resolvePlanWorkflowState(task, observedTurnId);
+          if (workflowState) {
+            session.recordWorkflowState(workflowState);
+          }
+        }
+        return;
+      } finally {
+        await agent.dispose?.();
+      }
+    }
+
     const runPromise = (async () => {
       let assistantStarted = false;
       let assistantText = '';
       let completedAssistantMessage: LLMMessage | null = null;
       let errorEmitted = false;
+      let terminalStopReason: ConversationStopReason | undefined;
 
       const ensureAssistantStarted = (): void => {
         if (assistantStarted) {
@@ -306,9 +377,8 @@ export class XQoderAgentProvider implements AgentProvider {
         }
 
         assistantStarted = true;
-        events.push({
-          ...createEventBase('message.started', runtime),
-          type: 'message.started',
+        events.push(eventEmitter.emitRecord('message.started', {
+          source: 'agent',
           message: {
             id: assistantMessageId,
             sessionId: runtime.sessionId,
@@ -316,114 +386,127 @@ export class XQoderAgentProvider implements AgentProvider {
             content: '',
             createdAt,
           },
-        });
+        }));
       };
 
-      events.push({
-        ...createEventBase('message.started', runtime),
-        type: 'message.started',
+      events.push(eventEmitter.emitRecord('message.started', {
+        source: 'agent',
         message: userMessage,
-      });
-      events.push({
-        ...createEventBase('message.completed', runtime),
-        type: 'message.completed',
+      }));
+      events.push(eventEmitter.emitRecord('message.completed', {
+        source: 'agent',
         message: userMessage,
-      });
-      events.push({
-        ...createEventBase('status.changed', runtime),
-        type: 'status.changed',
+      }));
+      events.push(eventEmitter.emitRecord('status.changed', {
+        source: 'agent',
         status: 'thinking',
-      });
+      }));
 
       try {
         const unsubscribe = (agent as unknown as XQoderAgent).subscribe((event) => {
           if (event.type === 'thought') {
-            events.push({
-              ...createEventBase('thought', runtime),
-              type: 'thought',
+            events.push(eventEmitter.emitRecord('thought', {
+              source: 'agent',
               text: event.content,
-            });
+            }));
           }
         });
 
         const finalText = await agent.run(task.prompt, {
           onIteration: () => {
-            events.push({
-              ...createEventBase('status.changed', runtime),
-              type: 'status.changed',
+            events.push(eventEmitter.emitRecord('status.changed', {
+              source: 'agent',
               status: 'thinking',
-            });
+            }));
           },
           onToken: (token) => {
             ensureAssistantStarted();
             assistantText += token;
-            events.push({
-              ...createEventBase('message.delta', runtime),
-              type: 'message.delta',
+            events.push(eventEmitter.emitRecord('message.delta', {
+              source: 'agent',
               messageId: assistantMessageId,
               role: 'assistant',
               text: token,
-            });
+            }));
           },
           onToolStart: (name, args) => {
-            events.push({
-              ...createEventBase('tool.called', runtime),
-              type: 'tool.called',
+            events.push(eventEmitter.emitRecord('tool.called', {
+              source: 'agent',
               provider: this.name,
               tool: name,
               args: args as JsonValue,
-            });
-            events.push({
-              ...createEventBase('status.changed', runtime),
-              type: 'status.changed',
+            }));
+            events.push(eventEmitter.emitRecord('status.changed', {
+              source: 'agent',
               status: 'running-tool',
-            });
+            }));
           },
           onToolStream: (name, chunk) => {
-            events.push({
-              ...createEventBase('tool.output', runtime),
-              type: 'tool.output',
+            events.push(eventEmitter.emitRecord('tool.output', {
+              source: 'agent',
               provider: this.name,
               tool: name,
               output: chunk,
               partial: true,
-            });
+            }));
           },
           onToolEnd: (name, result, success) => {
-            events.push({
-              ...createEventBase('tool.output', runtime),
-              type: 'tool.output',
+            events.push(eventEmitter.emitRecord('tool.output', {
+              source: 'agent',
               provider: this.name,
               tool: name,
               output: result,
-            });
-            events.push({
-              ...createEventBase('tool.completed', runtime),
-              type: 'tool.completed',
+            }));
+            events.push(eventEmitter.emitRecord('tool.completed', {
+              source: 'agent',
               provider: this.name,
               tool: name,
               success,
-            });
-            events.push({
-              ...createEventBase('status.changed', runtime),
-              type: 'status.changed',
+            }));
+            events.push(eventEmitter.emitRecord('status.changed', {
+              source: 'agent',
               status: 'thinking',
-            });
+            }));
           },
-          onToolApproval: async (request) => resolveApprovalDecision(request, runtime, events),
-          onQuestion: async (request) => resolveQuestionDecision(request, runtime, events),
+          onToolApproval: async (request) => resolveApprovalDecision(request, runtime, events, eventEmitter),
+          onQuestion: async (request) => resolveQuestionDecision(request, runtime, events, eventEmitter),
           onComplete: (message) => {
             completedAssistantMessage = message;
           },
           onError: (error) => {
             if (!errorEmitted) {
               errorEmitted = true;
-              events.push({
-                ...createEventBase('error', runtime),
-                type: 'error',
+              events.push(eventEmitter.emitRecord('error', {
+                source: 'agent',
                 message: error.message,
                 recoverable: false,
-              });
+                ...(terminalStopReason ? { stopReason: terminalStopReason } : {}),
+              }));
+            }
+          },
+          onStop: (stopReason) => {
+            terminalStopReason = stopReason;
+          },
+          onEvent: (event) => {
+            if (event.type === 'usage') {
+              events.push(eventEmitter.emitRecord('usage', {
+                source: 'agent',
+                model: event.model,
+                promptTokens: event.promptTokens,
+                completionTokens: event.completionTokens,
+                totalTokens: event.totalTokens,
+                ...(event.cost !== undefined ? { cost: event.cost } : {}),
+              }));
+              return;
+            }
+
+            if (event.type === 'verification') {
+              events.push(eventEmitter.emitRecord('verification.completed', {
+                source: 'agent',
+                ok: event.ok,
+                blocked: event.blocked,
+                summary: event.summary,
+              }));
             }
           },
         }, attachments);
@@ -435,9 +518,8 @@ export class XQoderAgentProvider implements AgentProvider {
           content: assistantText || finalText,
         } satisfies LLMMessage;
 
-        events.push({
-          ...createEventBase('message.completed', runtime),
-          type: 'message.completed',
+        events.push(eventEmitter.emitRecord('message.completed', {
+          source: 'agent',
           message: toCoreMessage(
             {
               ...completedMessage,
@@ -447,27 +529,34 @@ export class XQoderAgentProvider implements AgentProvider {
             assistantMessageId,
             Date.now(),
           ),
-        });
-        events.push({
-          ...createEventBase('status.changed', runtime),
-          type: 'status.changed',
+        }));
+        events.push(eventEmitter.emitRecord('status.changed', {
+          source: 'agent',
           status: 'done',
-        });
+          stopReason: terminalStopReason ?? 'completed',
+        }));
+        if ((terminalStopReason ?? 'completed') === 'completed') {
+          const workflowState = resolvePlanWorkflowState(task, runtime.turnId);
+          if (workflowState) {
+            session.recordWorkflowState(workflowState);
+          }
+        }
       } catch (error) {
         if (!errorEmitted) {
           errorEmitted = true;
-          events.push({
-            ...createEventBase('error', runtime),
-            type: 'error',
+          events.push(eventEmitter.emitRecord('error', {
+            source: 'agent',
             message: error instanceof Error ? error.message : String(error),
             recoverable: false,
-          });
+            stopReason: terminalStopReason ?? 'provider_error',
+          }));
         }
-        events.push({
-          ...createEventBase('status.changed', runtime),
-          type: 'status.changed',
+        events.push(eventEmitter.emitRecord('status.changed', {
+          source: 'agent',
           status: 'error',
-        });
+          stopReason: terminalStopReason ?? 'provider_error',
+          message: error instanceof Error ? error.message : String(error),
+        }));
       } finally {
         await agent.dispose?.();
         events.close();

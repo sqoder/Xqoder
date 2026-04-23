@@ -55,6 +55,33 @@ describe('tui agent session operations', () => {
         expect(context.permissions).toEqual({ tools: { shell: 'ask' } });
     });
 
+    it('refreshes the base system prompt when continuing an existing session', () => {
+        const session = new AgentSession({ systemPrompt: 'old system prompt' });
+        session.addUserMessage('旧消息');
+        const sessionStore = createSessionStore(session);
+
+        const context = resolveTuiAgentSendContext(sessionStore, session.id, settings, '你是什么模型', {
+            resolveAgentConfig: () => ({
+                ...createResolvedAgentConfig(),
+                baseAgentConfig: {
+                    ...createResolvedAgentConfig().baseAgentConfig,
+                    systemPrompt: 'new system prompt with runtime identity',
+                },
+            }),
+        });
+
+        expect(context.session).toBe(session);
+        expect(context.activeSession).toBe(session);
+        expect(context.activeSession.getMessages()[0]).toEqual({
+            role: 'system',
+            content: 'new system prompt with runtime identity',
+        });
+        expect(context.activeSession.getMessages()[1]).toEqual({
+            role: 'user',
+            content: '旧消息',
+        });
+    });
+
     it('persists the session and backfills a generated title when the saved title is still generic', async () => {
         const sessionStore = createSessionStore();
         const activeSession = new AgentSession({ systemPrompt: 'system prompt' });

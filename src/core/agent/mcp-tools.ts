@@ -2,10 +2,17 @@ import type {
     ToolDefinition,
     ToolResult,
 } from '@xqoder/shared';
-import type { ITool, ToolApprovalRequest, ToolContext } from './tools/tool.js';
+import type {
+    ITool,
+    ToolApprovalRequest,
+    ToolContext,
+    ToolSecurityPolicyContext,
+    ToolTrustLevel,
+} from './tools/tool.js';
 import {
     buildSyntheticApproval,
     convertJsonSchemaToParameters,
+    createMcpSecurityContext,
     formatPromptList,
     formatPromptResult,
     formatReadResourceResult,
@@ -28,6 +35,7 @@ export class McpRemoteTool implements ITool {
         private readonly serverName: string,
         private readonly remoteTool: McpToolDescriptor,
         private readonly client: McpClientAdapter,
+        private readonly trust: ToolTrustLevel = 'trusted',
     ) {
         this.definition = {
             name: aliasName,
@@ -36,15 +44,16 @@ export class McpRemoteTool implements ITool {
         };
     }
 
+    getSecurityPolicyContext(): ToolSecurityPolicyContext {
+        return createMcpSecurityContext(this.serverName, this.trust, 'tool_call');
+    }
+
     buildApprovalRequest(args: Record<string, unknown>, _context: ToolContext): ToolApprovalRequest {
-        return {
-            toolCallId: '',
-            toolName: this.aliasName,
-            summary: `Call MCP tool ${this.remoteTool.name} @ ${this.serverName}`,
-            reason: 'MCP tools are provided by external processes and require explicit confirmation before execution.',
+        return buildSyntheticApproval(this.aliasName, this.serverName, `Call MCP tool ${this.remoteTool.name}`, {
+            operation: 'tool_call',
             preview: safeStringify(args, 600),
-            risk: 'medium',
-        };
+            trust: this.trust,
+        });
     }
 
     async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
@@ -76,6 +85,7 @@ export class McpListPromptsTool implements ITool {
         private readonly serverName: string,
         private readonly aliasName: string,
         private readonly client: McpClientAdapter,
+        private readonly trust: ToolTrustLevel = 'trusted',
     ) {
         this.definition = {
             name: aliasName,
@@ -84,8 +94,15 @@ export class McpListPromptsTool implements ITool {
         };
     }
 
+    getSecurityPolicyContext(): ToolSecurityPolicyContext {
+        return createMcpSecurityContext(this.serverName, this.trust, 'list_prompts');
+    }
+
     buildApprovalRequest(_args: Record<string, unknown>, _context: ToolContext): ToolApprovalRequest {
-        return buildSyntheticApproval(this.aliasName, this.serverName, 'List MCP prompts');
+        return buildSyntheticApproval(this.aliasName, this.serverName, 'List MCP prompts', {
+            operation: 'list_prompts',
+            trust: this.trust,
+        });
     }
 
     async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
@@ -110,6 +127,7 @@ export class McpGetPromptTool implements ITool {
         private readonly serverName: string,
         private readonly aliasName: string,
         private readonly client: McpClientAdapter,
+        private readonly trust: ToolTrustLevel = 'trusted',
     ) {
         this.definition = {
             name: aliasName,
@@ -130,12 +148,20 @@ export class McpGetPromptTool implements ITool {
         };
     }
 
+    getSecurityPolicyContext(): ToolSecurityPolicyContext {
+        return createMcpSecurityContext(this.serverName, this.trust, 'get_prompt');
+    }
+
     buildApprovalRequest(args: Record<string, unknown>, _context: ToolContext): ToolApprovalRequest {
         return buildSyntheticApproval(
             this.aliasName,
             this.serverName,
             'Read MCP prompt',
-            safeStringify(args, 600),
+            {
+                operation: 'get_prompt',
+                preview: safeStringify(args, 600),
+                trust: this.trust,
+            },
         );
     }
 
@@ -164,6 +190,7 @@ export class McpListResourcesTool implements ITool {
         private readonly serverName: string,
         private readonly aliasName: string,
         private readonly client: McpClientAdapter,
+        private readonly trust: ToolTrustLevel = 'trusted',
     ) {
         this.definition = {
             name: aliasName,
@@ -172,8 +199,15 @@ export class McpListResourcesTool implements ITool {
         };
     }
 
+    getSecurityPolicyContext(): ToolSecurityPolicyContext {
+        return createMcpSecurityContext(this.serverName, this.trust, 'list_resources');
+    }
+
     buildApprovalRequest(_args: Record<string, unknown>, _context: ToolContext): ToolApprovalRequest {
-        return buildSyntheticApproval(this.aliasName, this.serverName, 'List MCP resources');
+        return buildSyntheticApproval(this.aliasName, this.serverName, 'List MCP resources', {
+            operation: 'list_resources',
+            trust: this.trust,
+        });
     }
 
     async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
@@ -203,6 +237,7 @@ export class McpReadResourceTool implements ITool {
         private readonly serverName: string,
         private readonly aliasName: string,
         private readonly client: McpClientAdapter,
+        private readonly trust: ToolTrustLevel = 'trusted',
     ) {
         this.definition = {
             name: aliasName,
@@ -218,12 +253,20 @@ export class McpReadResourceTool implements ITool {
         };
     }
 
+    getSecurityPolicyContext(): ToolSecurityPolicyContext {
+        return createMcpSecurityContext(this.serverName, this.trust, 'read_resource');
+    }
+
     buildApprovalRequest(args: Record<string, unknown>, _context: ToolContext): ToolApprovalRequest {
         return buildSyntheticApproval(
             this.aliasName,
             this.serverName,
             'Read MCP resource',
-            safeStringify(args, 600),
+            {
+                operation: 'read_resource',
+                preview: safeStringify(args, 600),
+                trust: this.trust,
+            },
         );
     }
 

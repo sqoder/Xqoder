@@ -1,7 +1,14 @@
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 
 const rootDir = path.resolve(import.meta.dirname, '..');
+const typesPath = path.join(rootDir, 'dist', 'index.d.ts');
+
+if (!fs.existsSync(typesPath)) {
+  console.error('cli smoke test failed: dist/index.d.ts is missing');
+  process.exit(1);
+}
 
 const checks = [
   {
@@ -17,7 +24,7 @@ const checks = [
 ];
 
 for (const check of checks) {
-  const output = execFileSync('bun', check.args, {
+  const output = execFileSync(process.execPath, check.args, {
     cwd: rootDir,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],

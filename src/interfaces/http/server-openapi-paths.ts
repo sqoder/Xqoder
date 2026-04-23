@@ -125,7 +125,7 @@ export function createOpenApiPaths() {
             get: {
                 operationId: 'getEventStream',
                 tags: ['stream'],
-                summary: 'Server-sent AppEvent stream',
+                summary: 'Server-sent ConversationEventEnvelope stream',
                 responses: {
                     200: {
                         description: 'SSE stream',
@@ -367,6 +367,11 @@ export function createOpenApiPaths() {
                                                 createdAt: '2026-03-14T08:00:00.000Z',
                                                 updatedAt: '2026-03-14T08:05:00.000Z',
                                                 messageCount: 4,
+                                                usage: {
+                                                    promptTokens: 120,
+                                                    completionTokens: 32,
+                                                    totalTokens: 152,
+                                                },
                                             },
                                         ],
                                     },
@@ -436,18 +441,18 @@ export function createOpenApiPaths() {
             get: {
                 operationId: 'getSessionById',
                 tags: ['session'],
-                summary: 'Get session summary',
+                summary: 'Get session detail',
                 parameters: [
                     { name: 'id', in: 'path', required: true, schema: { type: 'string', minLength: 1 } },
                 ],
                 responses: {
                     200: {
-                        description: 'Session summary',
+                        description: 'Session detail with usage, transcript, and conversation signals',
                         content: {
                             'application/json': {
-                                schema: { $ref: '#/components/schemas/SessionSummary' },
+                                schema: { $ref: '#/components/schemas/SessionDetailResponse' },
                                 examples: {
-                                    summary: {
+                                    detail: {
                                         value: {
                                             id: 'session_123',
                                             projectRoot: '/workspace/demo',
@@ -457,6 +462,36 @@ export function createOpenApiPaths() {
                                             createdAt: '2026-03-14T08:00:00.000Z',
                                             updatedAt: '2026-03-14T08:05:00.000Z',
                                             messageCount: 4,
+                                            usage: {
+                                                promptTokens: 120,
+                                                completionTokens: 32,
+                                                totalTokens: 152,
+                                            },
+                                            transcript: [
+                                                { role: 'system', content: 'system' },
+                                                { role: 'user', content: 'inspect this session' },
+                                                { role: 'tool', content: 'patched payload', toolCallId: 'tool_1' },
+                                                { role: 'system', content: 'Verification passed: detail payload includes transcript signals' },
+                                                { role: 'assistant', content: 'session detail is now visible over HTTP' },
+                                            ],
+                                            conversationSignals: [
+                                                { type: 'user', content: 'inspect this session' },
+                                                {
+                                                    type: 'tool',
+                                                    content: 'patched payload',
+                                                    toolCallId: 'tool_1',
+                                                    toolName: 'write_file',
+                                                    success: true,
+                                                },
+                                                {
+                                                    type: 'verification',
+                                                    content: 'Verification passed: detail payload includes transcript signals',
+                                                    ok: true,
+                                                    blocked: false,
+                                                    summary: 'Verification passed: detail payload includes transcript signals',
+                                                },
+                                                { type: 'assistant', content: 'session detail is now visible over HTTP' },
+                                            ],
                                         },
                                     },
                                 },
@@ -479,10 +514,41 @@ export function createOpenApiPaths() {
                 ],
                 responses: {
                     200: {
-                        description: 'Session transcript messages',
+                        description: 'Session transcript messages with derived conversation signals',
                         content: {
                             'application/json': {
                                 schema: { $ref: '#/components/schemas/SessionMessagesResponse' },
+                                examples: {
+                                    transcript: {
+                                        value: {
+                                            messages: [
+                                                { role: 'system', content: 'system' },
+                                                { role: 'user', content: 'inspect this session' },
+                                                { role: 'tool', content: 'patched payload', toolCallId: 'tool_1' },
+                                                { role: 'system', content: 'Verification passed: detail payload includes transcript signals' },
+                                                { role: 'assistant', content: 'session detail is now visible over HTTP' },
+                                            ],
+                                            conversationSignals: [
+                                                { type: 'user', content: 'inspect this session' },
+                                                {
+                                                    type: 'tool',
+                                                    content: 'patched payload',
+                                                    toolCallId: 'tool_1',
+                                                    toolName: 'write_file',
+                                                    success: true,
+                                                },
+                                                {
+                                                    type: 'verification',
+                                                    content: 'Verification passed: detail payload includes transcript signals',
+                                                    ok: true,
+                                                    blocked: false,
+                                                    summary: 'Verification passed: detail payload includes transcript signals',
+                                                },
+                                                { type: 'assistant', content: 'session detail is now visible over HTTP' },
+                                            ],
+                                        },
+                                    },
+                                },
                             },
                         },
                     },
@@ -591,6 +657,64 @@ export function createOpenApiPaths() {
                         content: {
                             'application/x-ndjson': {
                                 schema: { $ref: '#/components/schemas/StreamWireRecord' },
+                                examples: {
+                                    eventLine: {
+                                        summary: 'NDJSON event line with stable conversation envelope',
+                                        value: {
+                                            type: 'event',
+                                            streamId: 'stream_123',
+                                            seq: 7,
+                                            cursor: 7,
+                                            event: {
+                                                schemaVersion: 1,
+                                                eventId: 'session_123:turn_7:event:7',
+                                                sessionId: 'session_123',
+                                                turnId: 'session_123:turn_7',
+                                                timestamp: '2026-04-22T12:00:00.000Z',
+                                                type: 'verification.completed',
+                                                payload: {
+                                                    source: 'runtime',
+                                                    ok: true,
+                                                    blocked: false,
+                                                    summary: 'Verification passed: stream contract and docs are aligned',
+                                                },
+                                            },
+                                        },
+                                    },
+                                    terminalEventLine: {
+                                        summary: 'NDJSON terminal event line with stopReason in the envelope payload',
+                                        value: {
+                                            type: 'event',
+                                            streamId: 'stream_123',
+                                            seq: 8,
+                                            cursor: 8,
+                                            event: {
+                                                schemaVersion: 1,
+                                                eventId: 'session_123:turn_7:event:8',
+                                                sessionId: 'session_123',
+                                                turnId: 'session_123:turn_7',
+                                                timestamp: '2026-04-22T12:00:01.000Z',
+                                                type: 'status.changed',
+                                                payload: {
+                                                    source: 'runtime',
+                                                    status: 'done',
+                                                    stopReason: 'completed',
+                                                },
+                                            },
+                                        },
+                                    },
+                                    doneLine: {
+                                        summary: 'NDJSON done line',
+                                        value: {
+                                            type: 'done',
+                                            streamId: 'stream_123',
+                                            seq: 8,
+                                            cursor: 8,
+                                            response: 'All checks passed.',
+                                            sessionId: 'session_123',
+                                        },
+                                    },
+                                },
                             },
                         },
                     },

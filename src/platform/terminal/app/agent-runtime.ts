@@ -10,6 +10,13 @@ import {
     type TuiAgentSettings,
 } from '../../../application/agent/index.js';
 import {
+    buildProjectedConversationTranscript,
+    selectConversationTranscriptProjectionSources,
+    type ConversationEventStoreRecord,
+    type ConversationTranscriptEntry,
+} from '../../../domain/conversation/index.js';
+import type { ConversationEventEnvelope } from '@xqoder/protocol';
+import {
     RemoteTuiAgentService,
     TuiAgentService,
 } from '../../../infrastructure/agent/index.js';
@@ -17,6 +24,10 @@ import {
 interface TerminalSessionDetail {
     id: string;
     getMessages(): LLMMessage[];
+    getToolHistory?(): Array<{ id: string; name: string; success: boolean }>;
+    getVerificationHistory?(): Array<{ id: string; ok: boolean; blocked: boolean; summary: string; messages: string[] }>;
+    getConversationEvents?(): ConversationEventStoreRecord[];
+    getConversationEventEnvelopes?(): ConversationEventEnvelope[];
 }
 
 interface TerminalSessionSummary {
@@ -50,6 +61,7 @@ export interface TerminalSessionSnapshot {
     title?: string;
     cwd?: string;
     messages: LLMMessage[];
+    conversationSignals?: ConversationTranscriptEntry[];
 }
 
 export function createTerminalAgentRuntime(
@@ -142,6 +154,13 @@ export async function loadTerminalSessionHistory(
         return {
             sessionId,
             messages: data.messages,
+            conversationSignals: data.conversationSignals ?? buildProjectedConversationTranscript({
+                messages: data.messages.map((message) => ({
+                    role: message.role,
+                    content: message.content,
+                    ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
+                })),
+            }),
         };
     }
 
@@ -172,6 +191,29 @@ function loadLocalSessionHistory(
         title: summary?.title,
         cwd: summary?.cwd,
         messages: session.getMessages(),
+        conversationSignals: buildProjectedConversationTranscript({
+            messages: session.getMessages().map((message) => ({
+                role: message.role,
+                content: message.content,
+                ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
+            })),
+            toolHistory: session.getToolHistory?.()?.map((entry) => ({
+                id: entry.id,
+                name: entry.name,
+                success: entry.success,
+            })),
+            verificationHistory: session.getVerificationHistory?.()?.map((entry) => ({
+                id: entry.id,
+                ok: entry.ok,
+                blocked: entry.blocked,
+                summary: entry.summary,
+                messages: entry.messages,
+            })),
+            ...selectConversationTranscriptProjectionSources({
+                conversationEventEnvelopes: session.getConversationEventEnvelopes?.(),
+                conversationEvents: session.getConversationEvents?.(),
+            }),
+        }),
     };
 }
 

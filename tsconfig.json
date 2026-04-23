@@ -29,7 +29,7 @@
       "@xqoder/foundation-shared/*": ["./src/shared/*"],
       "@xqoder/shared": ["./src/infra/shared"],
       "@xqoder/protocol": ["./src/infra/protocol"],
-      "@xqoder/llm-api": ["./src/infra/llm"],
+      "@xqoder/llm-api": ["./src/shared/llm-api"],
       "@xqoder/permissions": ["./src/infra/permissions"],
       "@xqoder/agent": ["./src/core/agent"],
       "@xqoder/core-runtime": ["./src/core/runtime"],

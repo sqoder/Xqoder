@@ -1,11 +1,11 @@
-import type { AppEvent } from '@xqoder/protocol';
+import type { ConversationEventEnvelope } from '@xqoder/protocol';
 
-export type EventHandler = (event: AppEvent) => void | Promise<void>;
+export type EventHandler = (event: ConversationEventEnvelope) => void | Promise<void>;
 
 export class EventBus {
-  private readonly handlers = new Map<AppEvent['type'] | '*', Set<EventHandler>>();
+  private readonly handlers = new Map<ConversationEventEnvelope['type'] | '*', Set<EventHandler>>();
 
-  on(type: AppEvent['type'] | '*', handler: EventHandler): () => void {
+  on(type: ConversationEventEnvelope['type'] | '*', handler: EventHandler): () => void {
     const bucket = this.handlers.get(type) ?? new Set<EventHandler>();
     bucket.add(handler);
     this.handlers.set(type, bucket);
@@ -18,7 +18,7 @@ export class EventBus {
     };
   }
 
-  async emit(event: AppEvent): Promise<void> {
+  async emit(event: ConversationEventEnvelope): Promise<void> {
     const specific = this.handlers.get(event.type) ?? new Set<EventHandler>();
     const wildcard = this.handlers.get('*') ?? new Set<EventHandler>();
 

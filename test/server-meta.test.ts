@@ -188,6 +188,14 @@ describe('HTTP meta routes', () => {
                         createdAt,
                         format: 'json' as const,
                         artifactPath: '/tmp/parsed.json',
+                        usage: {
+                            promptTokens: 21,
+                            completionTokens: 5,
+                            totalTokens: 26,
+                            cacheReadTokens: 8,
+                            cacheCreationTokens: 3,
+                            cost: 0.45,
+                        },
                         content: '{"hello":"world"}',
                     };
                 }
@@ -200,6 +208,14 @@ describe('HTTP meta routes', () => {
                         createdAt,
                         format: 'json' as const,
                         artifactPath: '/tmp/broken.json',
+                        usage: {
+                            promptTokens: 11,
+                            completionTokens: 2,
+                            totalTokens: 13,
+                            cacheReadTokens: 4,
+                            cacheCreationTokens: 1,
+                            cost: 0.12,
+                        },
                         content: '{oops',
                     };
                 }
@@ -242,6 +258,14 @@ describe('HTTP meta routes', () => {
             projectRoot: '/project',
             createdAt: createdAt.toISOString(),
             format: 'json',
+            usage: {
+                promptTokens: 11,
+                completionTokens: 2,
+                totalTokens: 13,
+                cacheReadTokens: 4,
+                cacheCreationTokens: 1,
+                cost: 0.12,
+            },
             content: '{oops',
         });
     });

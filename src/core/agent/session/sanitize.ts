@@ -1,7 +1,6 @@
 /**
  * Session Persistence Sanitization
  * Used only for clones before writing to DB; does not modify the session in memory.
- * Rules can be found in docs/session-sanitization-rules.md
  */
 
 const REDACT = '***';

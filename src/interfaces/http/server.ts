@@ -15,7 +15,7 @@ import {
     resolveConfigWithEnvOverrides,
     type MessageAttachment,
 } from '@xqoder/shared';
-import type { AppEvent } from '@xqoder/protocol';
+import type { ConversationEventEnvelope } from '@xqoder/protocol';
 import type { QuestionAnswer, QuestionPrompt } from '@xqoder/plugin-sdk';
 import type { SessionShareStore } from '../../features/sessions/assets.js';
 import {
@@ -61,7 +61,7 @@ export interface ServerOptions {
         sessionId: string;
         message: string;
         attachments?: MessageAttachment[];
-        onEvent: (event: AppEvent) => void;
+        onEvent: (event: ConversationEventEnvelope) => void;
         requestQuestion: (prompt: QuestionPrompt) => Promise<QuestionAnswer>;
         signal?: AbortSignal;
     }) => Promise<{ response: string; sessionId: string }>;

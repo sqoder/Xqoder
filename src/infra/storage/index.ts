@@ -10,6 +10,10 @@ import {
 import type { SessionRecord, SessionStore } from '@xqoder/core-runtime';
 import type { CoreMessage, MessageAttachment as ProtocolAttachment } from '@xqoder/protocol';
 import type { LLMMessage, MessageAttachment as AgentAttachment } from '@xqoder/shared';
+import {
+  readOptionalSessionUsage,
+  serializeOptionalSessionUsage,
+} from '../../core/agent/session/session-usage.js';
 
 function toProtocolAttachment(attachment: AgentAttachment): ProtocolAttachment {
   return {
@@ -77,6 +81,7 @@ function toSessionRecord(summary: PersistedSessionSummary, session: AgentSession
       promptTokens: summary.usage.promptTokens,
       completionTokens: summary.usage.completionTokens,
       totalTokens: summary.usage.totalTokens,
+      ...serializeOptionalSessionUsage(summary.usage),
     },
   };
 }
@@ -92,12 +97,24 @@ function toAgentSession(record: SessionRecord): AgentSession {
       promptTokens: Number(record.metadata?.['promptTokens'] ?? 0),
       completionTokens: Number(record.metadata?.['completionTokens'] ?? 0),
       totalTokens: Number(record.metadata?.['totalTokens'] ?? 0),
+      ...readOptionalSessionUsage({
+        cacheReadTokens: record.metadata?.['cacheReadTokens'],
+        cacheCreationTokens: record.metadata?.['cacheCreationTokens'],
+        cost: record.metadata?.['cost'],
+      }),
     },
     metadata: {
       compactions: [],
       toolHistory: [],
+      verificationHistory: [],
+      checkpointHistory: [],
       commandHistory: [],
       fileChanges: [],
+      toolResultRendererEvents: [],
+      toolResultTranscriptEntries: [],
+      toolResultEventStoreRecords: [],
+      conversationEvents: [],
+      conversationEventEnvelopes: [],
     },
   };
 

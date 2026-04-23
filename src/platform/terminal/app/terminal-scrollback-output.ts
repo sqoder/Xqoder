@@ -179,3 +179,41 @@ export function formatTerminalStatusNote(
     }
     return null;
 }
+
+export function formatTerminalUsageNote(input: {
+    model: string;
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    cost?: number;
+}): string {
+    const segments = [
+        '[usage]',
+        input.model,
+        `prompt=${input.promptTokens}`,
+        `completion=${input.completionTokens}`,
+        `total=${input.totalTokens}`,
+    ];
+
+    if (input.cost !== undefined) {
+        segments.push(`cost=$${formatTerminalUsageCost(input.cost)}`);
+    }
+
+    return segments.join(' ');
+}
+
+function formatTerminalUsageCost(cost: number): string {
+    if (!Number.isFinite(cost)) {
+        return '0';
+    }
+    if (cost === 0) {
+        return '0';
+    }
+    if (Math.abs(cost) >= 0.01) {
+        return cost.toFixed(2);
+    }
+    if (Math.abs(cost) >= 0.001) {
+        return cost.toFixed(4);
+    }
+    return cost.toFixed(6);
+}

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { createConversationEventEnvelopeEmitter } from '@xqoder/protocol';
 import {
     createTerminalSession,
     disposeTerminalAgentRuntime,
@@ -12,6 +13,8 @@ function createRuntime() {
     const latestSession = {
         id: 'session-latest',
         getMessages: () => [{ role: 'user', content: 'hi' }],
+        getToolHistory: () => [],
+        getVerificationHistory: () => [],
     };
 
     const runtime: TerminalAgentRuntime = {
@@ -42,6 +45,7 @@ function createRuntime() {
 
 function createRemoteRuntime() {
     const messages = [{ role: 'assistant', content: 'remote-hi' }];
+    const conversationSignals = [{ type: 'assistant', content: 'remote-hi' }];
     const remoteService = {
         isBusy: false,
         cancel() {},
@@ -57,6 +61,9 @@ function createRemoteRuntime() {
             return {
                 messages: sessionId === 'remote-session'
                     ? messages
+                    : [],
+                conversationSignals: sessionId === 'remote-session'
+                    ? conversationSignals
                     : [],
             };
         },
@@ -97,6 +104,7 @@ describe('restoreTerminalAgentSession', () => {
             title: 'Latest Session',
             cwd: '/project',
             messages: [{ role: 'user', content: 'hi' }],
+            conversationSignals: [{ type: 'user', content: 'hi' }],
         });
     });
 
@@ -113,6 +121,7 @@ describe('restoreTerminalAgentSession', () => {
         expect(restored).toEqual({
             sessionId: 'remote-session',
             messages: [{ role: 'assistant', content: 'remote-hi' }],
+            conversationSignals: [{ type: 'assistant', content: 'remote-hi' }],
         });
     });
 
@@ -124,6 +133,7 @@ describe('restoreTerminalAgentSession', () => {
         expect(restored).toEqual({
             sessionId: 'remote-session',
             messages: [{ role: 'assistant', content: 'remote-hi' }],
+            conversationSignals: [{ type: 'assistant', content: 'remote-hi' }],
         });
     });
 });
@@ -157,10 +167,136 @@ describe('terminal runtime helpers', () => {
             title: 'Latest Session',
             cwd: '/project',
             messages: [{ role: 'user', content: 'hi' }],
+            conversationSignals: [{ type: 'user', content: 'hi' }],
         });
         expect(remote).toEqual({
             sessionId: 'remote-session',
             messages: [{ role: 'assistant', content: 'remote-hi' }],
+            conversationSignals: [{ type: 'assistant', content: 'remote-hi' }],
+        });
+    });
+
+    it('rebuilds local resume conversation signals from persisted envelope events when legacy conversation records are absent', async () => {
+        const sessionId = 'session-envelope-local';
+        const turnId = `${sessionId}:turn:resume`;
+        const eventEmitter = createConversationEventEnvelopeEmitter(sessionId, turnId);
+        const session = {
+            id: sessionId,
+            getMessages: () => [],
+            getToolHistory: () => [],
+            getVerificationHistory: () => [],
+            getConversationEventEnvelopes: () => [
+                eventEmitter.emit({
+                    type: 'message.completed',
+                    sessionId,
+                    timestamp: Date.parse('2026-04-23T10:00:00.000Z'),
+                    source: 'agent',
+                    message: {
+                        id: `${sessionId}:user:1`,
+                        sessionId,
+                        role: 'user',
+                        content: 'inspect local envelope resume',
+                        createdAt: Date.parse('2026-04-23T10:00:00.000Z'),
+                    },
+                }),
+                eventEmitter.emit({
+                    type: 'tool.output',
+                    sessionId,
+                    timestamp: Date.parse('2026-04-23T10:00:01.000Z'),
+                    source: 'tool',
+                    provider: 'local',
+                    tool: 'write_file',
+                    output: 'patched local envelope resume payload',
+                }),
+                eventEmitter.emit({
+                    type: 'tool.completed',
+                    sessionId,
+                    timestamp: Date.parse('2026-04-23T10:00:01.100Z'),
+                    source: 'tool',
+                    provider: 'local',
+                    tool: 'write_file',
+                    success: true,
+                }),
+                eventEmitter.emit({
+                    type: 'verification.completed',
+                    sessionId,
+                    timestamp: Date.parse('2026-04-23T10:00:02.000Z'),
+                    source: 'agent',
+                    ok: true,
+                    blocked: false,
+                    summary: 'Verification passed: local envelope resume visible',
+                }),
+                eventEmitter.emit({
+                    type: 'message.completed',
+                    sessionId,
+                    timestamp: Date.parse('2026-04-23T10:00:03.000Z'),
+                    source: 'agent',
+                    message: {
+                        id: `${sessionId}:assistant:1`,
+                        sessionId,
+                        role: 'assistant',
+                        content: 'local envelope session restored',
+                        createdAt: Date.parse('2026-04-23T10:00:03.000Z'),
+                    },
+                }),
+                eventEmitter.emit({
+                    type: 'status.changed',
+                    sessionId,
+                    timestamp: Date.parse('2026-04-23T10:00:04.000Z'),
+                    source: 'agent',
+                    status: 'done',
+                    stopReason: 'completed',
+                }),
+            ],
+        };
+
+        const runtime: TerminalAgentRuntime = {
+            agentService: {
+                isBusy: false,
+                cancel() {},
+                async compactSession() { return null; },
+                async sendMessage() {
+                    return { sessionId, response: '' };
+                },
+                async dispose() {},
+            },
+            sessionStore: {
+                findLatestSession: () => null,
+                getSession: (requestedSessionId: string) => requestedSessionId === sessionId ? session : null,
+                getSessionSummary: (requestedSessionId: string) => (
+                    requestedSessionId === sessionId
+                        ? { id: sessionId, title: 'Envelope Session', cwd: '/project' }
+                        : null
+                ),
+                listSessions: () => [],
+                close() {},
+            },
+        };
+
+        const restored = await loadTerminalSessionHistory(runtime, sessionId);
+
+        expect(restored).toEqual({
+            sessionId,
+            title: 'Envelope Session',
+            cwd: '/project',
+            messages: [],
+            conversationSignals: [
+                { type: 'user', content: 'inspect local envelope resume' },
+                {
+                    type: 'tool',
+                    content: 'patched local envelope resume payload',
+                    toolName: 'write_file',
+                    success: true,
+                },
+                {
+                    type: 'verification',
+                    content: 'Verification passed: local envelope resume visible',
+                    ok: true,
+                    blocked: false,
+                    summary: 'Verification passed: local envelope resume visible',
+                },
+                { type: 'assistant', content: 'local envelope session restored' },
+            ],
         });
     });
 

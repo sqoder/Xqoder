@@ -170,7 +170,14 @@ describe('stats command surface', () => {
                         projectRoot: '/workspace/demo',
                         model: 'gpt-4.1',
                         updatedAt: new Date(),
-                        usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+                        usage: {
+                            promptTokens: 10,
+                            completionTokens: 20,
+                            totalTokens: 30,
+                            cacheReadTokens: 7,
+                            cacheCreationTokens: 2,
+                            cost: 0.42,
+                        },
                     }),
                     createSessionSummary({
                         id: 'old-demo',
@@ -185,7 +192,37 @@ describe('stats command surface', () => {
 
         expect(report.sessionCount).toBe(1);
         expect(report.scope.projectRoot).toBe('/workspace/demo');
-        expect(JSON.parse(outputs[0] ?? '{}').sessionCount).toBe(1);
+        expect(report.usage).toMatchObject({
+            promptTokens: 10,
+            completionTokens: 20,
+            totalTokens: 30,
+            cacheReadTokens: 7,
+            cacheCreationTokens: 2,
+            cost: 0.42,
+        });
+        expect(JSON.parse(outputs[0] ?? '{}')).toMatchObject({
+            sessionCount: 1,
+            usage: {
+                promptTokens: 10,
+                completionTokens: 20,
+                totalTokens: 30,
+                cacheReadTokens: 7,
+                cacheCreationTokens: 2,
+                cost: 0.42,
+            },
+            topModels: [{
+                model: 'gpt-4.1',
+                count: 1,
+                totalTokens: 30,
+                cost: 0.42,
+            }],
+            topProjects: [{
+                projectRoot: '/workspace/demo',
+                count: 1,
+                totalTokens: 30,
+                cost: 0.42,
+            }],
+        });
     });
 
     it('rejects invalid numeric filters', () => {
@@ -222,6 +259,9 @@ function createSessionSummary(input: {
         promptTokens: number;
         completionTokens: number;
         totalTokens: number;
+        cacheReadTokens?: number;
+        cacheCreationTokens?: number;
+        cost?: number;
     };
 }) {
     return {

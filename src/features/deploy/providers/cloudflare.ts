@@ -2,10 +2,26 @@
 // Cloudflare Pages Deployment Provider
 // ============================================================
 
-import { execSync } from 'node:child_process';
+import {
+    execFileSync,
+    execSync,
+    type ExecFileSyncOptionsWithStringEncoding,
+    type ExecSyncOptionsWithStringEncoding,
+} from 'node:child_process';
 import * as path from 'node:path';
 import { DeployTarget, DeployStatus, type DeployConfig, type DeployResult } from '@xqoder/shared';
 import { BaseDeployer } from '../deployer.js';
+
+type ExecFileSyncLike = (
+    file: string,
+    args: string[],
+    options: ExecFileSyncOptionsWithStringEncoding,
+) => string;
+
+type ExecSyncLike = (
+    command: string,
+    options: ExecSyncOptionsWithStringEncoding,
+) => string;
 
 /**
  * CloudflareDeployer
@@ -15,11 +31,20 @@ export class CloudflareDeployer extends BaseDeployer {
     readonly target = DeployTarget.Cloudflare;
     private accountId?: string;
     private apiToken?: string;
+    private readonly execFile: ExecFileSyncLike;
+    private readonly execShell: ExecSyncLike;
 
-    constructor(options?: { accountId?: string; apiToken?: string }) {
+    constructor(options?: {
+        accountId?: string;
+        apiToken?: string;
+        execFileSync?: ExecFileSyncLike;
+        execSync?: ExecSyncLike;
+    }) {
         super();
         this.accountId = options?.accountId ?? process.env['CLOUDFLARE_ACCOUNT_ID'];
         this.apiToken = options?.apiToken ?? process.env['CLOUDFLARE_API_TOKEN'];
+        this.execFile = options?.execFileSync ?? ((file, args, execOptions) => execFileSync(file, args, execOptions));
+        this.execShell = options?.execSync ?? execSync;
     }
 
     async deploy(config: DeployConfig): Promise<DeployResult> {
@@ -35,7 +60,7 @@ export class CloudflareDeployer extends BaseDeployer {
 
             // 2. Build project (if build command exists)
             if (config.buildCommand) {
-                execSync(config.buildCommand, {
+                this.execShell(config.buildCommand, {
                     cwd: config.projectDir,
                     encoding: 'utf-8',
                     timeout: 300000,
@@ -47,8 +72,8 @@ export class CloudflareDeployer extends BaseDeployer {
                 ? path.join(config.projectDir, config.outputDir)
                 : config.projectDir;
 
-            const deployCmd = this.buildDeployCommand(config, deployDir);
-            const output = execSync(deployCmd, {
+            const deployArgs = this.buildDeployArgs(config, deployDir);
+            const output = this.execFile('npx', deployArgs, {
                 cwd: config.projectDir,
                 encoding: 'utf-8',
                 timeout: 300000,
@@ -92,18 +117,18 @@ export class CloudflareDeployer extends BaseDeployer {
         return DeployStatus.Ready;
     }
 
-    /** Build deployment command */
-    private buildDeployCommand(config: DeployConfig, deployDir: string): string {
+    /** Build deployment argv for Wrangler. */
+    private buildDeployArgs(config: DeployConfig, deployDir: string): string[] {
         const projectName = (config.projectName ?? path.basename(config.projectDir)).toLowerCase().replace(/[^a-z0-9-]/g, '-');
-        const parts = ['npx', '-y', 'wrangler', 'pages', 'deploy', deployDir];
+        const args = ['-y', 'wrangler', 'pages', 'deploy', deployDir];
 
-        parts.push('--project-name', projectName);
+        args.push('--project-name', projectName);
 
         if (this.accountId) {
-            parts.push('--account-id', this.accountId);
+            args.push('--account-id', this.accountId);
         }
 
-        return parts.join(' ');
+        return args;
     }
 
     /** Parse deployment URL */

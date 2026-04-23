@@ -30,6 +30,7 @@ import {
 } from '../src/application/system/notepad.js';
 import {
     createPermissionsSnapshot,
+    runSetApprovalPolicyCommand,
     runSetPermissionsDefaultCommand,
     runPermissionsPathCommand,
     runSetToolPermissionCommand,
@@ -37,6 +38,7 @@ import {
 } from '../src/application/system/permissions.js';
 import type { SandboxSettings } from '@xqoder/shared';
 import {
+    discoverCommandRegistrations,
     getBuiltInCommandRegistrations,
     resolveEnabledPluginNames,
 } from '../src/plugins/command-plugins.js';
@@ -237,9 +239,11 @@ describe('permissions command helpers', () => {
 
         manager.load({ mode: 'single' });
         runSetPermissionsDefaultCommand('allow', {}, { writeOutput: () => {} }, manager);
+        runSetApprovalPolicyCommand('workspace_auto', {}, { writeOutput: () => {} }, manager);
         runSetToolPermissionCommand('bash', 'deny', {}, { writeOutput: () => {} }, manager);
 
         let snapshot = createPermissionsSnapshot({}, manager);
+        expect(snapshot.permissions.approvalPolicy).toBe('workspace_auto');
         expect(snapshot.permissions.defaultMode).toBe('allow');
         expect(snapshot.permissions.tools['bash']).toBe('deny');
 
@@ -339,8 +343,10 @@ describe('permissions snapshot helpers', () => {
         const snapshot = createPermissionsSnapshot({}, new ConfigManager({ configPath, homeDir }));
         const source = snapshot.sources[0];
 
+        expect(snapshot.permissions.approvalPolicy).toBe('strict');
         expect(source.tools['bash']).toBe('deny');
         expect('defaultMode' in source).toBe(false);
+        expect('approvalPolicy' in source).toBe(false);
         expect('sandboxMode' in source).toBe(false);
     });
 });
@@ -380,6 +386,25 @@ describe('command plugin defaults', () => {
         expect(names.has('hooks')).toBe(true);
         expect(names.has('memory')).toBe(true);
         expect(names.has('notepad')).toBe(false);
+    });
+
+    it('keeps legacy cli-remote plugin configs limited to the serve command', async () => {
+        const registrations = await discoverCommandRegistrations({
+            cwd: process.cwd(),
+            pluginConfig: {
+                enabled: ['cli-core-shell', 'cli-remote', 'cli-workflows'],
+                disabled: [],
+                paths: [],
+            },
+            productName: 'xqoder',
+            productVersion: '0.1.0',
+        });
+        const names = new Set(registrations.map((registration) => registration.name));
+
+        expect(names.has('serve')).toBe(true);
+        expect(names.has('attach')).toBe(false);
+        expect(names.has('acp')).toBe(false);
+        expect(names.has('hooks')).toBe(false);
     });
 });
 

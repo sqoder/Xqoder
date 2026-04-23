@@ -1,7 +1,12 @@
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { ToolParameter } from '@xqoder/shared';
-import type { ToolApprovalRequest } from './tools/tool.js';
+import type { MCPServerConfig, ToolParameter } from '@xqoder/shared';
+import type {
+    McpToolOperation,
+    ToolApprovalRequest,
+    ToolSecurityPolicyContext,
+    ToolTrustLevel,
+} from './tools/tool.js';
 
 type JsonSchemaLike = {
     type?: unknown;
@@ -139,16 +144,71 @@ export function buildSyntheticApproval(
     toolName: string,
     serverName: string,
     summary: string,
-    preview?: string,
+    options: {
+        operation: McpToolOperation;
+        preview?: string;
+        trust: ToolTrustLevel;
+    },
 ): ToolApprovalRequest {
     return {
         toolCallId: '',
         toolName,
         summary: `${summary} @ ${serverName}`,
-        reason: 'This call will access an external MCP server.',
-        preview,
-        risk: 'medium',
+        reason: buildMcpApprovalReason(options.trust, options.operation),
+        preview: options.preview,
+        risk: resolveMcpApprovalRisk(options.trust, options.operation),
     };
+}
+
+export function createMcpSecurityContext(
+    serverName: string,
+    trust: ToolTrustLevel,
+    operation: McpToolOperation,
+): ToolSecurityPolicyContext {
+    return {
+        source: 'mcp',
+        serverName,
+        trust,
+        operation,
+    };
+}
+
+export function resolveMcpServerTrust(
+    server: Pick<MCPServerConfig, 'trust' | 'transport'>,
+): ToolTrustLevel {
+    if (server.trust === 'trusted' || server.trust === 'untrusted') {
+        return server.trust;
+    }
+
+    return server.transport === 'http' || server.transport === 'sse'
+        ? 'untrusted'
+        : 'trusted';
+}
+
+function resolveMcpApprovalRisk(
+    trust: ToolTrustLevel,
+    operation: McpToolOperation,
+): 'low' | 'medium' | 'high' {
+    if (trust === 'untrusted') {
+        return 'high';
+    }
+
+    return operation === 'tool_call' ? 'medium' : 'low';
+}
+
+function buildMcpApprovalReason(
+    trust: ToolTrustLevel,
+    operation: McpToolOperation,
+): string {
+    if (trust === 'untrusted') {
+        return 'This call targets an untrusted MCP server and requires explicit approval before external data or tools are accessed.';
+    }
+
+    if (operation === 'tool_call') {
+        return 'This call invokes an MCP tool on a trusted MCP server and may have side effects outside the current workspace.';
+    }
+
+    return 'This call reads data from a trusted MCP server.';
 }
 
 export function requireStringArgument(args: Record<string, unknown>, key: string): string {

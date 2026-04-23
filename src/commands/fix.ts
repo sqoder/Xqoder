@@ -12,6 +12,7 @@ import {
     type RepairProjectInput,
 } from '@xqoder/workflow';
 import { MISSING_API_KEY_GUIDANCE } from '../application/config/api-key-guidance.js';
+import { llmProviderRequiresApiKey } from '../application/config/api-key-guidance.js';
 import { createCliToolApprovalHandler, createCliToolStreamHandler } from '../ux/tool-approval.js';
 
 interface FixCommandOptions {
@@ -45,6 +46,7 @@ function createDefaultRepairProject(
             cwd: options.dir,
             projectRoot: options.dir,
             modelOverride: options.model,
+            runtimeProfile: 'mvp',
             promptAppendix: `You are XQoder, an AI coding assistant.
 The project encountered errors during execution. Please fix the code based on the execution report and error summary:
 - Read relevant source files
@@ -88,9 +90,14 @@ export async function runFixCommand(
         cwd: options.dir,
         projectRoot: options.dir,
         modelOverride: options.model,
+        runtimeProfile: 'mvp',
     });
 
-    if (!dependencies.repairProject && !defaultFixAgentConfig.llmConfig.apiKey.trim()) {
+    if (
+        !dependencies.repairProject
+        && llmProviderRequiresApiKey(defaultFixAgentConfig.llmConfig.provider)
+        && !defaultFixAgentConfig.llmConfig.apiKey.trim()
+    ) {
         throw new Error(MISSING_API_KEY_GUIDANCE);
     }
 

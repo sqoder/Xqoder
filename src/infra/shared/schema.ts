@@ -164,9 +164,22 @@ export function generateConfigSchema(): JsonSchema {
                 description: 'Permission settings',
                 properties: {
                     defaultMode: { type: 'string', enum: ['allow', 'ask', 'deny'], default: 'ask' },
+                    approvalPolicy: {
+                        type: 'string',
+                        enum: ['strict', 'balanced', 'workspace_auto'],
+                        default: 'strict',
+                    },
                     tools: {
                         type: 'object',
                         additionalProperties: { type: 'string', enum: ['allow', 'ask', 'deny'] },
+                    },
+                    allowedTools: {
+                        type: 'array',
+                        items: { type: 'string' },
+                    },
+                    disallowedTools: {
+                        type: 'array',
+                        items: { type: 'string' },
                     },
                 },
             },
@@ -215,6 +228,7 @@ export function generateConfigSchema(): JsonSchema {
                                 transport: { type: 'string', enum: ['stdio', 'http', 'sse'] },
                                 url: { type: 'string' },
                                 headers: { type: 'object', additionalProperties: { type: 'string' } },
+                                trust: { type: 'string', enum: ['trusted', 'untrusted'] },
                                 timeoutMs: { type: 'number' },
                             },
                             required: ['name'],

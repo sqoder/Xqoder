@@ -59,6 +59,44 @@ describe('McpServerManager', () => {
     it('keeps the manager available through the public mcp entry', () => {
         expect(ReExportedManager).toBe(McpServerManager);
     });
+
+    it('propagates server trust metadata into generated MCP tool adapters', async () => {
+        const manager = new McpServerManager({
+            servers: [
+                createServer('local-docs'),
+                {
+                    name: 'remote-docs',
+                    transport: 'http',
+                    url: 'https://mcp.example.test',
+                },
+            ],
+            cwd: '/workspace',
+            projectRoot: '/workspace',
+        }, () => createClient('shared', [], {
+            supportsPrompts: () => true,
+            supportsResources: () => true,
+            listTools: async () => [{ name: 'lookup', description: 'Lookup docs' }],
+        }));
+
+        const tools = await manager.listTools();
+        const localTool = tools.find((tool) => tool.definition.name === 'mcp.local-docs.lookup');
+        const remoteResourceTool = tools.find((tool) => tool.definition.name === 'mcp.remote-docs.resources.list');
+
+        expect(localTool?.getSecurityPolicyContext?.()).toMatchObject({
+            source: 'mcp',
+            serverName: 'local-docs',
+            trust: 'trusted',
+            operation: 'tool_call',
+        });
+        expect(remoteResourceTool?.getSecurityPolicyContext?.()).toMatchObject({
+            source: 'mcp',
+            serverName: 'remote-docs',
+            trust: 'untrusted',
+            operation: 'list_resources',
+        });
+
+        await manager.dispose();
+    });
 });
 
 function createServer(name: string): MCPServerConfig {

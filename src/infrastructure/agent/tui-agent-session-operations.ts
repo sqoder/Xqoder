@@ -3,6 +3,7 @@ import {
     configManager,
     resolveConfigWithEnvOverrides,
     type PermissionSettings,
+    type SandboxSettings,
 } from '@xqoder/shared';
 import {
     AgentSession,
@@ -12,11 +13,18 @@ import {
     type AgentConfig,
 } from '@xqoder/agent';
 import type { AgentSessionStore } from '@xqoder/storage-sqlite';
-import { buildProjectNotepadPromptAppendix } from '../../application/system/notepad.js';
 import type {
     SendMessageResult,
     TuiAgentSettings,
 } from '../../application/agent/index.js';
+import { buildConversationTurnInput } from '../../application/chat/turn-intake.js';
+import {
+    buildChatPromptAppendixFromRoute,
+    resolveChatRuntimeIdentity,
+} from '../../application/chat/prompt-composer.js';
+import {
+    resolveAgentInstructionAppendix,
+} from '../../application/instructions/index.js';
 
 export interface ResolvedTuiAgentConfig {
     resolvedDir: string;
@@ -34,6 +42,7 @@ interface TuiAgentSessionDependencies {
     resolveAgentConfig?: (params: {
         settings: TuiAgentSettings;
         session?: AgentSession;
+        message?: string;
         includePermissionPromptAppendix?: boolean;
     }) => ResolvedTuiAgentConfig;
     createSummarizer?: (llmConfig: AgentConfig['llmConfig']) => {
@@ -48,22 +57,55 @@ export function resolveTuiAgentConfig(
     params: {
         settings: TuiAgentSettings;
         session?: AgentSession;
+        message?: string;
         includePermissionPromptAppendix?: boolean;
     },
 ): ResolvedTuiAgentConfig {
-    const { settings, session, includePermissionPromptAppendix = false } = params;
+    const { settings, session, message = '', includePermissionPromptAppendix = false } = params;
     const resolvedDir = path.resolve(settings.dir);
     const loadedConfig = configManager.load({ cwd: resolvedDir });
     const { config: effectiveConfig } = resolveConfigWithEnvOverrides(loadedConfig);
-    const promptAppendix = includePermissionPromptAppendix
+    const sandbox = effectiveConfig.sandbox ?? {
+        mode: 'project',
+        allowedPaths: [],
+    } satisfies SandboxSettings;
+    const turnInput = buildConversationTurnInput({
+        prompt: message,
+        cwd: resolvedDir,
+        sessionId: session?.id,
+        startNewSession: !session,
+        model: settings.model,
+        agent: settings.agent,
+        entrypoint: 'tui',
+    });
+    const runtimeDecision = turnInput.runtime.runtimeDecision;
+    const runtimeIdentity = runtimeDecision.shouldIncludeRuntimeIdentity
+        ? resolveChatRuntimeIdentity(effectiveConfig, settings.agent, settings.model)
+        : undefined;
+    const chatPromptAppendix = buildChatPromptAppendixFromRoute(
+        turnInput.runtime.interaction,
+        sandbox,
+        resolvedDir,
+        runtimeIdentity,
+    );
+    const instructionPromptAppendix = resolveAgentInstructionAppendix({
+        config: effectiveConfig,
+        cwd: resolvedDir,
+        agentName: settings.agent,
+    });
+    const permissionPromptAppendix = includePermissionPromptAppendix
         ? [
             'Permission execution rules:',
             '- When the user explicitly requests a path outside the project (e.g., Desktop), you MUST attempt use the target path directly.',
             '- Do NOT reply "cannot access system path" and offer an alternative script instead.',
             '- Let the tool trigger the permission approval dialog, allowing the user to decide (allow once / allow full session / deny).',
-            buildProjectNotepadPromptAppendix(resolvedDir),
         ].join('\n')
-        : buildProjectNotepadPromptAppendix(resolvedDir);
+        : undefined;
+    const promptAppendix = [
+        chatPromptAppendix,
+        instructionPromptAppendix,
+        permissionPromptAppendix,
+    ].filter((value): value is string => Boolean(value?.trim())).join('\n\n');
 
     return {
         resolvedDir,
@@ -75,6 +117,7 @@ export function resolveTuiAgentConfig(
             modelOverride: settings.model,
             promptAppendix,
             session,
+            runtimeProfile: runtimeDecision.runtimeProfile,
         }),
     };
 }
@@ -83,8 +126,13 @@ export function resolveTuiAgentSendContext(
     sessionStore: AgentSessionStore,
     sessionId: string | undefined,
     settings: TuiAgentSettings,
-    dependencies: TuiAgentSessionDependencies = {},
+    messageOrDependencies: string | TuiAgentSessionDependencies = '',
+    maybeDependencies: TuiAgentSessionDependencies = {},
 ): ResolvedTuiAgentSendContext {
+    const message = typeof messageOrDependencies === 'string' ? messageOrDependencies : '';
+    const dependencies = typeof messageOrDependencies === 'string'
+        ? maybeDependencies
+        : messageOrDependencies;
     const session = sessionId ? sessionStore.getSession(sessionId) ?? undefined : undefined;
     const resolveAgentConfig = dependencies.resolveAgentConfig ?? resolveTuiAgentConfig;
     const {
@@ -94,8 +142,12 @@ export function resolveTuiAgentSendContext(
     } = resolveAgentConfig({
         settings,
         session,
+        message,
     });
 
+    if (session) {
+        session.setSystemPrompt(baseAgentConfig.systemPrompt);
+    }
     const activeSession = session ?? new AgentSession({
         systemPrompt: baseAgentConfig.systemPrompt,
     });
@@ -133,6 +185,7 @@ export async function compactTuiAgentSession(
     } = resolveAgentConfig({
         settings,
         session,
+        message: '',
         includePermissionPromptAppendix: true,
     });
 

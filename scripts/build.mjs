@@ -5,6 +5,7 @@
 
 import path from 'path';
 import fs from 'fs';
+import { spawnSync } from 'node:child_process';
 
 const rootDir = path.resolve(import.meta.dirname, '..');
 const distDir = path.resolve(rootDir, 'dist');
@@ -33,6 +34,7 @@ async function build() {
         'string-width',
         'openai',
         '@anthropic-ai/sdk',
+        'better-sqlite3',
         'tree-kill',
         'fsevents',
         'typescript',
@@ -50,8 +52,22 @@ async function build() {
       process.exit(1);
     }
 
-    // Bun's outdir naming for single entrypoint results in index.js usually
-    // but check if it's correct. Bun names it index.js if entrypoint is index.ts.
+    const declarations = spawnSync('bun', [
+      'x',
+      'tsc',
+      '-p',
+      'tsconfig.json',
+      '--emitDeclarationOnly',
+    ], {
+      cwd: rootDir,
+      stdio: 'inherit',
+    });
+
+    if (declarations.status !== 0) {
+      console.error('❌ Declaration emit failed.');
+      process.exit(declarations.status ?? 1);
+    }
+
     console.log('✅ Build succeeded. Output: dist/index.js');
   } catch (err) {
     console.error('❌ Build failed:', err.message);

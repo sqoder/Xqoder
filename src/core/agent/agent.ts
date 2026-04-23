@@ -2,6 +2,8 @@
 // ============================================================
 
 import type {
+    ApprovalPolicy,
+    ExecutionCapability,
     LLMProviderConfig,
     MessageAttachment,
     LSPServerConfig,
@@ -10,32 +12,39 @@ import type {
     ToolCall,
     SandboxMode,
     ShellConfig,
+    TaskMode,
     PermissionSettings,
+    ToolResult,
     HooksSettings,
 } from '@xqoder/shared';
-import { AgentError, logger as defaultLogger, Logger, calculateCost, getContextWindow, type CompactionConfig } from '@xqoder/shared';
+import { logger as defaultLogger, Logger, type CompactionConfig } from '@xqoder/shared';
 import { getXQoderPaths } from '@xqoder/shared';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
-    type CompletionRequest,
-} from '@xqoder/llm-api';
-import {
     createLLMProvider,
 } from './llm/factory.js';
-import { buildLocalFallbackGuidance } from '../../shared/local-fallback.js';
 import type { ILLMProvider } from './llm/provider.js';
 import { ExternalLanguageServerManager } from './lsp-manager.js';
 import { McpServerManager } from './mcp.js';
-import { MvpRuntimeController } from './mvp/orchestrator.js';
+import { createMvpConversationRuntime } from './mvp/conversation-runtime.js';
 import { loadMvpRuntimeConfig } from './mvp/runtime-config.js';
 import type { AgentRuntimeProfile, MvpRuntimeConfig } from './mvp/types.js';
 import { ToolRegistry, type ITool, type QuestionAnswer, type QuestionPrompt, type ToolApprovalRequest, type ToolContext } from './tools/tool.js';
 import { FileRollbackStore, type RollbackStore } from './tools/rollback-store.js';
 import { registerDefaultAgentTools } from './agent-default-tools.js';
 import { executeAgentToolCalls } from './agent-tool-execution.js';
+import {
+    finalizePreparedAgentToolCall,
+    invokePreparedAgentToolCall,
+    prepareAgentToolCall,
+} from './agent-tool-execution.js';
 import { syncDynamicMcpTools } from './agent-tool-sync.js';
 import { AgentSession } from './session/session.js';
+import {
+    isToolVisibleForExecutionCapability,
+    resolveToolPermissionMode,
+} from '../../domain/permissions/index.js';
 import {
     type AgentProtocol,
     type AgentEvent,
@@ -43,6 +52,12 @@ import {
     type Unsubscribe,
     type AgentSend,
 } from './protocol.js';
+import {
+    ConversationEngineStopError,
+    runConversationTurn,
+    streamConversationTurn,
+} from '../../application/chat/conversation-engine.js';
+import type { ConversationStopReason } from '../../domain/conversation/stop-reason.js';
 
 /** Agent Configuration */
 export interface AgentConfig {
@@ -63,6 +78,9 @@ export interface AgentConfig {
     rollbackStore?: RollbackStore;
     /** XQoder style: prioritize short-circuiting based on permission keys allow/ask/deny before tool execution */
     permissions?: PermissionSettings;
+    taskMode?: TaskMode;
+    executionCapability?: ExecutionCapability;
+    approvalPolicy?: ApprovalPolicy;
     /** Disable configured runtime hooks without deleting them */
     disableAllHooks?: boolean;
     /** Runtime hooks grouped by lifecycle event */
@@ -78,10 +96,11 @@ export interface AgentConfig {
 }
 
 /** Agent runtime callbacks */
-/** Agent runtime callbacks */
 export interface AgentCallbacks extends StreamCallbacks {
     /** Low-level runtime events emitted during the run */
     onEvent?: (event: AgentEvent) => void;
+    /** Turn-level stop reason emitted when the run reaches a terminal state */
+    onStop?: (stopReason: ConversationStopReason) => void;
     /** Tool execution start */
     onToolStart?: (name: string, args: Record<string, unknown>) => void;
     /** Tool execution end */
@@ -170,6 +189,8 @@ export class XQoderAgent implements AgentProtocol {
     private readonly agentName?: string;
     private readonly autoApproveTools: boolean;
     private readonly permissions?: PermissionSettings;
+    private readonly taskMode?: TaskMode;
+    private readonly executionCapability: ExecutionCapability;
     private readonly disableAllHooks: boolean;
     private readonly hooks?: HooksSettings;
     private readonly compaction?: CompactionConfig;
@@ -177,6 +198,7 @@ export class XQoderAgent implements AgentProtocol {
     private readonly mvpRuntimeConfig?: MvpRuntimeConfig;
     private readonly contextPaths: string[];
     private readonly providerFactory?: AgentConfig['providerFactory'];
+    private readonly sessionResumed: boolean;
     private activeCallbacks?: AgentCallbacks;
     private activeAbort?: AbortController;
     private subscribers = new Set<(event: AgentEvent) => void>();
@@ -205,10 +227,14 @@ export class XQoderAgent implements AgentProtocol {
         if (!config.session && config.sessionTitle) {
             this.session.setTitle(config.sessionTitle);
         }
+        this.sessionResumed = Boolean(config.session);
 
         this.maxIterations = config.maxIterations ?? 20;
         this.autoApproveTools = config.autoApproveTools ?? false;
         this.permissions = config.permissions;
+        this.taskMode = config.taskMode;
+        this.executionCapability = config.executionCapability
+            ?? inferExecutionCapability(config.agentName, this.runtimeProfile);
         this.disableAllHooks = config.disableAllHooks ?? false;
         this.hooks = config.hooks;
         this.compaction = config.compaction;
@@ -331,6 +357,10 @@ export class XQoderAgent implements AgentProtocol {
         return this.activeAbort !== undefined && !this.activeAbort.signal.aborted;
     }
 
+    /**
+     * Compatibility wrapper over the application-layer conversation engine.
+     * Keep the public AgentProtocol contract stable while turn execution lives in application/chat.
+     */
     async run(userMessage: string, callbacks?: AgentCallbacks, attachments: MessageAttachment[] = [], streamId: string = randomUUID()): Promise<string> {
         this.activeAbort?.abort();
         const abort = new AbortController();
@@ -340,165 +370,56 @@ export class XQoderAgent implements AgentProtocol {
         this.emit('agent_start', { streamId }, streamId);
         this.emit('message', { role: 'user', content: userMessage }, streamId);
 
-        const provider = await this.ensureProvider();
-        this.session.addUserMessage(userMessage, attachments);
-        const toolHistoryBaseline = this.session.getToolHistory().length;
-        this.logger.info(`User request: ${userMessage.slice(0, 100)}...`);
-        const mvpRuntime = this.runtimeProfile === 'mvp' || this.runtimeProfile === 'hybrid'
-            ? new MvpRuntimeController({
-                userGoal: userMessage,
-                projectRoot: this.toolContext.projectRoot,
-                contextPaths: this.contextPaths,
-                shell: this.toolContext.shell,
-                session: this.session,
-                rollbackStore: this.rollbackStore,
-                runtimeProfile: this.runtimeProfile,
-                runtimeConfig: this.mvpRuntimeConfig,
-            })
-            : undefined;
-
-        let iteration = 0;
-
         try {
-        while (iteration < this.maxIterations) {
-            if (abort.signal.aborted) {
-                this.logger.warn('Agent cancelled by user');
-                this.emit('agent_end', { streamId, reason: 'aborted' }, streamId);
-                return '[cancelled by user]';
-            }
-
-            iteration++;
-            try { callbacks?.onIteration?.(iteration); } catch { /* UI callback failure */ }
-            this.logger.debug(`Iteration ${iteration}/${this.maxIterations}`);
-            if (this.runtimeProfile !== 'mvp') {
-                try { await this.syncMcpTools(); } catch { /* MCP sync failure is non-fatal */ }
-            }
-            const forcedStopMessage = mvpRuntime?.getForcedStopMessage();
-            if (forcedStopMessage) {
-                this.logger.warn(`MVP runtime forced stop: ${forcedStopMessage}`);
-                this.emit('agent_end', { streamId, reason: 'completed' }, streamId);
-                return forcedStopMessage;
-            }
-
-            // Build request
-            const request: CompletionRequest = {
-                messages: mvpRuntime ? mvpRuntime.prepareMessages() : this.session.getMessages(),
-                tools: this.toolRegistry.getDefinitions(),
-            };
-
-            // Call LLM
-            let response;
-            try {
-                const streamCallbacks: StreamCallbacks = {
-                    ...callbacks,
-                    onToken: (token) => {
-                        this.emit('message', { role: 'assistant', content: token }, streamId); // Note: Gemini style might delta this
-                        callbacks?.onToken?.(token);
-                    },
-                    onThinkingToken: (token) => {
-                        this.emit('thought', { content: token }, streamId);
-                        callbacks?.onThinkingToken?.(token);
-                    }
-                };
-                if (callbacks?.onToken || true) { // Always stream for protocol
-                    response = await provider.stream(request, streamCallbacks);
-                } else {
-                    response = await provider.complete(request);
-                }
-            } catch (err) {
-                const error = err instanceof Error ? err : new Error(String(err));
-                const baseMessage = `LLM call failed: ${error.message}`;
-                const guidance = await buildLocalFallbackGuidance({
-                    error: new Error(baseMessage),
-                    llmConfig: this.llmConfig,
-                    agentName: this.agentName,
-                });
-                const msg = guidance ? `${baseMessage}\n\n${guidance}` : baseMessage;
-                this.emit('error', { message: msg, fatal: true }, streamId);
-                throw new AgentError(msg);
-            }
-
-            // Cost tracking
-            const cost = calculateCost(this.llmConfig.model, response.usage);
-            this.session.recordUsage({ ...response.usage, cost });
-            this.emit('usage', {
-                model: this.llmConfig.model,
-                promptTokens: response.usage.promptTokens,
-                completionTokens: response.usage.completionTokens,
-                totalTokens: response.usage.totalTokens,
-                cost,
-            }, streamId);
-
-            // Auto-compact: if context usage ≥ 85%, trigger summarization (like Open Code / Claude Code)
-            const ctxWindow = getContextWindow(this.llmConfig.model);
-            if (
-                this.runtimeProfile !== 'mvp'
-                && this.compaction?.auto !== false
-                && ctxWindow
-                && response.usage.promptTokens >= ctxWindow * 0.85
-            ) {
-                this.logger.warn(`Context usage at ${Math.round(response.usage.promptTokens / ctxWindow * 100)}%, triggering auto-compact`);
-                try {
-                    const messages = this.session.getMessages().filter(m => m.role !== 'system');
-                    const summaryAgent = new (await import('./sub-agents.js')).SummarizerAgent(this.llmConfig);
-                    const summary = await summaryAgent.summarize(messages);
-                    this.session.performCompaction(summary);
-                    this.emit('message', { role: 'system', content: `[Auto-compacted context summary]: ${summary}` }, streamId);
-                    try { callbacks?.onToolEnd?.('auto_compact', summary, true); } catch { /* ignore */ }
-                } catch (err) {
-                    this.logger.error(`Auto-compact failed: ${err instanceof Error ? err.message : String(err)}`);
-                }
-            }
-
-            const completionBlocker = response.finishReason === 'tool_calls'
-                ? undefined
-                : mvpRuntime?.getCompletionBlocker();
-
-            if (!completionBlocker || response.finishReason === 'tool_calls') {
-                this.session.addAssistantMessage(response.message);
-            }
-
-            // Check if there are tool calls
-            if (response.finishReason === 'tool_calls' && response.message.toolCalls) {
-                await this.executeToolCalls(response.message.toolCalls, callbacks, streamId);
-                await mvpRuntime?.runPostToolVerification();
-                // Continue loop, let LLM handle tool results
-                continue;
-            }
-
-            if (completionBlocker) {
-                this.session.addMessage({
-                    role: 'system',
-                    content: completionBlocker,
-                });
-                continue;
-            }
-
-            const noToolCompletionBlocker = mvpRuntime?.getNoToolCompletionBlocker(
-                this.session.getToolHistory().length > toolHistoryBaseline,
-            );
-            if (noToolCompletionBlocker) {
-                this.session.addMessage({
-                    role: 'system',
-                    content: noToolCompletionBlocker,
-                });
-                continue;
-            }
-
-            // No tool calls, Agent complete
-            this.logger.success(`Agent completed in ${iteration} iterations`);
-            this.emit('agent_end', { streamId, reason: 'completed' }, streamId);
-            return mvpRuntime?.finalizeAssistantResponse(response.message.content) ?? response.message.content;
-        }
-
-        const maxIterMsg = `Maximum iterations reached (${this.maxIterations})`;
-        this.emit('error', { message: maxIterMsg, fatal: true }, streamId);
-        this.emit('agent_end', { streamId, reason: 'failed' }, streamId);
-        throw new AgentError(maxIterMsg);
+            const result = await runConversationTurn({
+                provider: await this.ensureProvider(),
+                session: this.session,
+                userMessage,
+                attachments,
+                callbacks,
+                streamId,
+                abortSignal: abort.signal,
+                logger: this.logger,
+                llmConfig: this.llmConfig,
+                agentName: this.agentName,
+                runtimeProfile: this.runtimeProfile,
+                maxTurns: this.maxIterations,
+                compaction: this.compaction,
+                cwd: this.toolContext.cwd,
+                sessionResumed: this.sessionResumed,
+                emit: this.emit.bind(this),
+                taskMode: this.taskMode,
+                getToolDefinitions: () => this.toolRegistry.getTools()
+                    .filter((tool) => isToolVisibleForExecutionCapability(
+                        tool.definition.name,
+                        this.executionCapability,
+                        tool.getSecurityPolicyContext?.(),
+                    ))
+                    .map((tool) => tool.definition),
+                toolExecutionPort: this.createToolExecutionPort(),
+                executeToolCalls: (toolCalls, callbackSet, activeStreamId) => this.executeToolCalls(
+                    toolCalls,
+                    callbackSet as AgentCallbacks | undefined,
+                    activeStreamId,
+                ),
+                syncMcpTools: this.syncMcpTools.bind(this),
+                createRuntime: () => this.createMvpRuntime(userMessage),
+            });
+            try { callbacks?.onStop?.(result.stopReason); } catch { /* noop */ }
+            return result.response;
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            this.emit('error', { message: msg, fatal: false }, streamId);
-            this.emit('agent_end', { streamId, reason: 'error' }, streamId);
+            if (err instanceof ConversationEngineStopError) {
+                try { callbacks?.onStop?.(err.stopReason); } catch { /* noop */ }
+                this.emit('agent_end', {
+                    streamId,
+                    reason: err.agentEndReason,
+                    summary: err.stopReason,
+                }, streamId);
+            } else {
+                this.emit('error', { message: msg, fatal: false }, streamId);
+                this.emit('agent_end', { streamId, reason: 'error' }, streamId);
+            }
             throw err;
         } finally {
             this.activeCallbacks = undefined;
@@ -506,13 +427,78 @@ export class XQoderAgent implements AgentProtocol {
         }
     }
 
+    streamTurn(
+        userMessage: string,
+        callbacks?: AgentCallbacks,
+        attachments: MessageAttachment[] = [],
+        streamId: string = randomUUID(),
+    ) {
+        this.activeAbort?.abort();
+        const abort = new AbortController();
+        this.activeAbort = abort;
+        this.activeCallbacks = callbacks;
+
+        this.emit('agent_start', { streamId }, streamId);
+        this.emit('message', { role: 'user', content: userMessage }, streamId);
+
+        const self = this;
+        return {
+            async *[Symbol.asyncIterator]() {
+                try {
+                    const provider = await self.ensureProvider();
+                    const stream = streamConversationTurn({
+                        provider,
+                        session: self.session,
+                        userMessage,
+                        attachments,
+                        callbacks,
+                        streamId,
+                        abortSignal: abort.signal,
+                        logger: self.logger,
+                        llmConfig: self.llmConfig,
+                        agentName: self.agentName,
+                        runtimeProfile: self.runtimeProfile,
+                        maxTurns: self.maxIterations,
+                        compaction: self.compaction,
+                        cwd: self.toolContext.cwd,
+                        sessionResumed: self.sessionResumed,
+                        emit: self.emit.bind(self),
+                        taskMode: self.taskMode,
+                        getToolDefinitions: () => self.toolRegistry.getTools()
+                            .filter((tool) => isToolVisibleForExecutionCapability(
+                                tool.definition.name,
+                                self.executionCapability,
+                                tool.getSecurityPolicyContext?.(),
+                            ))
+                            .map((tool) => tool.definition),
+                        toolExecutionPort: self.createToolExecutionPort(),
+                        executeToolCalls: (toolCalls, callbackSet, activeStreamId) => self.executeToolCalls(
+                            toolCalls,
+                            callbackSet as AgentCallbacks | undefined,
+                            activeStreamId,
+                        ),
+                        syncMcpTools: self.syncMcpTools.bind(self),
+                        createRuntime: () => self.createMvpRuntime(userMessage),
+                    });
+
+                    for await (const event of stream) {
+                        yield event;
+                    }
+                } finally {
+                    self.activeCallbacks = undefined;
+                    self.activeAbort = undefined;
+                }
+            },
+        };
+    }
+
     /** Execute tool calls */
     private async executeToolCalls(
         toolCalls: ToolCall[],
         callbacks?: AgentCallbacks,
         streamId: string = 'global'
-    ): Promise<void> {
-        await executeAgentToolCalls(
+    ): Promise<ToolResult[]> {
+        return await executeAgentToolCalls(
             {
                 toolRegistry: this.toolRegistry,
                 session: this.session,
@@ -521,6 +507,7 @@ export class XQoderAgent implements AgentProtocol {
                 llmConfig: this.llmConfig,
                 autoApproveTools: this.autoApproveTools,
                 permissions: this.permissions,
+                executionCapability: this.executionCapability,
                 disableAllHooks: this.disableAllHooks || this.runtimeProfile === 'mvp',
                 hooks: this.runtimeProfile === 'mvp' ? undefined : this.hooks,
                 emit: this.emit.bind(this),
@@ -529,6 +516,35 @@ export class XQoderAgent implements AgentProtocol {
             callbacks,
             streamId,
         );
+    }
+
+    private createToolExecutionPort() {
+        return {
+            prepareToolCall: (input: {
+                toolCall: ToolCall;
+                callbacks?: AgentCallbacks;
+                streamId: string;
+            }) => prepareAgentToolCall(
+                {
+                    toolRegistry: this.toolRegistry,
+                    session: this.session,
+                    toolContext: this.toolContext,
+                    logger: this.logger,
+                    llmConfig: this.llmConfig,
+                    autoApproveTools: this.autoApproveTools,
+                    permissions: this.permissions,
+                    executionCapability: this.executionCapability,
+                    disableAllHooks: this.disableAllHooks || this.runtimeProfile === 'mvp',
+                    hooks: this.runtimeProfile === 'mvp' ? undefined : this.hooks,
+                    emit: this.emit.bind(this),
+                },
+                input.toolCall,
+                input.callbacks,
+                input.streamId,
+            ),
+            invokePreparedToolCall: invokePreparedAgentToolCall,
+            finalizeToolCall: finalizePreparedAgentToolCall,
+        };
     }
 
     /** Register default tools */
@@ -551,6 +567,31 @@ export class XQoderAgent implements AgentProtocol {
     /** Get tool registry */
     getToolRegistry(): ToolRegistry {
         return this.toolRegistry;
+    }
+
+    async listVisibleTools(): Promise<Array<{ name: string; description?: string; permissionMode: string }>> {
+        try {
+            await this.syncMcpTools();
+        } catch {
+            // Tool discovery should stay best-effort for direct commands.
+        }
+
+        return this.toolRegistry.getTools()
+            .filter((tool) => isToolVisibleForExecutionCapability(
+                tool.definition.name,
+                this.executionCapability,
+                tool.getSecurityPolicyContext?.(),
+            ))
+            .map((tool) => ({
+                name: tool.definition.name,
+                ...(tool.definition.description ? { description: tool.definition.description } : {}),
+                permissionMode: resolveToolPermissionMode(
+                    tool.definition.name,
+                    this.permissions,
+                    tool.getSecurityPolicyContext?.(),
+                ),
+            }))
+            .sort((left, right) => left.name.localeCompare(right.name));
     }
 
     /** Get current session */
@@ -581,6 +622,21 @@ export class XQoderAgent implements AgentProtocol {
         );
     }
 
+    private createMvpRuntime(userMessage: string) {
+        return this.runtimeProfile === 'mvp' || this.runtimeProfile === 'hybrid'
+            ? createMvpConversationRuntime({
+                userGoal: userMessage,
+                projectRoot: this.toolContext.projectRoot,
+                contextPaths: this.contextPaths,
+                shell: this.toolContext.shell,
+                session: this.session,
+                rollbackStore: this.rollbackStore,
+                runtimeProfile: this.runtimeProfile,
+                runtimeConfig: this.mvpRuntimeConfig,
+            })
+            : undefined;
+    }
+
     private async syncMcpTools(): Promise<void> {
         await syncDynamicMcpTools({
             mcpManager: this.mcpManager,
@@ -588,4 +644,19 @@ export class XQoderAgent implements AgentProtocol {
             trackedToolNames: this.mcpToolNames,
         });
     }
+}
+
+function inferExecutionCapability(
+    agentName: string | undefined,
+    runtimeProfile: AgentRuntimeProfile,
+): ExecutionCapability {
+    if (agentName === 'plan') {
+        return 'plan';
+    }
+
+    if (agentName === 'explore' || agentName === 'summary' || agentName === 'title' || agentName === 'compaction') {
+        return 'read_only';
+    }
+
+    return runtimeProfile === 'mvp' ? 'read_only' : 'workspace_write';
 }

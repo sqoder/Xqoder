@@ -44,6 +44,7 @@ export function createDefaultConfig(env: NodeJS.ProcessEnv = process.env): XQode
         permissions: {
             defaultMode: 'ask',
             tools: {},
+            approvalPolicy: 'strict',
         },
         disableAllHooks: false,
         vercel: {},

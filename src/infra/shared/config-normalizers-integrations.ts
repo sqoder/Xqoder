@@ -2,6 +2,7 @@ import {
     type LSPServerConfig,
     type LSPSettings,
     type MCPServerConfig,
+    type MCPServerTrustLevel,
     type MCPSettings,
     type PluginPreferences,
     type SandboxSettings,
@@ -66,6 +67,7 @@ function normalizeMCPServerConfig(server: MCPServerConfig): MCPServerConfig {
         ...(cwd !== undefined ? { cwd } : {}),
         ...(server.url?.trim() ? { url: server.url.trim() } : {}),
         ...(Object.keys(normalizedHeaders).length > 0 ? { headers: normalizedHeaders } : {}),
+        trust: normalizeMcpTrust(server.trust, transport),
         enabled: server.enabled ?? true,
         timeoutMs: normalizeTimeout(server.timeoutMs),
     };
@@ -121,6 +123,19 @@ function normalizeTimeout(value: number | undefined): number {
         return 15_000;
     }
     return Math.trunc(value);
+}
+
+function normalizeMcpTrust(
+    value: MCPServerTrustLevel | undefined,
+    transport: MCPServerConfig['transport'],
+): MCPServerTrustLevel {
+    if (value === 'trusted' || value === 'untrusted') {
+        return value;
+    }
+
+    return transport === 'http' || transport === 'sse'
+        ? 'untrusted'
+        : 'trusted';
 }
 
 function normalizePort(value: number | undefined): number {

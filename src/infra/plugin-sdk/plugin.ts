@@ -1,4 +1,4 @@
-import type { AppEvent } from '@xqoder/protocol';
+import type { ConversationEventEnvelope } from '@xqoder/protocol';
 import type { CommandRegistration } from './commands.js';
 import type { AuthProvider, AgentProvider, ModelProvider, SyncProvider, ToolProvider } from './providers.js';
 import type { ConfigSchemaExtension } from './schemas.js';
@@ -23,7 +23,10 @@ export interface PluginAPI {
   registerSyncProvider(provider: SyncProvider): void;
   registerAuthProvider(provider: AuthProvider): void;
   extendConfig(extension: ConfigSchemaExtension): void;
-  onEvent(type: AppEvent['type'] | '*', handler: (event: AppEvent) => void | Promise<void>): void;
+  onEvent(
+    type: ConversationEventEnvelope['type'] | '*',
+    handler: (event: ConversationEventEnvelope) => void | Promise<void>,
+  ): void;
 }
 
 export interface Plugin {

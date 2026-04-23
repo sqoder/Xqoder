@@ -1,10 +1,6 @@
-import type { LLMMessage } from '@xqoder/shared';
 import type { AgentSession } from '../session/session.js';
 import type { RollbackStore } from '../tools/rollback-store.js';
-import { collectMvpContext } from './context-collector.js';
-import { shapeMvpContext } from './context-shaper.js';
 import { MvpFailurePatternMemory } from './pattern-memory.js';
-import { planMvpTurn, renderMvpPlannerPrompt } from './planner.js';
 import {
     applyMvpRecoveryDecision,
     renderMvpRecoveryMessage,
@@ -56,7 +52,7 @@ export class MvpRuntimeController {
     private lastFailureDigest?: string;
     private repeatedFailureCount = 0;
     private retriedFailureDigests = new Set<string>();
-    private latestTaskType: ReturnType<typeof collectMvpContext>['taskType'] = 'question';
+    private latestTaskType: MvpTaskType = 'question';
     private latestStopEvaluation?: MvpStopEvaluationResult;
     private latestVerification?: MvpVerificationResult;
     private latestBaselineSignal?: MvpBaselineSignal;
@@ -68,32 +64,10 @@ export class MvpRuntimeController {
         this.failurePatternMemory = new MvpFailurePatternMemory(options.projectRoot);
     }
 
-    prepareMessages(): LLMMessage[] {
+    beginTurn(taskType: MvpTaskType): void {
         this.loopCount += 1;
         this.latestBaselineSignal = readLatestBaselineSignal(this.options.session);
-
-        const context = collectMvpContext({
-            userGoal: this.options.userGoal,
-            projectRoot: this.options.projectRoot,
-            contextPaths: this.options.contextPaths,
-            session: this.options.session,
-        });
-        this.latestTaskType = context.taskType;
-        const shaped = shapeMvpContext(context);
-        const plan = planMvpTurn({
-            context,
-            hasBlockingVerification: Boolean(this.completionBlockReason),
-            hasPendingWrites: this.getPendingSuccessfulWrites().length > 0,
-            runtimeProfile: this.options.runtimeProfile,
-        });
-
-        return [
-            ...this.options.session.getMessages(),
-            {
-                role: 'system',
-                content: renderMvpPlannerPrompt(shaped, plan),
-            },
-        ];
+        this.latestTaskType = taskType;
     }
 
     async runPostToolVerification(): Promise<void> {
@@ -234,50 +208,20 @@ export class MvpRuntimeController {
         return undefined;
     }
 
-    getForcedStopMessage(): string | undefined {
-        if (this.runtimeConfig.stopConditions.timeoutMs !== undefined) {
-            const elapsed = Date.now() - this.startedAt;
-            if (elapsed > this.runtimeConfig.stopConditions.timeoutMs) {
-                return `⏹ 停止：timeout（已运行 ${this.loopCount} 轮）`;
-            }
-        }
-
-        if (this.loopCount > this.runtimeConfig.stopConditions.maxLoops) {
-            return `⏹ 停止：max_loops（已运行 ${this.loopCount - 1} 轮）`;
-        }
-
-        return undefined;
+    hasPendingSuccessfulWrites(): boolean {
+        return this.getPendingSuccessfulWrites().length > 0;
     }
 
-    finalizeAssistantResponse(content: string): string {
-        if (this.latestTaskType === 'question') {
-            return content;
-        }
-
-        if (this.latestStopEvaluation?.reason === 'all_met') {
-            return content.startsWith('✅ 完成')
-                ? content
-                : `✅ 完成\n${content}`;
-        }
-
-        return content;
+    getLoopCount(): number {
+        return this.loopCount;
     }
 
-    requiresToolEvidence(): boolean {
-        return this.latestTaskType !== 'question';
+    getStartedAtMs(): number {
+        return this.startedAt;
     }
 
-    getNoToolCompletionBlocker(toolExecutedInCurrentRun: boolean): string | undefined {
-        if (toolExecutedInCurrentRun || !this.requiresToolEvidence()) {
-            return undefined;
-        }
-
-        return [
-            'Do not finish yet.',
-            'No tool activity was recorded in this run.',
-            `Task type is ${this.latestTaskType}, so you must execute real tools before concluding.`,
-            'Call one or more tools (search_code, read_file, write_file, run_shell), then continue the loop with real execution evidence.',
-        ].join('\n');
+    isCompletionReady(): boolean {
+        return this.latestTaskType !== 'question' && this.latestStopEvaluation?.reason === 'all_met';
     }
 
     private async verifyCurrentState(): Promise<{

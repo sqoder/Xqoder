@@ -1,6 +1,7 @@
 import {
     ConfigManager,
     configManager,
+    type ApprovalPolicy,
     type AgentPermissionMode,
     type PermissionSettings,
     type SandboxMode,
@@ -31,14 +32,23 @@ export interface PermissionRuleView {
     tool?: string;
 }
 
+type ResolvedPermissionSettings = PermissionSettings & {
+    defaultMode: AgentPermissionMode;
+    tools: Record<string, AgentPermissionMode>;
+    allowedTools: string[];
+    disallowedTools: string[];
+    approvalPolicy: Extract<ApprovalPolicy, 'strict' | 'balanced' | 'workspace_auto'>;
+};
+
 export interface PermissionsSnapshot {
     cwd: string;
-    permissions: Required<PermissionSettings>;
+    permissions: ResolvedPermissionSettings;
     sandboxMode: SandboxMode;
     sources: Array<{
         kind: string;
         path: string;
         defaultMode?: AgentPermissionMode;
+        approvalPolicy?: Extract<ApprovalPolicy, 'strict' | 'balanced' | 'workspace_auto'>;
         tools: Record<string, AgentPermissionMode>;
         sandboxMode?: SandboxMode;
     }>;
@@ -48,23 +58,28 @@ export interface PermissionsSnapshot {
 export interface PermissionWriteResult {
     scope: ConfigWriteScope;
     configPath: string;
-    permissions: Required<PermissionSettings>;
+    permissions: ResolvedPermissionSettings;
 }
 
 const VALID_PERMISSION_MODES: AgentPermissionMode[] = ['allow', 'ask', 'deny'];
+const VALID_APPROVAL_POLICIES = ['strict', 'balanced', 'workspace_auto'] as const;
 
 export function createPermissionsSnapshot(
     options: PermissionsOutputOptions = {},
     manager: Pick<ConfigManager, 'load' | 'getLoadMetadata'> = configManager,
 ): PermissionsSnapshot {
     const snapshot = createLayeredConfigSnapshot(resolvePermissionsSnapshotOptions(options), manager);
-    const sources = snapshot.sources.map((source) => ({
-        kind: describeConfigSourceKind(source.kind),
-        path: source.path,
-        ...(source.permissions?.defaultMode !== undefined ? { defaultMode: source.permissions.defaultMode } : {}),
-        tools: { ...(source.permissions?.tools ?? {}) },
-        ...(source.sandbox?.mode !== undefined ? { sandboxMode: source.sandbox.mode } : {}),
-    }));
+    const sources = snapshot.sources.map((source) => {
+        const approvalPolicy = normalizeV1ApprovalPolicy(source.permissions?.approvalPolicy);
+        return {
+            kind: describeConfigSourceKind(source.kind),
+            path: source.path,
+            ...(source.permissions?.defaultMode !== undefined ? { defaultMode: source.permissions.defaultMode } : {}),
+            ...(approvalPolicy !== undefined ? { approvalPolicy } : {}),
+            tools: { ...(source.permissions?.tools ?? {}) },
+            ...(source.sandbox?.mode !== undefined ? { sandboxMode: source.sandbox.mode } : {}),
+        };
+    });
 
     return {
         cwd: snapshot.cwd,
@@ -73,6 +88,7 @@ export function createPermissionsSnapshot(
             tools: { ...(snapshot.config.permissions?.tools ?? {}) },
             allowedTools: [...(snapshot.config.permissions?.allowedTools ?? [])],
             disallowedTools: [...(snapshot.config.permissions?.disallowedTools ?? [])],
+            approvalPolicy: normalizeV1ApprovalPolicy(snapshot.config.permissions?.approvalPolicy) ?? 'strict',
         },
         sandboxMode: snapshot.config.sandbox?.mode ?? 'project',
         sources,
@@ -91,9 +107,15 @@ export function runShowPermissionsCommand(
         return snapshot;
     }
 
+    writeOutput(formatPermissionsSnapshot(snapshot), dependencies);
+    return snapshot;
+}
+
+export function formatPermissionsSnapshot(snapshot: PermissionsSnapshot): string {
     const lines = [
         `cwd=${snapshot.cwd}`,
         `sandboxMode=${snapshot.sandboxMode}`,
+        `effectiveApprovalPolicy=${snapshot.permissions.approvalPolicy}`,
         `effectiveDefaultMode=${snapshot.permissions.defaultMode}`,
         `effectiveTools=${formatTools(snapshot.permissions.tools)}`,
     ];
@@ -114,12 +136,11 @@ export function runShowPermissionsCommand(
     if (snapshot.sources.length > 0) {
         lines.push('sources:');
         for (const source of snapshot.sources) {
-            lines.push(`- ${source.kind} ${source.path} default=${source.defaultMode ?? '-'} tools=${formatTools(source.tools)} sandbox=${source.sandboxMode ?? '-'}`);
+            lines.push(`- ${source.kind} ${source.path} policy=${source.approvalPolicy ?? '-'} default=${source.defaultMode ?? '-'} tools=${formatTools(source.tools)} sandbox=${source.sandboxMode ?? '-'}`);
         }
     }
 
-    writeOutput(lines.join('\n'), dependencies);
-    return snapshot;
+    return lines.join('\n');
 }
 
 export function runPermissionsPathCommand(
@@ -147,8 +168,34 @@ export function runSetPermissionsDefaultCommand(
     target.manager.set({
         ...current,
         permissions: {
+            approvalPolicy: current.permissions?.approvalPolicy ?? 'strict',
             defaultMode: parsedMode,
             tools: { ...(current.permissions?.tools ?? {}) },
+            ...(current.permissions?.allowedTools ? { allowedTools: [...current.permissions.allowedTools] } : {}),
+            ...(current.permissions?.disallowedTools ? { disallowedTools: [...current.permissions.disallowedTools] } : {}),
+        },
+    });
+    target.manager.save();
+    return writePermissionWriteResult(target.scope, target.manager, dependencies, options);
+}
+
+export function runSetApprovalPolicyCommand(
+    policy: string,
+    options: PermissionsOutputOptions = {},
+    dependencies: PermissionsCommandDependencies = {},
+    manager?: Pick<ConfigManager, 'load' | 'set' | 'save' | 'getLoadMetadata' | 'getConfigPath'>,
+): PermissionWriteResult {
+    const parsedPolicy = parseApprovalPolicy(policy);
+    const target = resolvePermissionsWriteTarget(options, manager);
+    const current = target.manager.load({ mode: 'single' });
+    target.manager.set({
+        ...current,
+        permissions: {
+            approvalPolicy: parsedPolicy,
+            defaultMode: current.permissions?.defaultMode ?? 'ask',
+            tools: { ...(current.permissions?.tools ?? {}) },
+            ...(current.permissions?.allowedTools ? { allowedTools: [...current.permissions.allowedTools] } : {}),
+            ...(current.permissions?.disallowedTools ? { disallowedTools: [...current.permissions.disallowedTools] } : {}),
         },
     });
     target.manager.save();
@@ -173,11 +220,14 @@ export function runSetToolPermissionCommand(
     target.manager.set({
         ...current,
         permissions: {
+            approvalPolicy: current.permissions?.approvalPolicy ?? 'strict',
             defaultMode: current.permissions?.defaultMode ?? 'ask',
             tools: {
                 ...(current.permissions?.tools ?? {}),
                 [normalizedTool]: parsedMode,
             },
+            ...(current.permissions?.allowedTools ? { allowedTools: [...current.permissions.allowedTools] } : {}),
+            ...(current.permissions?.disallowedTools ? { disallowedTools: [...current.permissions.disallowedTools] } : {}),
         },
     });
     target.manager.save();
@@ -202,8 +252,11 @@ export function runUnsetToolPermissionCommand(
     target.manager.set({
         ...current,
         permissions: {
+            approvalPolicy: current.permissions?.approvalPolicy ?? 'strict',
             defaultMode: current.permissions?.defaultMode ?? 'ask',
             tools: nextTools,
+            ...(current.permissions?.allowedTools ? { allowedTools: [...current.permissions.allowedTools] } : {}),
+            ...(current.permissions?.disallowedTools ? { disallowedTools: [...current.permissions.disallowedTools] } : {}),
         },
     });
     target.manager.save();
@@ -285,7 +338,7 @@ function writePermissionWriteResult(
     if (options.json) {
         writeOutput(JSON.stringify(result, null, 2), dependencies);
     } else {
-        writeOutput(`scope=${scope} configPath=${result.configPath} defaultMode=${result.permissions.defaultMode} tools=${formatTools(result.permissions.tools)}`, dependencies);
+        writeOutput(`scope=${scope} configPath=${result.configPath} approvalPolicy=${result.permissions.approvalPolicy} defaultMode=${result.permissions.defaultMode} tools=${formatTools(result.permissions.tools)}`, dependencies);
     }
 
     return result;
@@ -321,6 +374,24 @@ function parsePermissionMode(value: string): AgentPermissionMode {
         return normalized as AgentPermissionMode;
     }
     throw new Error(`Unsupported permission mode: ${value}`);
+}
+
+function parseApprovalPolicy(
+    value: string,
+): ResolvedPermissionSettings['approvalPolicy'] {
+    const normalized = value.trim().toLowerCase();
+    if ((VALID_APPROVAL_POLICIES as readonly string[]).includes(normalized)) {
+        return normalized as ResolvedPermissionSettings['approvalPolicy'];
+    }
+    throw new Error(`Unsupported approval policy: ${value}`);
+}
+
+function normalizeV1ApprovalPolicy(
+    value: ApprovalPolicy | undefined,
+): ResolvedPermissionSettings['approvalPolicy'] | undefined {
+    return value === 'strict' || value === 'balanced' || value === 'workspace_auto'
+        ? value
+        : undefined;
 }
 
 function normalizeOptionalToken(value: string | undefined): string | undefined {

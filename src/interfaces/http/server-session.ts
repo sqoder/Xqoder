@@ -1,9 +1,11 @@
 import * as http from 'node:http';
 import type { UrlWithParsedQuery } from 'node:url';
 import type { AgentSessionStore, PersistedSessionSummary } from '@xqoder/agent';
-import type { AppEvent } from '@xqoder/protocol';
+import type { ConversationEventEnvelope } from '@xqoder/protocol';
 import type { QuestionAnswer, QuestionPrompt } from '@xqoder/plugin-sdk';
 import type { MessageAttachment } from '@xqoder/shared';
+import { buildProjectedConversationTranscript } from '../../domain/conversation/index.js';
+import { selectConversationTranscriptProjectionSources } from '../../domain/conversation/index.js';
 import {
     jsonResponse,
     readBody,
@@ -28,7 +30,7 @@ type RunMessageStream = (params: {
     sessionId: string;
     message: string;
     attachments?: MessageAttachment[];
-    onEvent: (event: AppEvent) => void;
+    onEvent: (event: ConversationEventEnvelope) => void;
     requestQuestion: (prompt: QuestionPrompt) => Promise<QuestionAnswer>;
     signal?: AbortSignal;
 }) => Promise<{ response: string; sessionId: string }>;
@@ -91,6 +93,48 @@ function toSessionPayload(
     return payload;
 }
 
+function toConversationSignalsPayload(
+    session: NonNullable<ReturnType<AgentSessionStore['getSession']>>,
+): ReturnType<typeof buildProjectedConversationTranscript> {
+    const conversationEventEnvelopes = Array.isArray(session.getConversationEventEnvelopes?.())
+        ? session.getConversationEventEnvelopes!() as ConversationEventEnvelope[]
+        : undefined;
+    return buildProjectedConversationTranscript({
+        messages: session.getMessages().map((message) => ({
+            role: message.role,
+            content: String(message.content ?? ''),
+            ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
+        })),
+        toolHistory: session.getToolHistory().map((entry) => ({
+            id: entry.id,
+            name: entry.name,
+            success: entry.success,
+        })),
+        verificationHistory: session.getVerificationHistory().map((entry) => ({
+            id: entry.id,
+            ok: entry.ok,
+            blocked: entry.blocked,
+            summary: entry.summary,
+            messages: entry.messages,
+        })),
+        ...selectConversationTranscriptProjectionSources({
+            conversationEventEnvelopes,
+            conversationEvents: session.getConversationEvents(),
+        }),
+    });
+}
+
+function toSessionDetailPayload(
+    summary: PersistedSessionSummary,
+    session: NonNullable<ReturnType<AgentSessionStore['getSession']>>,
+): Record<string, unknown> {
+    return {
+        ...toSessionPayload(summary, { includeUsage: true }),
+        transcript: session.getMessages(),
+        conversationSignals: toConversationSignalsPayload(session),
+    };
+}
+
 async function readJsonBody<T>(
     req: http.IncomingMessage,
     readBodyImpl: ReadBody,
@@ -150,7 +194,7 @@ export async function handleSessionRoutes(params: SessionRouteParams): Promise<b
         const projectRoot = (parsed.query?.projectRoot as string) || cwd;
         const limit = Math.min(100, Math.max(1, Number(parsed.query?.limit) || 20));
         const summaries = store.listSessions(projectRoot, limit);
-        jsonResponse(res, 200, summaries.map((summary) => toSessionPayload(summary)), corsHeaders);
+        jsonResponse(res, 200, summaries.map((summary) => toSessionPayload(summary, { includeUsage: true })), corsHeaders);
         return true;
     }
 
@@ -186,7 +230,13 @@ export async function handleSessionRoutes(params: SessionRouteParams): Promise<b
             return true;
         }
 
-        jsonResponse(res, 200, toSessionPayload(summary, { includeUsage: true }), corsHeaders);
+        const session = store.getSession(sessionId);
+        if (!session) {
+            jsonResponse(res, 200, toSessionPayload(summary, { includeUsage: true }), corsHeaders);
+            return true;
+        }
+
+        jsonResponse(res, 200, toSessionDetailPayload(summary, session), corsHeaders);
         return true;
     }
 
@@ -203,7 +253,10 @@ export async function handleSessionRoutes(params: SessionRouteParams): Promise<b
             return true;
         }
 
-        jsonResponse(res, 200, { messages: session.getMessages() }, corsHeaders);
+        jsonResponse(res, 200, {
+            messages: session.getMessages(),
+            conversationSignals: toConversationSignalsPayload(session),
+        }, corsHeaders);
         return true;
     }
 

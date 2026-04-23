@@ -9,8 +9,6 @@ const TRACKED_SCAN_PATHS = [
   'scripts',
   'src',
   'test',
-  'README.md',
-  'ARCHITECTURE.md',
   'package.json',
   'tsconfig.json',
   'tsconfig.application-chat-strict.json',

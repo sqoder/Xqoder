@@ -5,6 +5,7 @@ import {
     configManager,
     getXQoderPaths,
     resolveConfigWithEnvOverrides,
+    type ApprovalPolicy,
     type AgentPermissionMode,
     type ConfigLoadMetadata,
     type ConfigSourceInfo,
@@ -144,7 +145,10 @@ function normalizePermissionFragment(value: unknown): PermissionSettings | undef
 
     const record = value as Record<string, unknown>;
     const defaultMode = record['defaultMode'];
+    const approvalPolicy = record['approvalPolicy'];
     const toolsValue = record['tools'];
+    const allowedTools = normalizeToolNameList(record['allowedTools']);
+    const disallowedTools = normalizeToolNameList(record['disallowedTools']);
     const toolEntries: Array<[string, AgentPermissionMode]> = Object.entries(
         toolsValue !== null && typeof toolsValue === 'object' ? toolsValue as Record<string, unknown> : {},
     ).flatMap(([toolName, mode]) => {
@@ -154,15 +158,42 @@ function normalizePermissionFragment(value: unknown): PermissionSettings | undef
             : [];
     });
     const tools = Object.fromEntries(toolEntries);
+    const normalizedApprovalPolicy = normalizeApprovalPolicy(approvalPolicy);
 
-    if (defaultMode !== 'allow' && defaultMode !== 'ask' && defaultMode !== 'deny' && Object.keys(tools).length === 0) {
+    if (
+        defaultMode !== 'allow'
+        && defaultMode !== 'ask'
+        && defaultMode !== 'deny'
+        && Object.keys(tools).length === 0
+        && normalizedApprovalPolicy === undefined
+        && allowedTools.length === 0
+        && disallowedTools.length === 0
+    ) {
         return undefined;
     }
 
     return {
         ...(defaultMode === 'allow' || defaultMode === 'ask' || defaultMode === 'deny' ? { defaultMode } : {}),
+        ...(normalizedApprovalPolicy ? { approvalPolicy: normalizedApprovalPolicy } : {}),
         ...(Object.keys(tools).length > 0 ? { tools } : {}),
+        ...(allowedTools.length > 0 ? { allowedTools } : {}),
+        ...(disallowedTools.length > 0 ? { disallowedTools } : {}),
     };
+}
+
+function normalizeApprovalPolicy(
+    value: unknown,
+): Extract<ApprovalPolicy, 'strict' | 'balanced' | 'workspace_auto'> | undefined {
+    return value === 'strict' || value === 'balanced' || value === 'workspace_auto'
+        ? value
+        : undefined;
+}
+
+function normalizeToolNameList(value: unknown): string[] {
+    return Array.isArray(value)
+        ? value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+            .map((entry) => entry.trim())
+        : [];
 }
 
 function normalizeSandboxFragment(value: unknown): SandboxSettings | undefined {

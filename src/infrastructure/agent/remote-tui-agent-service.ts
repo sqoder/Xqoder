@@ -1,13 +1,30 @@
 import * as path from 'node:path';
 import { Buffer } from 'node:buffer';
 import type { MessageAttachment as SharedMessageAttachment } from '@xqoder/shared';
+import {
+    createConversationEventEnvelopeEmitter,
+} from '@xqoder/protocol';
 import type {
     AgentRuntimeEvent,
+    AgentSessionMessagesResponse,
     RemoteAgentConversationPort,
     SendMessageCallbacks,
     SendMessageResult,
     TuiAgentSettings,
 } from '../../application/agent/index.js';
+import type { ConversationTranscriptEntry } from '../../domain/conversation/messages.js';
+
+type RemoteStreamWireRecord =
+    | {
+        type: 'event';
+        streamId: string;
+        seq: number;
+        cursor: number;
+        event: AgentRuntimeEvent;
+    }
+    | { type: 'done'; streamId: string; seq: number; cursor: number; response?: string; sessionId?: string }
+    | { type: 'error'; streamId: string; seq: number; cursor: number; message?: string }
+    | { type: 'cancelled'; streamId: string; seq: number; cursor: number; reason?: string };
 
 export class RemoteTuiAgentService implements RemoteAgentConversationPort {
     private busy = false;
@@ -101,11 +118,19 @@ export class RemoteTuiAgentService implements RemoteAgentConversationPort {
         return Array.isArray(list) ? list : [];
     }
 
-    async getSessionMessages(sessionId: string): Promise<{ messages: import('@xqoder/shared').LLMMessage[] }> {
-        const data = await this.fetchApi<{ messages: import('@xqoder/shared').LLMMessage[] }>(
+    async getSessionMessages(sessionId: string): Promise<AgentSessionMessagesResponse> {
+        const data = await this.fetchApi<{
+            messages?: import('@xqoder/shared').LLMMessage[];
+            conversationSignals?: ConversationTranscriptEntry[];
+        }>(
             `/session/${encodeURIComponent(sessionId)}/messages`,
         );
-        return { messages: Array.isArray(data?.messages) ? data.messages : [] };
+        return {
+            messages: Array.isArray(data?.messages) ? data.messages : [],
+            ...(Array.isArray(data?.conversationSignals)
+                ? { conversationSignals: data.conversationSignals }
+                : {}),
+        };
     }
 
     async createSession(projectRoot: string, title?: string): Promise<{ id: string; title: string }> {
@@ -145,21 +170,24 @@ export class RemoteTuiAgentService implements RemoteAgentConversationPort {
                 }
             }
 
-            const userMsgId = `remote:user:${Date.now()}`;
-            callbacks.onEvent({
-                type: 'message.started',
+            const userMessageCreatedAt = Date.now();
+            const userMsgId = `remote:user:${userMessageCreatedAt}`;
+            const userMessage = {
+                id: userMsgId,
                 sessionId: activeId,
-                timestamp: Date.now(),
+                role: 'user' as const,
+                content: message,
+                createdAt: userMessageCreatedAt,
+            };
+            const eventEmitter = createConversationEventEnvelopeEmitter(activeId);
+            callbacks.onEvent(eventEmitter.emitRecord('message.started', {
                 source: 'agent',
-                message: { id: userMsgId, sessionId: activeId, role: 'user', content: message, createdAt: Date.now() },
-            });
-            callbacks.onEvent({
-                type: 'message.completed',
-                sessionId: activeId,
-                timestamp: Date.now(),
+                message: userMessage,
+            }));
+            callbacks.onEvent(eventEmitter.emitRecord('message.completed', {
                 source: 'agent',
-                message: { id: userMsgId, sessionId: activeId, role: 'user', content: message, createdAt: Date.now() },
-            });
+                message: userMessage,
+            }));
 
             const body = {
                 message,
@@ -236,11 +264,7 @@ export class RemoteTuiAgentService implements RemoteAgentConversationPort {
                                 continue;
                             }
 
-                            const record = JSON.parse(rawLine) as
-                                | { type: 'event'; streamId: string; seq: number; cursor: number; event: AgentRuntimeEvent }
-                                | { type: 'done'; streamId: string; seq: number; cursor: number; response?: string; sessionId?: string }
-                                | { type: 'error'; streamId: string; seq: number; cursor: number; message?: string }
-                                | { type: 'cancelled'; streamId: string; seq: number; cursor: number; reason?: string };
+                            const record = JSON.parse(rawLine) as RemoteStreamWireRecord;
 
                             if ('streamId' in record && !streamId) {
                                 streamId = record.streamId;
@@ -256,18 +280,18 @@ export class RemoteTuiAgentService implements RemoteAgentConversationPort {
                                 if (record.event.type === 'question.requested') {
                                     const answer = callbacks.onQuestion
                                         ? await callbacks.onQuestion({
-                                            requestId: record.event.requestId,
-                                            question: record.event.question,
-                                            header: record.event.header,
-                                            options: record.event.options,
-                                            multiple: record.event.multiple,
-                                            allowCustom: record.event.allowCustom,
+                                            requestId: record.event.payload.requestId,
+                                            question: record.event.payload.question,
+                                            header: record.event.payload.header,
+                                            options: record.event.payload.options,
+                                            multiple: record.event.payload.multiple,
+                                            allowCustom: record.event.payload.allowCustom,
                                         })
                                         : {
-                                            requestId: record.event.requestId,
-                                            selected: record.event.options.length > 0 ? [record.event.options[0]!.label] : [],
+                                            requestId: record.event.payload.requestId,
+                                            selected: record.event.payload.options.length > 0 ? [record.event.payload.options[0]!.label] : [],
                                         };
-                                    await this.postQuestionResolve(activeId, record.event.requestId, {
+                                    await this.postQuestionResolve(activeId, record.event.payload.requestId, {
                                         selected: answer.selected ?? [],
                                         customText: answer.customText,
                                         streamId,

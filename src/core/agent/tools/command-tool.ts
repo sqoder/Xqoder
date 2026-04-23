@@ -264,103 +264,32 @@ export class RunCommandTool implements ITool {
 
     buildApprovalRequest(args: Record<string, unknown>): ToolApprovalRequest {
         const command = args['command'] as string;
-
-        return {
-            toolCallId: '',
-            toolName: 'run_command',
-            summary: `Execute command: ${command}`,
-            reason: 'Shell commands directly affect the project environment or file system.',
-            preview: command,
-            risk: 'high',
-        };
+        return buildShellApprovalRequest(this.definition.name, command);
     }
 
     async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+        return executeShellTool(args, context);
+    }
+}
+
+export class RunShellTool implements ITool {
+    readonly definition: ToolDefinition = {
+        name: 'run_shell',
+        description: 'Execute shell commands in the terminal. Use it for test, lint, build, or targeted runtime checks.',
+        parameters: [
+            { name: 'command', type: 'string', description: 'The shell command to execute', required: true },
+            { name: 'cwd', type: 'string', description: 'Working directory (optional, defaults to project root)', required: false },
+            { name: 'timeout', type: 'number', description: 'Timeout in milliseconds (default 30000)', required: false },
+        ],
+    };
+
+    buildApprovalRequest(args: Record<string, unknown>): ToolApprovalRequest {
         const command = args['command'] as string;
-        const timeout = (args['timeout'] as number) ?? 30000;
-        const toolCallId = (args['toolCallId'] as string) ?? '';
-        const startedAt = new Date();
-        let cwd: string;
+        return buildShellApprovalRequest(this.definition.name, command);
+    }
 
-        const safetyError = validateCommandSafety(command);
-        if (safetyError) {
-            return {
-                toolCallId,
-                success: false,
-                output: '',
-                error: safetyError,
-                metadata: createCommandMetadata(command, context.cwd, timeout, startedAt, new Date()),
-            };
-        }
-
-        try {
-            cwd = resolveWorkingDirectory(args['cwd'] as string | undefined, context);
-        } catch (err) {
-            if (isSandboxAccessError(err)) {
-                throw err;
-            }
-            return {
-                toolCallId,
-                success: false,
-                output: '',
-                error: err instanceof Error ? err.message : String(err),
-                metadata: createCommandMetadata(command, context.cwd, timeout, startedAt, new Date()),
-            };
-        }
-
-        const shell = getPersistentShell(context, cwd);
-        const result = await shell.execute(command, timeout);
-        const completedAt = new Date();
-
-        if (result.stdout) {
-            context.onToolStream?.({
-                chunk: result.stdout,
-                stream: 'stdout',
-            });
-        }
-        if (result.stderr) {
-            context.onToolStream?.({
-                chunk: result.stderr,
-                stream: 'stderr',
-            });
-        }
-
-        if (result.interrupted) {
-            return {
-                toolCallId,
-                success: false,
-                output: result.stdout,
-                error: `Command timed out (${timeout}ms): ${command}`,
-                metadata: createCommandMetadata(command, cwd, timeout, startedAt, completedAt),
-            };
-        }
-
-        if (result.err) {
-            return {
-                toolCallId,
-                success: false,
-                output: result.stdout,
-                error: `Command failed to start: ${result.err.message}`,
-                metadata: createCommandMetadata(command, cwd, timeout, startedAt, completedAt),
-            };
-        }
-
-        if (result.exitCode !== 0) {
-            return {
-                toolCallId,
-                success: false,
-                output: result.stdout,
-                error: `Command exited with code ${result.exitCode}: ${result.stderr || 'Unknown error'}`,
-                metadata: createCommandMetadata(command, cwd, timeout, startedAt, completedAt),
-            };
-        }
-
-        return {
-            toolCallId,
-            success: true,
-            output: result.stdout + (result.stderr ? `\n[stderr]: ${result.stderr}` : ''),
-            metadata: createCommandMetadata(command, cwd, timeout, startedAt, completedAt),
-        };
+    async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+        return executeShellTool(args, context);
     }
 }
 
@@ -463,5 +392,104 @@ function createCommandMetadata(
         timeout,
         startedAt: startedAt.toISOString(),
         completedAt: completedAt.toISOString(),
+    };
+}
+
+function buildShellApprovalRequest(toolName: string, command: string): ToolApprovalRequest {
+    return {
+        toolCallId: '',
+        toolName,
+        summary: `Execute command: ${command}`,
+        reason: 'Shell commands directly affect the project environment or file system.',
+        preview: command,
+        risk: 'high',
+    };
+}
+
+async function executeShellTool(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+    const command = args['command'] as string;
+    const timeout = (args['timeout'] as number) ?? 30000;
+    const toolCallId = (args['toolCallId'] as string) ?? '';
+    const startedAt = new Date();
+    let cwd: string;
+
+    const safetyError = validateCommandSafety(command);
+    if (safetyError) {
+        return {
+            toolCallId,
+            success: false,
+            output: '',
+            error: safetyError,
+            metadata: createCommandMetadata(command, context.cwd, timeout, startedAt, new Date()),
+        };
+    }
+
+    try {
+        cwd = resolveWorkingDirectory(args['cwd'] as string | undefined, context);
+    } catch (err) {
+        if (isSandboxAccessError(err)) {
+            throw err;
+        }
+        return {
+            toolCallId,
+            success: false,
+            output: '',
+            error: err instanceof Error ? err.message : String(err),
+            metadata: createCommandMetadata(command, context.cwd, timeout, startedAt, new Date()),
+        };
+    }
+
+    const shell = getPersistentShell(context, cwd);
+    const result = await shell.execute(command, timeout);
+    const completedAt = new Date();
+
+    if (result.stdout) {
+        context.onToolStream?.({
+            chunk: result.stdout,
+            stream: 'stdout',
+        });
+    }
+    if (result.stderr) {
+        context.onToolStream?.({
+            chunk: result.stderr,
+            stream: 'stderr',
+        });
+    }
+
+    if (result.interrupted) {
+        return {
+            toolCallId,
+            success: false,
+            output: result.stdout,
+            error: `Command timed out (${timeout}ms): ${command}`,
+            metadata: createCommandMetadata(command, cwd, timeout, startedAt, completedAt),
+        };
+    }
+
+    if (result.err) {
+        return {
+            toolCallId,
+            success: false,
+            output: result.stdout,
+            error: `Command failed to start: ${result.err.message}`,
+            metadata: createCommandMetadata(command, cwd, timeout, startedAt, completedAt),
+        };
+    }
+
+    if (result.exitCode !== 0) {
+        return {
+            toolCallId,
+            success: false,
+            output: result.stdout,
+            error: `Command exited with code ${result.exitCode}: ${result.stderr || 'Unknown error'}`,
+            metadata: createCommandMetadata(command, cwd, timeout, startedAt, completedAt),
+        };
+    }
+
+    return {
+        toolCallId,
+        success: true,
+        output: result.stdout + (result.stderr ? `\n[stderr]: ${result.stderr}` : ''),
+        metadata: createCommandMetadata(command, cwd, timeout, startedAt, completedAt),
     };
 }

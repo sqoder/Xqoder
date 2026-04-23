@@ -413,8 +413,25 @@ export type ProviderSettingsMap = Partial<Record<LLMProviderName, ProviderSettin
 /** Agent mode */
 export type AgentMode = 'primary' | 'subagent';
 
+export type TaskMode =
+    | 'casual_chat'
+    | 'project_question'
+    | 'plan_only'
+    | 'engineering_edit'
+    | 'debug_fix'
+    | 'code_review';
+
+export type ExecutionCapability = 'read_only' | 'plan' | 'workspace_write';
+
+export type ApprovalPolicy =
+    | 'strict'
+    | 'balanced'
+    | 'workspace_auto'
+    | 'full_auto'
+    | 'dangerous_full_access';
+
 /** Agent permission mode */
-export type AgentPermissionMode = 'allow' | 'ask' | 'deny';
+export type AgentPermissionMode = 'allow' | 'ask' | 'deny' | 'auto' | 'plan' | 'default' | 'bypassPermissions';
 
 /** Agent model reference */
 export interface LLMModelReference {
@@ -466,6 +483,12 @@ export interface PermissionSettings {
     defaultMode?: AgentPermissionMode;
     /** Per-tool override */
     tools?: Record<string, AgentPermissionMode>;
+    /** Explicitly allowed tools */
+    allowedTools?: string[];
+    /** Explicitly disallowed tools */
+    disallowedTools?: string[];
+    /** Approval policy for task-scoped permission gate */
+    approvalPolicy?: ApprovalPolicy;
 }
 
 export const SUPPORTED_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'] as const;
@@ -553,6 +576,8 @@ export interface TuiConfig {
 }
 
 /** MCP Server configuration */
+export type MCPServerTrustLevel = 'trusted' | 'untrusted';
+
 export interface MCPServerConfig {
     /** Config name, used for CLI and tool prefixes */
     name: string;
@@ -570,6 +595,8 @@ export interface MCPServerConfig {
     url?: string;
     /** Request headers in http/sse mode */
     headers?: Record<string, string>;
+    /** Trust level used by permission policy; defaults by transport */
+    trust?: MCPServerTrustLevel;
     /** Whether it is enabled */
     enabled?: boolean;
     /** Timeout for a single request in milliseconds */

@@ -1,278 +1,293 @@
-// xqoder serve — Headless HTTP Service (XQoder style)
-// ============================================================
-
-import * as fs from 'node:fs';
-import * as path from 'node:path';
+import type { Server as HttpServer } from 'node:http';
 import { Command } from 'commander';
-import { configManager, logger, resolveConfigWithEnvOverrides } from '@xqoder/shared';
-import { SQLiteSessionStore } from '@xqoder/agent';
-import type { AppEvent } from '@xqoder/protocol';
+import {
+    configManager,
+    getXQoderPaths,
+    resolveConfigWithEnvOverrides,
+    type XQoderConfig,
+} from '@xqoder/shared';
+import type { ConversationEventEnvelope } from '@xqoder/protocol';
 import type { QuestionAnswer, QuestionPrompt } from '@xqoder/plugin-sdk';
-import type {
-    AgentConversationPort,
-    AgentQuestionAnswer,
-    AgentQuestionRequest,
+import {
+    SQLiteSessionStore,
+    type AgentSessionStore,
+} from '@xqoder/storage-sqlite';
+import {
+    assertServeDirectoryWritable,
+    resolveServeRuntimeOptions,
+    type ServeCommandOptions,
+    type ServeRuntimeOptions,
+} from '../../application/remote/serve-runtime.js';
+import {
+    type AgentConversationPort,
+    type AgentQuestionRequest,
+    type TuiAgentSettings,
 } from '../../application/agent/index.js';
-import { createServer } from '../../interfaces/http/index.js';
 import { TuiAgentService } from '../../infrastructure/agent/index.js';
-import { FileSessionShareStore } from '../../features/sessions/assets.js';
+import {
+    createServer as createHttpServer,
+    type ServerOptions,
+} from '../../interfaces/http/index.js';
 
-export interface ServeCommandOptions {
-    port?: string;
-    hostname?: string;
-    dir: string;
-    mdns?: boolean;
-    cors?: string;
+type ServeCliOptions = Partial<ServeCommandOptions> & {
+    host?: string;
+};
+
+type ServeAgentService = Pick<AgentConversationPort, 'cancel' | 'dispose' | 'sendMessage'>;
+type ConfigLoader = {
+    load(options?: { cwd?: string; env?: NodeJS.ProcessEnv }): XQoderConfig;
+};
+
+export interface ServeCommandDependencies {
+    configLoader?: ConfigLoader;
+    createAgentService?: (sessionStore: AgentSessionStore) => ServeAgentService;
+    createServer?: (options: ServerOptions) => HttpServer;
+    createSessionStore?: (dbPath: string) => AgentSessionStore;
+    env?: NodeJS.ProcessEnv;
+    registerSignalHandlers?: boolean;
+    writeOutput?: (message: string) => void;
 }
 
-export interface ServeRuntimeOptions {
-    cwd: string;
-    port: number;
-    hostname: string;
-    cors: string[];
-    password?: string;
-    username: string;
+export interface ServeCommandRuntime {
+    agentService: ServeAgentService;
+    options: ServeRuntimeOptions;
+    server: HttpServer;
+    sessionStore: AgentSessionStore;
 }
 
-export function assertServeDirectoryWritable(
-    cwd: string,
-    dependencies: {
-        existsSync?: (path: string) => boolean;
-        accessSync?: (path: string, mode?: number) => void;
-        writableMode?: number;
-    } = {},
-): void {
-    const existsSync = dependencies.existsSync ?? fs.existsSync;
-    const accessSync = dependencies.accessSync ?? fs.accessSync;
-    const writableMode = dependencies.writableMode ?? fs.constants.W_OK;
+export function createServeCommand(dependencies: ServeCommandDependencies = {}): Command {
+    return new Command('serve')
+        .alias('remote-control')
+        .description('Start a local HTTP server for XQoder sessions')
+        .option('-d, --dir <dir>', 'Project directory to serve', '.')
+        .option('-p, --port <number>', 'Port to listen on')
+        .option('--hostname <host>', 'Host to bind to')
+        .option('--host <host>', 'Alias for --hostname')
+        .option('--cors <origins>', 'Comma-separated allowed CORS origins')
+        .action(async (options: ServeCliOptions) => {
+            await runServeCommand(options, dependencies);
+        });
+}
 
-    if (!existsSync(cwd)) {
-        throw new Error(`Project directory does not exist: ${cwd}`);
+export async function runServeCommand(
+    options: ServeCliOptions,
+    dependencies: ServeCommandDependencies = {},
+): Promise<ServeCommandRuntime> {
+    const env = dependencies.env ?? process.env;
+    const normalizedOptions = normalizeServeOptions(options);
+    const configLoader = dependencies.configLoader ?? configManager;
+    const loadedConfig = configLoader.load({
+        cwd: normalizedOptions.dir,
+        env,
+    });
+    const { config } = resolveConfigWithEnvOverrides(loadedConfig, env);
+    const runtimeOptions = resolveServeRuntimeOptions(
+        normalizedOptions,
+        config.server,
+        env,
+    );
+
+    assertServeDirectoryWritable(runtimeOptions.cwd);
+
+    const sessionStore = (dependencies.createSessionStore ?? defaultCreateSessionStore)(
+        getXQoderPaths().sessionDbFile,
+    );
+    const agentService = (dependencies.createAgentService ?? defaultCreateAgentService)(sessionStore);
+    const serverFactory = dependencies.createServer ?? createHttpServer;
+
+    const server = serverFactory({
+        port: runtimeOptions.port,
+        hostname: runtimeOptions.hostname,
+        cors: runtimeOptions.cors,
+        password: runtimeOptions.password,
+        username: runtimeOptions.username,
+        cwd: runtimeOptions.cwd,
+        defaultModel: config.llm.model,
+        sessionStore,
+        runMessage: createRunMessage(agentService, config),
+        runMessageStream: createRunMessageStream(agentService, config),
+    });
+
+    const runtime: ServeCommandRuntime = {
+        agentService,
+        options: runtimeOptions,
+        server,
+        sessionStore,
+    };
+
+    if (dependencies.registerSignalHandlers !== false) {
+        installSignalHandlers(runtime, dependencies.writeOutput ?? console.log);
     }
 
-    try {
-        accessSync(cwd, writableMode);
-    } catch {
-        throw new Error(`Project directory is not writable, session will not persist: ${cwd}`);
+    const writeOutput = dependencies.writeOutput ?? console.log;
+    writeOutput(`[XQoder] Serve listening on http://${runtimeOptions.hostname}:${runtimeOptions.port}`);
+    writeOutput(`[XQoder] Project root: ${runtimeOptions.cwd}`);
+    if (runtimeOptions.password) {
+        writeOutput(`[XQoder] Basic auth enabled for user ${runtimeOptions.username}`);
     }
+
+    return runtime;
 }
 
-export function resolveServeRuntimeOptions(
-    options: ServeCommandOptions,
-    serverConfig: { port?: number; hostname?: string; cors?: string[] } = {},
-    env: NodeJS.ProcessEnv = process.env,
-): ServeRuntimeOptions {
-    const cwd = path.resolve(options.dir);
-    const parsedPort = options.port ? Number.parseInt(options.port, 10) : Number.NaN;
+function defaultCreateSessionStore(dbPath: string): AgentSessionStore {
+    return new SQLiteSessionStore(dbPath);
+}
+
+function defaultCreateAgentService(sessionStore: AgentSessionStore): ServeAgentService {
+    return new TuiAgentService(sessionStore);
+}
+
+function normalizeServeOptions(options: ServeCliOptions): ServeCommandOptions {
+    const hostname = options.hostname ?? options.host;
 
     return {
-        cwd,
-        port: Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : (serverConfig.port ?? 4096),
-        hostname: options.hostname?.trim() || serverConfig.hostname || '127.0.0.1',
-        cors: options.cors
-            ? options.cors.split(',').map((s) => s.trim()).filter(Boolean)
-            : (serverConfig.cors ?? []),
-        password: env.XQODER_SERVER_PASSWORD,
-        username: env.XQODER_SERVER_USERNAME ?? 'xqoder',
+        dir: options.dir ?? '.',
+        ...(options.port ? { port: options.port } : {}),
+        ...(hostname ? { hostname } : {}),
+        ...(options.cors ? { cors: options.cors } : {}),
+        ...(options.mdns !== undefined ? { mdns: options.mdns } : {}),
     };
 }
 
-export const serveCommand = new Command('serve')
-    .description('Start headless HTTP service for remote attach')
-    .option('-p, --port <port>', 'Listen port')
-    .option('--hostname <host>', 'Listen address')
-    .option('--mdns', 'Enable mDNS discovery')
-    .option('--cors <origins>', 'Allowed CORS origins, comma-separated')
-    .option('-d, --dir <dir>', 'Project directory', '.')
-    .action(async (options: ServeCommandOptions) => {
-        const cwd = path.resolve(options.dir);
-        try {
-            assertServeDirectoryWritable(cwd);
-        } catch (error) {
-            logger.error(error instanceof Error ? error.message : String(error));
-            if (error instanceof Error && error.message.includes('not writable')) {
-                logger.info('Please use a writable directory (e.g. -d .) or check permissions.');
-            }
-            process.exit(1);
-        }
-        const loadedConfig = configManager.load({ cwd });
-        const { config } = resolveConfigWithEnvOverrides(loadedConfig);
-        const runtimeOptions = resolveServeRuntimeOptions(options, config.server);
+function createRunMessage(
+    agentService: ServeAgentService,
+    config: XQoderConfig,
+): NonNullable<ServerOptions['runMessage']> {
+    return async (params) => {
+        const response = { value: '' };
+        const result = await agentService.sendMessage(
+            params.message,
+            params.sessionId,
+            createAgentSettings(params.projectRoot, config),
+            params.attachments ?? [],
+            {
+                onEvent: (event) => collectAssistantResponse(event, response),
+                onQuestion: answerQuestionWithEmptySelection,
+                onToolApproval: async () => false,
+            },
+        );
 
-        // Use project-local session DB to avoid ~/.xqoder being read-only (which causes "attempt to write a readonly database")
-        const sessionDbFile = path.join(runtimeOptions.cwd, '.xqoder', 'data', 'sessions.sqlite');
-        const sessionStore = new SQLiteSessionStore(sessionDbFile);
-        const shareStore = new FileSessionShareStore(path.join(runtimeOptions.cwd, '.xqoder', 'data', 'shares'));
-        const agentServices = new Map<string, AgentConversationPort>();
-
-        const getAgentService = (sessionId: string): AgentConversationPort => {
-            const existing = agentServices.get(sessionId);
-            if (existing) {
-                return existing;
-            }
-            const created = new TuiAgentService(sessionStore);
-            agentServices.set(sessionId, created);
-            return created;
+        return {
+            response: response.value,
+            sessionId: result.sessionId,
         };
-        const defaultModel = config.llm?.model ?? 'openai/gpt-4o';
-        const runMessage = async (params: {
-            projectRoot: string;
-            sessionId: string;
-            message: string;
-            attachments?: import('@xqoder/shared').MessageAttachment[];
-        }) => {
-            let response = '';
-            const loaded = configManager.load({ cwd: params.projectRoot });
-            const { config: effectiveConfig } = resolveConfigWithEnvOverrides(loaded);
-            const model = effectiveConfig.llm?.model ?? defaultModel;
-            const agent = effectiveConfig.defaultAgent ?? 'general';
-            const agentService = getAgentService(params.sessionId);
+    };
+}
 
+function createRunMessageStream(
+    agentService: ServeAgentService,
+    config: XQoderConfig,
+): NonNullable<ServerOptions['runMessageStream']> {
+    return async (params) => {
+        throwIfAborted(params.signal);
+        const response = { value: '' };
+        const abortHandler = () => {
+            agentService.cancel();
+        };
+        params.signal?.addEventListener('abort', abortHandler, { once: true });
+
+        try {
             const result = await agentService.sendMessage(
                 params.message,
                 params.sessionId,
-                {
-                    dir: params.projectRoot,
-                    model,
-                    agent,
-                    sandboxMode: effectiveConfig.sandbox?.mode ?? 'project',
-                },
-                params.attachments ?? [],
-                {
-                    onEvent: (event: AppEvent) => {
-                        if (event.type === 'message.completed' && event.message.role === 'assistant') {
-                            response = event.message.content;
-                        }
-                    },
-                    onQuestion: async (request: AgentQuestionRequest): Promise<AgentQuestionAnswer> => ({
-                        requestId: request.requestId,
-                        selected: request.options.length > 0 ? [request.options[0]!.label] : [],
-                    }),
-                },
-            );
-
-            return {
-                response,
-                sessionId: result.sessionId,
-            };
-        };
-
-        const runMessageStream = async (params: {
-            projectRoot: string;
-            sessionId: string;
-            message: string;
-            attachments?: import('@xqoder/shared').MessageAttachment[];
-            onEvent: (event: AppEvent) => void;
-            requestQuestion: (prompt: QuestionPrompt) => Promise<QuestionAnswer>;
-            signal?: AbortSignal;
-        }) => {
-            let response = '';
-            const loaded = configManager.load({ cwd: params.projectRoot });
-            const { config: effectiveConfig } = resolveConfigWithEnvOverrides(loaded);
-            const model = effectiveConfig.llm?.model ?? defaultModel;
-            const agent = effectiveConfig.defaultAgent ?? 'general';
-            const agentService = getAgentService(params.sessionId);
-
-            const onAbort = (): void => {
-                agentService.cancel();
-            };
-            params.signal?.addEventListener('abort', onAbort);
-
-            const streamPromise = agentService.sendMessage(
-                params.message,
-                params.sessionId,
-                {
-                    dir: params.projectRoot,
-                    model,
-                    agent,
-                    sandboxMode: effectiveConfig.sandbox?.mode ?? 'project',
-                },
+                createAgentSettings(params.projectRoot, config),
                 params.attachments ?? [],
                 {
                     onEvent: (event) => {
-                        params.onEvent(event as AppEvent);
-                        if (event.type === 'message.completed' && event.message.role === 'assistant') {
-                            response = event.message.content;
-                        }
+                        collectAssistantResponse(event, response);
+                        params.onEvent(event);
                     },
-                    onQuestion: async (request: AgentQuestionRequest): Promise<AgentQuestionAnswer> =>
-                        params.requestQuestion(request as QuestionPrompt) as Promise<QuestionAnswer>,
+                    onQuestion: (request) => params.requestQuestion(toQuestionPrompt(request)),
+                    onToolApproval: async () => false,
                 },
             );
 
-            const abortPromise = params.signal
-                ? new Promise<never>((_, reject) => {
-                    if (params.signal?.aborted) {
-                        reject(params.signal.reason instanceof Error ? params.signal.reason : new Error('Stream aborted'));
-                        return;
-                    }
-                    params.signal?.addEventListener('abort', () => {
-                        reject(params.signal?.reason instanceof Error ? params.signal.reason : new Error('Stream aborted'));
-                    }, { once: true });
-                })
-                : undefined;
-
-            let result: Awaited<typeof streamPromise>;
-            try {
-                result = await (abortPromise
-                    ? Promise.race([streamPromise, abortPromise])
-                    : streamPromise);
-            } finally {
-                params.signal?.removeEventListener('abort', onAbort);
-            }
+            throwIfAborted(params.signal);
 
             return {
-                response,
+                response: response.value,
                 sessionId: result.sessionId,
             };
-        };
+        } finally {
+            params.signal?.removeEventListener('abort', abortHandler);
+        }
+    };
+}
 
-        const server = createServer({
-            port: runtimeOptions.port,
-            hostname: runtimeOptions.hostname,
-            cors: runtimeOptions.cors,
-            password: runtimeOptions.password,
-            username: runtimeOptions.username,
-            cwd: runtimeOptions.cwd,
-            defaultModel,
-            sessionStore,
-            runMessage,
-            runMessageStream,
-            shareStore,
-        });
+function createAgentSettings(projectRoot: string, config: XQoderConfig): TuiAgentSettings {
+    return {
+        dir: projectRoot,
+        model: config.llm.model,
+        agent: config.defaultAgent ?? 'general',
+        sandboxMode: config.sandbox?.mode ?? 'project',
+    };
+}
 
-        server.on('error', (err: NodeJS.ErrnoException) => {
-            if (err.code === 'EADDRINUSE') {
-                logger.error(`Port ${runtimeOptions.port} is already in use. Kill the process: lsof -i :${runtimeOptions.port}, or use a different port: -p 4097`);
-                process.exit(1);
-            }
-            throw err;
-        });
-        server.on('listening', () => {
-            const addr = server.address();
-            const portNum = typeof addr === 'object' && addr ? addr.port : runtimeOptions.port;
-            logger.success(`XQoder serve started: http://${runtimeOptions.hostname}:${portNum}`);
-            logger.info(`  /global/health — Health check`);
-            logger.info(`  /doc — API Documentation`);
-            logger.info(`  GET/POST /session — List/Create session`);
-            logger.info(`  POST /session/:id/message — Send message`);
-            logger.info(`  POST /session/:id/message/stream — Message stream events`);
-            logger.info(`  POST /session/:id/question/:requestId/resolve — Resolve question`);
-            logger.info(`  POST /session/:id/stream/:streamId/cancel — Cancel streaming request`);
-        });
+function collectAssistantResponse(
+    event: ConversationEventEnvelope,
+    response: { value: string },
+): void {
+    if (event.type === 'message.delta' && event.payload.role === 'assistant') {
+        response.value += event.payload.text;
+        return;
+    }
 
-        const shutdown = () => {
-            logger.info('Shutting down service...');
-            server.close(() => {
-                logger.success('Service shut down safely');
+    if (event.type === 'message.completed' && event.payload.message.role === 'assistant') {
+        response.value = event.payload.message.content;
+    }
+}
+
+function toQuestionPrompt(request: AgentQuestionRequest): QuestionPrompt {
+    return {
+        requestId: request.requestId,
+        question: request.question,
+        options: request.options.map((option) => ({
+            label: option.label,
+            ...(option.description ? { description: option.description } : {}),
+        })),
+        ...(request.header ? { header: request.header } : {}),
+        ...(request.multiple !== undefined ? { multiple: request.multiple } : {}),
+        ...(request.allowCustom !== undefined ? { allowCustom: request.allowCustom } : {}),
+    };
+}
+
+function answerQuestionWithEmptySelection(request: AgentQuestionRequest): Promise<QuestionAnswer> {
+    return Promise.resolve({
+        requestId: request.requestId,
+        selected: [],
+    });
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+    if (!signal?.aborted) {
+        return;
+    }
+    const reason = signal.reason;
+    throw reason instanceof Error ? reason : new Error('Request aborted');
+}
+
+function installSignalHandlers(
+    runtime: ServeCommandRuntime,
+    writeOutput: (message: string) => void,
+): void {
+    const shutdown = (signal: NodeJS.Signals) => {
+        writeOutput(`[XQoder] Received ${signal}; shutting down serve.`);
+        runtime.agentService.cancel();
+        runtime.server.close(() => {
+            void cleanupRuntime(runtime).finally(() => {
                 process.exit(0);
             });
-            void Promise.all(Array.from(agentServices.values(), (service) => service.dispose()));
-            setTimeout(() => {
-                logger.warn('Shutdown timed out, forcing exit');
-                process.exit(1);
-            }, 5000).unref();
-        };
-        process.on('SIGINT', shutdown);
-        process.on('SIGTERM', shutdown);
-    });
+        });
+    };
+
+    process.once('SIGINT', shutdown);
+    process.once('SIGTERM', shutdown);
+}
+
+async function cleanupRuntime(runtime: ServeCommandRuntime): Promise<void> {
+    try {
+        await runtime.agentService.dispose();
+    } finally {
+        runtime.sessionStore.close();
+    }
+}

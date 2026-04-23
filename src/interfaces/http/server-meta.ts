@@ -52,7 +52,7 @@ function renderDocHtml(): string {
 <p>GET /find?query=&lt;text&gt;[&regex=true] — Search file contents</p>
 <p>GET /find/symbol?query=&lt;name&gt;[&kind=function|class|interface|type|variable] — Search symbols</p>
 <p>GET /share/:id — Access local share artifact</p>
-<p>GET /event — SSE stream for AppEvent records</p>
+<p>GET /event — SSE stream for ConversationEventEnvelope records</p>
 <p>POST /session/:id/message — Send message (body: message, attachments?)</p>
 <p>POST /session/:id/message/stream — Send message and stream events (NDJSON)</p>
 <p>POST /session/:id/question/:requestId/resolve — Resolve pending question</p>
@@ -194,6 +194,7 @@ export async function handleMetaRoutes(params: MetaRouteParams): Promise<boolean
                     projectRoot: share.projectRoot,
                     createdAt: share.createdAt.toISOString(),
                     format: share.format,
+                    ...(share.usage ? { usage: share.usage } : {}),
                     content: share.content,
                 }, corsHeaders);
             }

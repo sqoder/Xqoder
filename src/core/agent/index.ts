@@ -98,6 +98,8 @@ export {
 export { resolvePathWithinProject, resolveWorkingDirectory, validateCommandSafety } from './tools/sandbox.js';
 export {
     AgentSession,
+    type AgentCheckpointRecord,
+    type AgentConversationEventStoreRecord,
     normalizeSessionMetadataSnapshot,
     type AgentCommandHistoryEntry,
     type AgentFileChangeEntry,

@@ -9,15 +9,21 @@ import { isSandboxAccessError } from './sandbox.js';
 import type { MvpRuntimeConfig } from '../mvp/types.js';
 import {
     mergeToolApprovalRequest,
+    type McpToolOperation,
     type ToolApprovalPatch,
     type ToolApprovalRequest,
     type ToolApprovalRisk,
+    type ToolSecurityPolicyContext,
+    type ToolTrustLevel,
 } from '../../../domain/permissions/index.js';
 
 export type {
+    McpToolOperation,
     ToolApprovalPatch,
     ToolApprovalRequest,
     ToolApprovalRisk,
+    ToolSecurityPolicyContext,
+    ToolTrustLevel,
 };
 
 export interface ToolStreamEvent {
@@ -82,6 +88,9 @@ export interface ToolContext {
 export interface ITool {
     /** Tool definition (name, description, parameters) */
     readonly definition: ToolDefinition;
+
+    /** Security metadata consumed by permission policy and capability filtering */
+    getSecurityPolicyContext?(): ToolSecurityPolicyContext | undefined;
 
     /** Whether approval is required before execution */
     buildApprovalRequest?(
@@ -165,6 +174,9 @@ export class ToolRegistry {
                         success: false,
                         output: '',
                         error: `Tool approval denied: ${name}`,
+                        metadata: {
+                            stopReason: 'permission_denied',
+                        },
                     };
                 }
             }
@@ -208,6 +220,9 @@ export class ToolRegistry {
                     success: false,
                     output: '',
                     error: `Tool approval denied: ${name}`,
+                    metadata: {
+                        stopReason: 'permission_denied',
+                    },
                 };
             }
 
@@ -223,6 +238,11 @@ export class ToolRegistry {
     /** Get all tool definitions (for sending to LLM) */
     getDefinitions(): ToolDefinition[] {
         return Array.from(this.tools.values()).map(t => t.definition);
+    }
+
+    /** Get all registered tool instances */
+    getTools(): ITool[] {
+        return Array.from(this.tools.values());
     }
 
     /** Get registered tool count */

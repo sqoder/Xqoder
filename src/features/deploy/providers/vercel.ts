@@ -2,7 +2,7 @@
 // Vercel Deployment Provider
 // ============================================================
 
-import { execSync, type ExecSyncOptionsWithStringEncoding } from 'node:child_process';
+import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -10,9 +10,10 @@ import { DeployTarget, DeployStatus, type DeployConfig, type DeployResult } from
 import { BaseDeployer } from '../deployer.js';
 import { sanitizeProjectName } from '../project-name.js';
 
-type ExecSyncLike = (
-    command: string,
-    options: ExecSyncOptionsWithStringEncoding,
+type ExecFileSyncLike = (
+    file: string,
+    args: string[],
+    options: ExecFileSyncOptionsWithStringEncoding,
 ) => string;
 
 type FetchLike = (
@@ -31,19 +32,19 @@ export class VercelDeployer extends BaseDeployer {
     readonly target = DeployTarget.Vercel;
     private token?: string;
     private scope?: string;
-    private readonly exec: ExecSyncLike;
+    private readonly execFile: ExecFileSyncLike;
     private readonly fetch: FetchLike;
 
     constructor(options: {
         token?: string;
         scope?: string;
-        execSync?: ExecSyncLike;
+        execFileSync?: ExecFileSyncLike;
         fetch?: FetchLike;
     } = {}) {
         super();
         this.token = options.token ?? process.env['VERCEL_TOKEN'];
         this.scope = options.scope ?? process.env['XQODER_VERCEL_SCOPE'];
-        this.exec = options.execSync ?? execSync;
+        this.execFile = options.execFileSync ?? ((file, args, execOptions) => execFileSync(file, args, execOptions));
         this.fetch = options.fetch ?? fetch;
     }
 
@@ -64,8 +65,8 @@ export class VercelDeployer extends BaseDeployer {
             // 3. Execute deployment
             const deployDirContext = this.prepareDeployDirectory(config);
             cleanupDeployDir = deployDirContext.cleanup;
-            const deployCmd = this.buildDeployCommand(config);
-            const output = this.exec(deployCmd, {
+            const deployArgs = this.buildDeployArgs(config);
+            const output = this.execFile('npx', deployArgs, {
                 cwd: deployDirContext.deployDir,
                 encoding: 'utf-8',
                 timeout: 300000, // 5 minute timeout
@@ -121,12 +122,14 @@ export class VercelDeployer extends BaseDeployer {
 
     async getStatus(deployId: string): Promise<DeployStatus> {
         try {
-            const tokenFlag = this.token ? `--token ${this.token}` : '';
-            const scopeFlag = this.scope ? ` --scope ${this.scope}` : '';
-            const output = this.exec(
-                `npx -y vercel inspect ${deployId} ${tokenFlag}${scopeFlag}`,
-                { encoding: 'utf-8', timeout: 30000 },
-            );
+            const output = this.execFile('npx', this.buildInspectArgs(deployId), {
+                encoding: 'utf-8',
+                timeout: 30000,
+                env: {
+                    ...process.env,
+                    ...(this.token ? { VERCEL_TOKEN: this.token } : {}),
+                },
+            });
             if (output.includes('READY')) return DeployStatus.Ready;
             if (output.includes('BUILDING')) return DeployStatus.Building;
             if (output.includes('ERROR')) return DeployStatus.Failed;
@@ -160,23 +163,29 @@ export class VercelDeployer extends BaseDeployer {
         fs.writeFileSync(configPath, JSON.stringify(vercelConfig, null, 2), 'utf-8');
     }
 
-    /** Build deployment command */
-    private buildDeployCommand(config: DeployConfig): string {
-        const parts = ['npx', '-y', 'vercel', '--yes'];
-
-        if (this.token) {
-            parts.push('--token', this.token);
-        }
+    /** Build deployment argv for the Vercel CLI. */
+    private buildDeployArgs(config: DeployConfig): string[] {
+        const args = ['-y', 'vercel', '--yes'];
 
         const resolvedScope = config.scope ?? this.scope;
         if (resolvedScope) {
-            parts.push('--scope', resolvedScope);
+            args.push('--scope', resolvedScope);
         }
 
         // Production deployment
-        parts.push('--prod');
+        args.push('--prod');
 
-        return `${parts.join(' ')} 2>&1`;
+        return args;
+    }
+
+    private buildInspectArgs(deployId: string): string[] {
+        const args = ['-y', 'vercel', 'inspect', deployId];
+
+        if (this.scope) {
+            args.push('--scope', this.scope);
+        }
+
+        return args;
     }
 
     private prepareDeployDirectory(config: DeployConfig): {

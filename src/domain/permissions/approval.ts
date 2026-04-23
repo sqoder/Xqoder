@@ -74,6 +74,31 @@ export function mergeToolApprovalRequest(
     };
 }
 
+export function mergeToolApprovalPatches(
+    base: ToolApprovalPatch | undefined,
+    extra: ToolApprovalPatch | undefined,
+): ToolApprovalPatch | undefined {
+    if (!base) {
+        return extra;
+    }
+    if (!extra) {
+        return base;
+    }
+
+    const force = base.force || extra.force;
+    const reason = mergeText(base.reason, extra.reason);
+    const preview = mergeText(base.preview, extra.preview);
+    const risk = extra.risk ?? base.risk;
+
+    return {
+        ...(force ? { force } : {}),
+        ...((extra.summary ?? base.summary) ? { summary: extra.summary ?? base.summary } : {}),
+        ...(reason ? { reason } : {}),
+        ...(preview ? { preview } : {}),
+        ...(risk ? { risk } : {}),
+    };
+}
+
 export function createApprovalRequestId(sessionId: string, toolCallId: string | undefined): string {
     return `${sessionId}:${toolCallId ?? 'unknown-tool-call'}`;
 }

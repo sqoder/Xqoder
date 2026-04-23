@@ -37,7 +37,7 @@ const LAYER_ALIAS_PREFIXES: Array<{ prefix: string; layer: LayerName }> = [
     { prefix: '@xqoder/foundation-shared', layer: 'shared' },
     { prefix: '@xqoder/shared', layer: 'shared' },
     { prefix: '@xqoder/protocol', layer: 'shared' },
-    { prefix: '@xqoder/llm-api', layer: 'infrastructure' },
+    { prefix: '@xqoder/llm-api', layer: 'shared' },
     { prefix: '@xqoder/permissions', layer: 'infrastructure' },
     { prefix: '@xqoder/agent', layer: 'domain' },
     { prefix: '@xqoder/core-runtime', layer: 'application' },

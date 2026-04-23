@@ -31,9 +31,15 @@ const ROOT_HELP_EXAMPLES = [
     '',
     '  # Run a single non-interactive prompt',
     '  xqoder -p "Explain the use of context in Go"',
+    '  xqoder --print "What is the capital of France?"',
     '',
-    '  # Run a single non-interactive prompt with JSON output',
-    '  xqoder -p "Explain the use of context in Go" -f json',
+    '  # Run with specific output format',
+    '  xqoder -p "hi" -f json',
+    '  xqoder -p "hi" -f stream-json',
+    '',
+    '  # Resume a session',
+    '  xqoder --continue',
+    '  xqoder --resume <id>',
 ].join('\n');
 
 function addHiddenRootCommand(program: Command, command: Command): void {
@@ -58,7 +64,10 @@ export function createProgram(
         .description('Terminal-based AI assistant for software development')
         .summary('Terminal-based AI assistant for software development')
         .addHelpText('after', `\nExamples:\n${ROOT_HELP_EXAMPLES}\n`)
-        .version(getXQoderVersion());
+        .version(getXQoderVersion())
+        .exitOverride()
+        .showSuggestionAfterError(true)
+        .showHelpAfterError('(run `xqoder --help` for available commands)');
 
     for (const registration of commandRegistrations) {
         const command = registration.createCommand();
@@ -83,7 +92,7 @@ export function createProgram(
             }
         } catch (err) {
             const outputFormat = resolveRootShellOutputFormat(opts.outputFormat, Boolean(opts.json));
-            if (outputFormat === 'json') {
+            if (outputFormat === 'json' || outputFormat === 'stream-json') {
                 const output = {
                     success: false,
                     error: err instanceof Error ? err.message : String(err),
@@ -119,18 +128,31 @@ export async function runProgram(
         ...dependencies,
         commandRegistrations,
     });
-    await program.parseAsync(normalizedArgv);
+    try {
+        await program.parseAsync(normalizedArgv);
+    } catch (err) {
+        if (err instanceof Error && err.name === 'CommanderError') {
+            // Error already printed by commander
+            const exitCode = getCommanderExitCode(err);
+            if (exitCode === 0) {
+                return;
+            }
+            process.exit(exitCode ?? 1);
+        }
+        throw err;
+    }
 }
 
 export { createProgram as createCliProgram, runProgram as runCliProgram };
 
 function hasTopLevelCommand(argv: string[], topLevelCommandNames: ReadonlySet<string>): boolean {
     const optionValueFlags = new Set([
-        '-p', '--prompt',
+        '-p', '--prompt', '--print',
         '-m', '--model',
         '-a', '--agent',
         '-c', '--cwd',
         '-f', '--output-format',
+        '--resume', '--permission-mode', '--effort', '--max-turns',
     ]);
 
     for (let index = 0; index < argv.length; index += 1) {
@@ -166,4 +188,9 @@ function normalizeCliArgs(argv: string[]): string[] {
     return argv[0] === '--'
         ? argv.slice(1)
         : argv;
+}
+
+function getCommanderExitCode(err: Error): number | undefined {
+    const exitCode = (err as Error & { exitCode?: unknown }).exitCode;
+    return typeof exitCode === 'number' ? exitCode : undefined;
 }

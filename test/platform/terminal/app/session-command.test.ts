@@ -13,6 +13,9 @@ describe('terminal local commands', () => {
         TERMINAL_LOCAL_COMMANDS.exit.forEach((command) => {
             expect(resolveTerminalLocalCommand(command)).toBe('exit');
         });
+
+        expect(resolveTerminalLocalCommand('/plan fix the failing tests')).toBe('plan');
+        expect(resolveTerminalLocalCommand('/review src/application/chat/run-chat.ts')).toBe('review');
     });
 
     it('ignores regular prompts', () => {

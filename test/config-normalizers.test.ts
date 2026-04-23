@@ -66,6 +66,7 @@ describe('config normalizer helpers', () => {
 
         expect(merged.providers.openai?.apiKey).toBe('base-key');
         expect(merged.providers.openai?.baseUrl).toBe('https://example.test/v1');
+        expect(merged.permissions.approvalPolicy).toBe('workspace_auto');
         expect(merged.permissions.tools?.read).toBe('allow');
         expect(merged.permissions.tools?.write).toBe('deny');
         expect(merged.hooks.PreToolUse).toHaveLength(2);
@@ -152,6 +153,37 @@ describe('config normalizer helpers', () => {
             args: ['--write'],
             extensions: ['.ts', '.tsx'],
         });
+    });
+
+    it('defaults MCP trust by transport while preserving explicit overrides', () => {
+        const normalized = normalizeXQoderConfig({
+            mcp: {
+                servers: [
+                    {
+                        name: 'local-docs',
+                        command: 'node',
+                        args: ['server.js'],
+                    },
+                    {
+                        name: 'remote-docs',
+                        transport: 'http',
+                        url: 'https://mcp.example.test',
+                    },
+                    {
+                        name: 'bridge',
+                        transport: 'sse',
+                        url: 'https://bridge.example.test',
+                        trust: 'trusted',
+                    },
+                ],
+            },
+        });
+
+        expect(normalized.mcp.servers.map((server) => server.trust)).toEqual([
+            'trusted',
+            'untrusted',
+            'trusted',
+        ]);
     });
 
     it('honors merge precedence while preserving base nested settings', () => {
@@ -246,5 +278,29 @@ describe('config normalizer helpers', () => {
         expect(merged.plugins.enabled).toEqual(['base-plugin']);
         expect(merged.plugins.paths).toEqual(['/base/plugins']);
         expect(merged.plugins.allowIncompatible).toBe(true);
+    });
+
+    it('normalizes approval policy and tool allow/deny lists in permission settings', () => {
+        const normalized = normalizeXQoderConfig({
+            permissions: {
+                defaultMode: 'allow',
+                approvalPolicy: 'workspace_auto',
+                allowedTools: [' read_file ', '  '],
+                disallowedTools: [' bash ', ''],
+                tools: {
+                    edit: 'ask',
+                },
+            },
+        });
+
+        expect(normalized.permissions).toEqual({
+            defaultMode: 'allow',
+            approvalPolicy: 'workspace_auto',
+            allowedTools: ['read_file'],
+            disallowedTools: ['bash'],
+            tools: {
+                edit: 'ask',
+            },
+        });
     });
 });

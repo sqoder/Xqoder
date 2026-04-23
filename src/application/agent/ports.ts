@@ -4,113 +4,43 @@ import type {
     SandboxMode,
 } from '@xqoder/shared';
 import type {
-    ToolApprovalDecision,
+    ConversationEventEnvelope as ProtocolConversationEventEnvelope,
+    ConversationEventPayloadMap as ProtocolConversationEventPayloadMap,
+    ConversationEventType as ProtocolConversationEventType,
+    CoreMessage,
+    JsonRecord,
+    JsonValue,
+} from '@xqoder/protocol';
+import type { ConversationTranscriptEntry } from '../../domain/conversation/messages.js';
+import type {
     ToolApprovalRequest,
 } from '../../domain/permissions/index.js';
 
 export type AgentJsonPrimitive = string | number | boolean | null;
-export type AgentJsonValue =
-    | AgentJsonPrimitive
-    | AgentJsonValue[]
-    | { [key: string]: AgentJsonValue };
-export type AgentJsonRecord = Record<string, AgentJsonValue>;
+export type AgentJsonValue = JsonValue;
+export type AgentJsonRecord = JsonRecord;
 
 export type AgentEventSource = 'runtime' | 'ui' | 'model' | 'agent' | 'tool' | 'plugin' | 'sync';
 export type AgentRunStatus = 'idle' | 'thinking' | 'running-tool' | 'awaiting-approval' | 'done' | 'error';
 export type AgentRuntimeRole = 'system' | 'user' | 'assistant' | 'tool';
 export type AgentRuntimeAttachmentKind = 'image' | 'file' | 'text';
 
-export interface AgentRuntimeMessageAttachment {
-    kind: AgentRuntimeAttachmentKind;
-    fileName?: string;
-    filePath?: string;
-    mimeType?: string;
-    data?: string;
-    text?: string;
-    metadata?: AgentJsonRecord;
-}
+export type AgentRuntimeMessageAttachment = NonNullable<CoreMessage['attachments']>[number];
+export type AgentRuntimeMessage = CoreMessage;
+export type AgentRuntimeEventType = ProtocolConversationEventType;
+export type AgentRuntimeEventPayloadMap = ProtocolConversationEventPayloadMap;
+export type AgentRuntimeEvent = ProtocolConversationEventEnvelope;
 
-export interface AgentRuntimeMessage {
-    id: string;
-    sessionId: string;
-    role: AgentRuntimeRole;
-    content: string;
-    createdAt: number;
-    toolCallId?: string;
-    attachments?: AgentRuntimeMessageAttachment[];
-    metadata?: AgentJsonRecord;
-}
-
-export interface AgentEventEnvelope {
-    type: string;
-    sessionId: string;
-    timestamp: number;
-    source: AgentEventSource;
-    metadata?: AgentJsonRecord;
-}
-
-export interface AgentSessionStartedEvent extends AgentEventEnvelope {
-    type: 'session.started';
-    cwd: string;
-}
-
-export interface AgentSessionResumedEvent extends AgentEventEnvelope {
-    type: 'session.resumed';
-    messageCount: number;
-}
-
-export interface AgentMessageStartedEvent extends AgentEventEnvelope {
-    type: 'message.started';
-    message: AgentRuntimeMessage;
-}
-
-export interface AgentMessageDeltaEvent extends AgentEventEnvelope {
-    type: 'message.delta';
-    messageId: string;
-    role: AgentRuntimeRole;
-    text: string;
-}
-
-export interface AgentMessageCompletedEvent extends AgentEventEnvelope {
-    type: 'message.completed';
-    message: AgentRuntimeMessage;
-}
-
-export interface AgentToolCalledEvent extends AgentEventEnvelope {
-    type: 'tool.called';
-    provider: string;
-    tool: string;
-    args: AgentJsonValue;
-}
-
-export interface AgentToolOutputEvent extends AgentEventEnvelope {
-    type: 'tool.output';
-    provider: string;
-    tool: string;
-    output: string;
-    partial?: boolean;
-}
-
-export interface AgentToolCompletedEvent extends AgentEventEnvelope {
-    type: 'tool.completed';
-    provider: string;
-    tool: string;
-    success: boolean;
-}
-
-export interface AgentApprovalRequestedEvent extends AgentEventEnvelope {
-    type: 'approval.requested';
-    requestId: string;
-    kind: string;
-    summary: string;
-    payload?: AgentJsonValue;
-}
-
-export interface AgentApprovalResolvedEvent extends AgentEventEnvelope {
-    type: 'approval.resolved';
-    requestId: string;
-    decision: ToolApprovalDecision;
-}
+export type AgentSessionStartedEvent = ProtocolConversationEventEnvelope<'session.started'>;
+export type AgentSessionResumedEvent = ProtocolConversationEventEnvelope<'session.resumed'>;
+export type AgentMessageStartedEvent = ProtocolConversationEventEnvelope<'message.started'>;
+export type AgentMessageDeltaEvent = ProtocolConversationEventEnvelope<'message.delta'>;
+export type AgentMessageCompletedEvent = ProtocolConversationEventEnvelope<'message.completed'>;
+export type AgentToolCalledEvent = ProtocolConversationEventEnvelope<'tool.called'>;
+export type AgentToolOutputEvent = ProtocolConversationEventEnvelope<'tool.output'>;
+export type AgentToolCompletedEvent = ProtocolConversationEventEnvelope<'tool.completed'>;
+export type AgentApprovalRequestedEvent = ProtocolConversationEventEnvelope<'approval.requested'>;
+export type AgentApprovalResolvedEvent = ProtocolConversationEventEnvelope<'approval.resolved'>;
 
 export interface AgentQuestionOption {
     label: string;
@@ -132,50 +62,13 @@ export interface AgentQuestionAnswer {
     customText?: string;
 }
 
-export interface AgentQuestionRequestedEvent extends AgentEventEnvelope, AgentQuestionRequest {
-    type: 'question.requested';
-}
-
-export interface AgentQuestionResolvedEvent extends AgentEventEnvelope {
-    type: 'question.resolved';
-    requestId: string;
-    selected: string[];
-    customText?: string;
-    answerSource: 'ui' | 'fallback';
-}
-
-export interface AgentStatusChangedEvent extends AgentEventEnvelope {
-    type: 'status.changed';
-    status: AgentRunStatus;
-}
-
-export interface AgentThoughtEvent extends AgentEventEnvelope {
-    type: 'thought';
-    text: string;
-}
-
-export interface AgentErrorEvent extends AgentEventEnvelope {
-    type: 'error';
-    message: string;
-    recoverable?: boolean;
-}
-
-export type AgentRuntimeEvent =
-    | AgentSessionStartedEvent
-    | AgentSessionResumedEvent
-    | AgentMessageStartedEvent
-    | AgentMessageDeltaEvent
-    | AgentMessageCompletedEvent
-    | AgentToolCalledEvent
-    | AgentToolOutputEvent
-    | AgentToolCompletedEvent
-    | AgentApprovalRequestedEvent
-    | AgentApprovalResolvedEvent
-    | AgentQuestionRequestedEvent
-    | AgentQuestionResolvedEvent
-    | AgentStatusChangedEvent
-    | AgentThoughtEvent
-    | AgentErrorEvent;
+export type AgentQuestionRequestedEvent = ProtocolConversationEventEnvelope<'question.requested'>;
+export type AgentQuestionResolvedEvent = ProtocolConversationEventEnvelope<'question.resolved'>;
+export type AgentStatusChangedEvent = ProtocolConversationEventEnvelope<'status.changed'>;
+export type AgentThoughtEvent = ProtocolConversationEventEnvelope<'thought'>;
+export type AgentUsageEvent = ProtocolConversationEventEnvelope<'usage'>;
+export type AgentVerificationCompletedEvent = ProtocolConversationEventEnvelope<'verification.completed'>;
+export type AgentErrorEvent = ProtocolConversationEventEnvelope<'error'>;
 
 export interface LegacyAgentTokenEvent {
     type: 'token';
@@ -262,9 +155,14 @@ export interface AgentSessionListEntry {
     messageCount?: number;
 }
 
+export interface AgentSessionMessagesResponse {
+    messages: LLMMessage[];
+    conversationSignals?: ConversationTranscriptEntry[];
+}
+
 export interface AgentSessionBrowserPort {
     listSessions(projectRoot: string, limit?: number): Promise<AgentSessionListEntry[]>;
-    getSessionMessages(sessionId: string): Promise<{ messages: LLMMessage[] }>;
+    getSessionMessages(sessionId: string): Promise<AgentSessionMessagesResponse>;
     createSession(projectRoot: string, title?: string): Promise<{ id: string; title: string }>;
 }
 

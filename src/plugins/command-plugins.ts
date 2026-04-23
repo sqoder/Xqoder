@@ -6,33 +6,35 @@ import { mergePluginPaths } from './plugin-discovery.js';
 import { definePlugin } from '@xqoder/plugin-sdk';
 import { buildCommand } from '../commands/build.js';
 import { agentCommand } from '../commands/core/agent.js';
-import { authCommand } from '../commands/core/auth.js';
+import { authCommand as loginCommand } from '../commands/core/auth.js';
 import { chatCommand } from '../commands/core/chat.js';
 import { configCommand } from '../commands/core/config.js';
 import { fixCommand } from '../commands/fix.js';
 import { runCommand } from '../commands/workflows/run.js';
 import { startCommand } from '../commands/workflows/start.js';
 import { deployCommand } from '../commands/workflows/deploy.js';
+import {
+    agentsEntryCommand,
+    automationCommand,
+    planCommand,
+    reviewCommand,
+} from '../commands/workflows/unified-entry.js';
 import { explainCommand } from '../commands/tools/explain.js';
 import { exportCommand } from '../commands/sessions/export.js';
-import { lspCommand } from '../commands/integrations/lsp.js';
-import { mcpCommand } from '../commands/integrations/mcp.js';
 import { modelsCommand } from '../commands/core/models.js';
 import { importCommand } from '../commands/sessions/import.js';
-import { rollbacksCommand } from '../commands/integrations/rollbacks.js';
 import { sessionCommand } from '../commands/sessions/sessions.js';
 import { shareCommand } from '../commands/sessions/share.js';
 import { statsCommand } from '../commands/sessions/stats.js';
 import { testCommand } from '../commands/workflows/test.js';
 import { tuiInterfaceCommand as tuiCommand } from '../interfaces/tui/index.js';
-import { attachCommand } from '../commands/remote/attach.js';
-import { serveCommand } from '../commands/remote/serve.js';
-import { acpCommand } from '../commands/remote/acp.js';
 import { githubCommandExport } from '../commands/tools/github.js';
-import { hooksCommand } from '../commands/system/hooks.js';
+import { createMemoryCommand } from '../commands/system/memory.js';
+import { createHooksCommand } from '../commands/system/hooks.js';
+import { createMcpCommand } from '../commands/integrations/mcp.js';
+import { createServeCommand } from '../commands/remote/serve.js';
+import { teamCommand } from '../commands/workflows/team.js';
 import { ideCommand } from '../commands/system/ide.js';
-import { memoryCommand } from '../commands/system/memory.js';
-import { notepadCommand } from '../commands/system/notepad.js';
 import { permissionsCommand } from '../commands/system/permissions.js';
 import { pluginsCommand } from '../commands/system/plugins.js';
 import { uninstallCommand } from '../commands/system/uninstall.js';
@@ -46,11 +48,10 @@ export interface CommanderCommandRegistration extends CommandRegistration {
 
 const BUILT_IN_PLUGIN_DEFAULTS = {
     'cli-core-shell': true,
-    'cli-workflows': false,
-    'cli-integrations': true,
-    'cli-remote': true,
-    'cli-extras': false,
+    'cli-workflows': true,
+    'cli-extras': true,
     'cli-system': true,
+    'cli-remote': false,
 } as const;
 
 type BuiltInPluginName = keyof typeof BUILT_IN_PLUGIN_DEFAULTS;
@@ -60,42 +61,14 @@ export interface CommandPluginFactoryOptions {
     tuiCommand?: Command;
 }
 
-export interface CommandPluginDiscoveryOptions extends CommandPluginFactoryOptions {
-    cwd?: string;
-    plugins?: Plugin[];
-    pluginConfig?: {
-        enabled?: string[];
-        disabled?: string[];
-        paths?: string[];
-        allowIncompatible?: boolean;
-    };
-    productVersion: string;
-    productName?: string;
-}
-
-export type CommandPluginLoadStatus = 'loaded' | 'disabled' | 'incompatible' | 'failed';
-
-export interface CommandPluginLoadReportItem {
-    name: string;
-    source: 'built-in' | 'external' | 'injected';
-    status: CommandPluginLoadStatus;
-    version?: string;
-    reason?: string;
-}
-
-export interface CommandPluginDiscoveryResult {
-    commands: CommanderCommandRegistration[];
-    report: CommandPluginLoadReportItem[];
-}
-
-function defineCommanderCommand(command: Command, options: { hiddenFromRoot?: boolean } = {}): CommanderCommandRegistration {
+export function defineCommanderCommand(command: Command, options: { hiddenFromRoot?: boolean } = {}): CommanderCommandRegistration {
     return {
         name: command.name(),
         description: command.description(),
         aliases: command.aliases(),
         kind: 'commander',
         createCommand: () => command,
-        hiddenFromRoot: options.hiddenFromRoot ?? true,
+        hiddenFromRoot: options.hiddenFromRoot ?? false,
         run: async () => {},
     };
 }
@@ -113,7 +86,7 @@ function createBuiltInCommandPlugins(options: CommandPluginFactoryOptions = {}):
             setup(api) {
                 [
                     configCommand,
-                    authCommand,
+                    loginCommand,
                     modelsCommand,
                     agentCommand,
                     sessionCommand,
@@ -121,14 +94,11 @@ function createBuiltInCommandPlugins(options: CommandPluginFactoryOptions = {}):
                     exportCommand,
                     importCommand,
                     shareCommand,
-                    hooksCommand,
-                    ideCommand,
-                    memoryCommand,
-                    notepadCommand,
                     permissionsCommand,
                     options.chatCommand ?? chatCommand,
                     options.tuiCommand ?? tuiCommand,
                 ].forEach((command) => api.registerCommand(defineCommanderCommand(command)));
+                api.registerCommand(defineCommanderCommand(agentsEntryCommand, { hiddenFromRoot: false }));
             },
         }),
         definePlugin({
@@ -140,34 +110,10 @@ function createBuiltInCommandPlugins(options: CommandPluginFactoryOptions = {}):
                 compatibility: { product: 'xqoder', versionRange: '^0.1.0' },
             },
             setup(api) {
-                [buildCommand, fixCommand, runCommand, startCommand, testCommand, deployCommand]
+                [buildCommand, fixCommand, runCommand, startCommand, testCommand, deployCommand, teamCommand]
                     .forEach((command) => api.registerCommand(defineCommanderCommand(command)));
-            },
-        }),
-        definePlugin({
-            manifest: {
-                name: 'cli-integrations',
-                version: '0.1.0',
-                capabilities: ['commands'],
-                enabledByDefault: BUILT_IN_PLUGIN_DEFAULTS['cli-integrations'],
-                compatibility: { product: 'xqoder', versionRange: '^0.1.0' },
-            },
-            setup(api) {
-                [lspCommand, mcpCommand, rollbacksCommand]
-                    .forEach((command) => api.registerCommand(defineCommanderCommand(command)));
-            },
-        }),
-        definePlugin({
-            manifest: {
-                name: 'cli-remote',
-                version: '0.1.0',
-                capabilities: ['commands'],
-                enabledByDefault: BUILT_IN_PLUGIN_DEFAULTS['cli-remote'],
-                compatibility: { product: 'xqoder', versionRange: '^0.1.0' },
-            },
-            setup(api) {
-                [serveCommand, attachCommand, acpCommand]
-                    .forEach((command) => api.registerCommand(defineCommanderCommand(command)));
+                [planCommand, reviewCommand, automationCommand]
+                    .forEach((command) => api.registerCommand(defineCommanderCommand(command, { hiddenFromRoot: false })));
             },
         }),
         definePlugin({
@@ -192,7 +138,39 @@ function createBuiltInCommandPlugins(options: CommandPluginFactoryOptions = {}):
                 compatibility: { product: 'xqoder', versionRange: '^0.1.0' },
             },
             setup(api) {
-                [pluginsCommand, uninstallCommand, upgradeCommand].forEach((command) => api.registerCommand(defineCommanderCommand(command)));
+                [
+                    pluginsCommand,
+                    uninstallCommand,
+                    upgradeCommand,
+                    createMemoryCommand(),
+                    createHooksCommand(),
+                    ideCommand,
+                    createServeCommand(),
+                ].forEach((command) => api.registerCommand(defineCommanderCommand(command)));
+            },
+        }),
+        definePlugin({
+            manifest: {
+                name: 'cli-remote',
+                version: '0.1.0',
+                capabilities: ['commands'],
+                enabledByDefault: BUILT_IN_PLUGIN_DEFAULTS['cli-remote'],
+                compatibility: { product: 'xqoder', versionRange: '^0.1.0' },
+            },
+            setup(api) {
+                [createServeCommand()].forEach((command) => api.registerCommand(defineCommanderCommand(command)));
+            },
+        }),
+        definePlugin({
+            manifest: {
+                name: 'cli-integrations',
+                version: '0.1.0',
+                capabilities: ['commands'],
+                enabledByDefault: true,
+                compatibility: { product: 'xqoder', versionRange: '^0.1.0' },
+            },
+            setup(api) {
+                [createMcpCommand()].forEach((command) => api.registerCommand(defineCommanderCommand(command)));
             },
         }),
     ];
@@ -283,10 +261,17 @@ function isCompatiblePlugin(plugin: Plugin, options: CommandPluginDiscoveryOptio
 
 class CommandCollector implements PluginAPI {
     readonly commands: CommanderCommandRegistration[] = [];
+    private readonly commandNames = new Set<string>();
 
     registerCommand(command: CommandRegistration): void {
         if ('kind' in command && command.kind === 'commander' && 'createCommand' in command) {
-            this.commands.push(command as CommanderCommandRegistration);
+            const registration = command as CommanderCommandRegistration;
+            const commandNames = [registration.name, ...(registration.aliases ?? [])];
+            if (commandNames.some((name) => this.commandNames.has(name))) {
+                return;
+            }
+            commandNames.forEach((name) => this.commandNames.add(name));
+            this.commands.push(registration);
         }
     }
 
@@ -387,7 +372,38 @@ export async function discoverCommandRegistrations(
 export function getBuiltInCommandRegistrations(options: CommandPluginFactoryOptions = {}): CommanderCommandRegistration[] {
     const collector = new CommandCollector();
     for (const plugin of getBuiltInCommandPlugins(options)) {
+        if (plugin.manifest.enabledByDefault === false) {
+            continue;
+        }
         plugin.setup(collector);
     }
     return collector.commands;
+}
+
+export interface CommandPluginDiscoveryOptions extends CommandPluginFactoryOptions {
+    cwd?: string;
+    plugins?: Plugin[];
+    pluginConfig?: {
+        enabled?: string[];
+        disabled?: string[];
+        paths?: string[];
+        allowIncompatible?: boolean;
+    };
+    productVersion: string;
+    productName?: string;
+}
+
+export type CommandPluginLoadStatus = 'loaded' | 'disabled' | 'incompatible' | 'failed';
+
+export interface CommandPluginLoadReportItem {
+    name: string;
+    source: 'built-in' | 'external' | 'injected';
+    status: CommandPluginLoadStatus;
+    version?: string;
+    reason?: string;
+}
+
+export interface CommandPluginDiscoveryResult {
+    commands: CommanderCommandRegistration[];
+    report: CommandPluginLoadReportItem[];
 }

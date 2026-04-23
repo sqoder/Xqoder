@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import { resolveSessionForExport, resolveSessionForTui } from '../src/application/sessions/session-resolve.js';
-import { assertServeDirectoryWritable, resolveServeRuntimeOptions } from '../src/commands/remote/serve.js';
+import { assertServeDirectoryWritable, resolveServeRuntimeOptions } from '../src/application/remote/serve-runtime.js';
+import { runServeCommand, type ServeCommandRuntime } from '../src/commands/remote/serve.js';
+import { createDefaultConfig } from '../src/infra/shared/config-defaults.js';
 
 describe('session resolution helpers', () => {
     it('returns the latest session for TUI resume', () => {
@@ -111,5 +113,158 @@ describe('serve command helpers', () => {
                 throw new Error('readonly');
             },
         })).toThrow('Project directory is not writable, session will not persist: /tmp/project');
+    });
+
+    it('starts the real HTTP server with session store and agent callbacks', async () => {
+        const loadedConfig = {
+            ...createDefaultConfig({}),
+            defaultAgent: 'general',
+            llm: {
+                provider: 'openai' as const,
+                model: 'openai/gpt-4o-mini',
+                apiKey: '',
+            },
+            sandbox: {
+                mode: 'project' as const,
+                allowedPaths: [],
+            },
+            server: {
+                port: 4123,
+                hostname: '127.0.0.2',
+                cors: ['https://default.test'],
+            },
+        };
+        const outputs: string[] = [];
+        const serverOptions: any[] = [];
+        const sendCalls: any[] = [];
+        let runtime: ServeCommandRuntime | undefined;
+
+        const fakeStore = {
+            close: () => {},
+        };
+        const fakeServer = {
+            close: (callback?: () => void) => {
+                callback?.();
+            },
+            on: () => fakeServer,
+            once: () => fakeServer,
+        };
+        const fakeAgentService = {
+            cancel: () => {},
+            dispose: async () => {},
+            sendMessage: async (
+                message: string,
+                sessionId: string | undefined,
+                settings: unknown,
+                attachments: unknown[],
+                callbacks: any,
+            ) => {
+                sendCalls.push({
+                    message,
+                    sessionId,
+                    settings,
+                    attachments,
+                });
+                callbacks.onEvent({
+                    type: 'message.completed',
+                    sessionId: sessionId ?? 'session-new',
+                    seq: 1,
+                    timestamp: Date.now(),
+                    payload: {
+                        sessionId: sessionId ?? 'session-new',
+                        message: {
+                            id: 'message-1',
+                            sessionId: sessionId ?? 'session-new',
+                            role: 'assistant',
+                            content: `reply:${message}`,
+                            createdAt: Date.now(),
+                        },
+                    },
+                });
+                return {
+                    sessionId: sessionId ?? 'session-new',
+                };
+            },
+        };
+
+        runtime = await runServeCommand({
+            dir: '/tmp',
+            port: '4999',
+            host: '127.0.0.9',
+            cors: 'https://ui.test',
+        }, {
+            configLoader: {
+                load: () => loadedConfig,
+            },
+            createAgentService: () => fakeAgentService as any,
+            createServer: (options) => {
+                serverOptions.push(options);
+                return fakeServer as any;
+            },
+            createSessionStore: () => fakeStore as any,
+            env: {
+                XQODER_LLM_MODEL: 'openai/gpt-4o-mini',
+                XQODER_SERVER_PASSWORD: 'secret',
+                XQODER_SERVER_USERNAME: 'alice',
+            },
+            registerSignalHandlers: false,
+            writeOutput: (message) => outputs.push(message),
+        });
+
+        expect(runtime.options).toMatchObject({
+            cwd: '/tmp',
+            port: 4999,
+            hostname: '127.0.0.9',
+            cors: ['https://ui.test'],
+            password: 'secret',
+            username: 'alice',
+        });
+        expect(serverOptions[0]).toMatchObject({
+            port: 4999,
+            hostname: '127.0.0.9',
+            cors: ['https://ui.test'],
+            password: 'secret',
+            username: 'alice',
+            cwd: '/tmp',
+            defaultModel: 'openai/gpt-4o-mini',
+            sessionStore: fakeStore,
+        });
+        expect(outputs.some((line) => line.includes('Serve listening'))).toBe(true);
+
+        const response = await serverOptions[0].runMessage({
+            projectRoot: '/tmp',
+            sessionId: 'session-1',
+            message: 'hello',
+            attachments: [],
+        });
+        expect(response).toEqual({
+            response: 'reply:hello',
+            sessionId: 'session-1',
+        });
+        expect(sendCalls[0].settings).toEqual({
+            dir: '/tmp',
+            model: 'openai/gpt-4o-mini',
+            agent: 'general',
+            sandboxMode: 'project',
+        });
+
+        const streamedEvents: unknown[] = [];
+        const streamed = await serverOptions[0].runMessageStream({
+            projectRoot: '/tmp',
+            sessionId: 'session-2',
+            message: 'stream',
+            attachments: [],
+            onEvent: (event: unknown) => streamedEvents.push(event),
+            requestQuestion: async (prompt: { requestId: string }) => ({
+                requestId: prompt.requestId,
+                selected: [],
+            }),
+        });
+
+        expect(streamed).toEqual({
+            response: 'reply:stream',
+            sessionId: 'session-2',
+        });
+        expect(streamedEvents).toHaveLength(1);
     });
 });

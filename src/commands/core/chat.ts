@@ -21,8 +21,13 @@ export async function runChatCommand(
     prompt: string,
     options: ChatCommandOptions,
     dependencies: ChatCommandDependencies = {},
-): Promise<void> {
-    await runChat(prompt, options, withDefaultChatDependencies(dependencies), () => createAgentCallbacks());
+): Promise<{ response: string; sessionId: string }> {
+    return await runChat(
+        prompt,
+        options,
+        withDefaultChatDependencies(dependencies),
+        () => createAgentCallbacks(),
+    );
 }
 
 function createAgentCallbacks(): AgentCallbacks {

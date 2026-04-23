@@ -1,6 +1,5 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Database } from 'bun:sqlite';
 import {
     AgentSession,
     normalizeSessionMetadataSnapshot,
@@ -8,7 +7,15 @@ import {
     type AgentSessionUsage,
 } from './session.js';
 import { runMigrations } from './migrations.js';
+import {
+    readOptionalSessionUsage,
+    serializeOptionalSessionUsage,
+} from './session-usage.js';
 import { sanitizeForPersistence, sanitizeMessageForPersistence } from './sanitize.js';
+import {
+    createSqliteDatabase,
+    type SqliteDatabase,
+} from './sqlite-runtime.js';
 
 export interface PersistedSessionSummary {
     id: string;
@@ -54,7 +61,7 @@ export interface AgentSessionStore {
 }
 
 export class SQLiteSessionStore implements AgentSessionStore {
-    private readonly db: Database;
+    private readonly db: SqliteDatabase;
 
     constructor(dbPath: string) {
         const resolvedDbPath = path.resolve(dbPath);
@@ -64,10 +71,10 @@ export class SQLiteSessionStore implements AgentSessionStore {
             fs.mkdirSync(dbDir, { recursive: true });
         }
 
-        this.db = new Database(resolvedDbPath);
+        this.db = createSqliteDatabase(resolvedDbPath);
         this.db.exec('PRAGMA foreign_keys = ON;');
         ensureSessionSchema(this.db);
-        runMigrations(this.db as any);
+        runMigrations(this.db);
     }
 
     getSession(sessionId: string): AgentSession | null {
@@ -199,7 +206,10 @@ export class SQLiteSessionStore implements AgentSessionStore {
                 snapshot.usage.completionTokens,
                 snapshot.usage.totalTokens,
                 lastUserMessageForDb,
-                JSON.stringify(snapshot.metadata),
+                JSON.stringify({
+                    ...snapshot.metadata,
+                    usage: serializeOptionalSessionUsage(snapshot.usage),
+                }),
             );
 
             this.db.prepare('DELETE FROM session_messages WHERE session_id = ?').run(snapshot.id);
@@ -323,7 +333,7 @@ interface SessionRow {
     session_metadata_json: string;
 }
 
-function ensureSessionSchema(db: Database): void {
+function ensureSessionSchema(db: SqliteDatabase): void {
     db.exec(`
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
@@ -364,7 +374,7 @@ function ensureSessionSchema(db: Database): void {
 }
 
 function ensureColumn(
-    db: Database,
+    db: SqliteDatabase,
     tableName: string,
     columnName: string,
     columnDefinition: string,
@@ -382,7 +392,13 @@ function parseSessionRow(row: SessionRow): {
     summary: PersistedSessionSummary;
     metadata: AgentSessionMetadataSnapshot;
 } {
-    const metadata = normalizeSessionMetadataSnapshot(safeParseJson(row.session_metadata_json));
+    const rawMetadata = safeParseJson(row.session_metadata_json);
+    const metadata = normalizeSessionMetadataSnapshot(rawMetadata);
+    const usageMetadata = readOptionalSessionUsage(
+        typeof rawMetadata === 'object' && rawMetadata !== null
+            ? (rawMetadata as Record<string, unknown>)['usage']
+            : undefined,
+    );
 
     return {
         summary: {
@@ -399,6 +415,7 @@ function parseSessionRow(row: SessionRow): {
                 promptTokens: row.prompt_tokens,
                 completionTokens: row.completion_tokens,
                 totalTokens: row.total_tokens,
+                ...usageMetadata,
             },
             ...(row.last_user_message ? { lastUserMessage: row.last_user_message } : {}),
             compactionCount: metadata.compactions.length,
@@ -417,7 +434,7 @@ function safeParseJson(raw: string): unknown {
     }
 }
 
-function safeRollback(db: Database): void {
+function safeRollback(db: SqliteDatabase): void {
     try {
         db.exec('ROLLBACK;');
     } catch {

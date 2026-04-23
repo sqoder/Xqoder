@@ -5,10 +5,14 @@ import {
     type MessageAttachment as SharedMessageAttachment,
 } from '@xqoder/shared';
 import {
+    AgentSession,
     XQoderAgent,
     type AgentConfig,
 } from '@xqoder/agent';
 import { RuntimeKernel } from '@xqoder/core-runtime';
+import {
+    createConversationEventEnvelopeEmitter,
+} from '@xqoder/protocol';
 import type { AgentSessionStore } from '@xqoder/storage-sqlite';
 import type {
     AgentConversationPort,
@@ -17,9 +21,15 @@ import type {
     TuiAgentSettings,
 } from '../../application/agent/index.js';
 import {
+    buildConversationTurnInput,
+    emitDirectChatRuntimeEvents,
+    normalizeWorkflowGoal,
+    prepareChatExecution,
+    resolveDirectChatCommandResponse,
+} from '../../application/chat/index.js';
+import {
     compactTuiAgentSession,
     persistTuiAgentSession,
-    resolveTuiAgentSendContext,
 } from './tui-agent-session-operations.js';
 import {
     createTuiAgentRuntime,
@@ -92,12 +102,74 @@ export class TuiAgentService implements AgentConversationPort {
         let eventRelay: ReturnType<typeof createTuiRuntimeEventRelay> | null = null;
 
         try {
+            const persistedSession = sessionId
+                ? this.sessionStore.getSession(sessionId) ?? undefined
+                : undefined;
             const {
-                resolvedDir,
-                permissions,
-                activeSession,
-                agentConfig,
-            } = resolveTuiAgentSendContext(this.sessionStore, sessionId, settings);
+                dir,
+                model,
+                agent,
+            } = settings;
+            const turnInput = buildConversationTurnInput({
+                prompt: message,
+                cwd: dir,
+                attachments,
+                sessionId: persistedSession?.id,
+                startNewSession: !persistedSession,
+                model,
+                agent,
+                entrypoint: 'tui',
+            });
+            const directExecution = prepareChatExecution(turnInput, {
+                sessionStore: this.sessionStore,
+            });
+            const directResponse = await resolveDirectChatCommandResponse(directExecution);
+            if (directResponse !== undefined) {
+                try {
+                    this.debugLogger?.logRequest([{
+                        role: 'user',
+                        content: message,
+                        ...(attachments.length > 0
+                            ? {
+                                attachments: attachments.map((attachment) => ({
+                                    ...attachment,
+                                    ...(attachment.data ? { data: `[attachment omitted, ${attachment.data.length} chars]` } : {}),
+                                })),
+                            }
+                            : {}),
+                    }]);
+                } catch {
+                    // ignore debug logging failures
+                }
+
+                const result = emitDirectChatRuntimeEvents({
+                    execution: directExecution,
+                    response: directResponse,
+                    onEvent: callbacks.onEvent,
+                    sessionIdOverride: persistedSession?.id,
+                });
+
+                try {
+                    this.debugLogger?.logResponse({ response: directResponse });
+                } catch {
+                    // ignore debug logging failures
+                }
+
+                return {
+                    sessionId: result.sessionId,
+                };
+            }
+
+            const resolvedDir = directExecution.turnInput.resolvedDir;
+            const activeSession = directExecution.agentConfig.session ?? new AgentSession({
+                systemPrompt: directExecution.agentConfig.systemPrompt,
+            });
+            const agentConfig: AgentConfig = {
+                ...directExecution.agentConfig,
+                cwd: resolvedDir,
+                projectRoot: resolvedDir,
+                session: activeSession,
+            };
             activeSessionId = activeSession.id;
 
             this.pendingAgentConfig = agentConfig;
@@ -120,18 +192,30 @@ export class TuiAgentService implements AgentConversationPort {
                 // ignore debug logging failures
             }
 
-            eventRelay = createTuiRuntimeEventRelay(callbacks);
+            eventRelay = createTuiRuntimeEventRelay(callbacks, {
+                session: activeSession,
+            });
             const runtimeDescriptor = createTuiRuntimeDescriptor({
                 sessionId: activeSession.id,
                 cwd: resolvedDir,
-                permissions,
+                permissions: agentConfig.permissions,
                 callbacks,
             });
+            const workflowMetadata = directExecution.turnInput.runtime.commandRoute.kind === 'workflow'
+                ? {
+                    workflow: {
+                        kind: directExecution.turnInput.runtime.commandRoute.mode,
+                        rawGoal: directExecution.turnInput.runtime.commandRoute.input,
+                        normalizedGoal: normalizeWorkflowGoal(directExecution.turnInput.runtime.commandRoute.input),
+                    },
+                }
+                : undefined;
 
             for await (const event of this.runtime.runAgent('xqoder-agent', {
-                prompt: message,
+                prompt: directExecution.turnInput.preparedText,
                 messages: activeSession.getMessages().map((entry, index) => toCoreMessage(entry, activeSession.id, index)),
                 attachments: attachments.map(toProtocolAttachment),
+                ...(workflowMetadata ? { metadata: workflowMetadata } : {}),
             }, runtimeDescriptor)) {
                 eventRelay.emit(event);
             }
@@ -157,14 +241,13 @@ export class TuiAgentService implements AgentConversationPort {
             const err = error instanceof Error ? error : new Error(String(error));
             errorEmitted = errorEmitted || eventRelay?.getState().errorEmitted === true;
             if (!errorEmitted) {
-                callbacks.onEvent({
-                    type: 'error',
-                    sessionId: activeSessionId ?? 'unknown-session',
-                    timestamp: Date.now(),
+                const sessionId = activeSessionId ?? 'unknown-session';
+                const fallbackEmitter = createConversationEventEnvelopeEmitter(sessionId);
+                callbacks.onEvent(fallbackEmitter.emitRecord('error', {
                     source: 'runtime',
                     message: err.message,
                     recoverable: false,
-                });
+                }));
             }
             if (!errorEmitted) {
                 throw err;

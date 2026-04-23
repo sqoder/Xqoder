@@ -83,6 +83,7 @@ export interface AgentEvents {
     tool_request: ToolRequest;
     tool_update: ToolUpdate;
     tool_response: ToolResponse;
+    verification: Verification;
     usage: Usage;
     error: ErrorData;
 }
@@ -138,6 +139,12 @@ export interface ToolResponse {
     name: string;
     output: string;
     success: boolean;
+}
+
+export interface Verification {
+    ok: boolean;
+    blocked: boolean;
+    summary: string;
 }
 
 export interface Usage {

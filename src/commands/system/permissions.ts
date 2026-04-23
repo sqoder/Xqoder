@@ -4,6 +4,7 @@ import {
     createPermissionsSnapshot,
     runPermissionsCommand,
     runPermissionsPathCommand,
+    runSetApprovalPolicyCommand,
     runSetPermissionsDefaultCommand,
     runSetToolPermissionCommand,
     runShowPermissionsCommand,
@@ -18,6 +19,7 @@ import {
 export {
     createPermissionsSnapshot,
     runPermissionsPathCommand,
+    runSetApprovalPolicyCommand,
     runSetPermissionsDefaultCommand,
     runSetToolPermissionCommand,
     runShowPermissionsCommand,
@@ -69,6 +71,17 @@ export function createPermissionsCommand(
         .option('--json', 'Output in JSON format')
         .action((mode: string, options: PermissionsOutputOptions) => {
             runPermissionsCommand(() => runSetPermissionsDefaultCommand(mode, options, dependencies));
+        });
+
+    command
+        .command('policy')
+        .description('Set the approval policy in one config scope')
+        .argument('<policy>', 'strict | balanced | workspace_auto')
+        .option('--dir <dir>', 'Project directory')
+        .option('--scope <scope>', 'Write target scope: global | project', 'project')
+        .option('--json', 'Output in JSON format')
+        .action((policy: string, options: PermissionsOutputOptions) => {
+            runPermissionsCommand(() => runSetApprovalPolicyCommand(policy, options, dependencies));
         });
 
     command

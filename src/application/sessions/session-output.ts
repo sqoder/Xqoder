@@ -2,6 +2,16 @@ import type {
     SessionDetail,
     SessionSummary,
 } from './ports.js';
+import {
+    formatSessionUsageCost,
+    formatSessionUsageSummary,
+} from '../../shared/session-usage.js';
+import {
+    buildProjectedConversationTranscript,
+    selectConversationTranscriptProjectionSources,
+    type ConversationEventStoreRecord,
+} from '../../domain/conversation/index.js';
+import type { ConversationEventEnvelope } from '@xqoder/protocol';
 
 export function formatSessionListLine(summary: SessionSummary): string {
     return [
@@ -11,6 +21,15 @@ export function formatSessionListLine(summary: SessionSummary): string {
         `model=${summary.model}`,
         `msgs=${summary.messageCount}`,
         `tokens=${summary.usage.totalTokens}`,
+        ...(typeof summary.usage.cacheReadTokens === 'number' && summary.usage.cacheReadTokens > 0
+            ? [`cacheRead=${summary.usage.cacheReadTokens}`]
+            : []),
+        ...(typeof summary.usage.cacheCreationTokens === 'number' && summary.usage.cacheCreationTokens > 0
+            ? [`cacheCreate=${summary.usage.cacheCreationTokens}`]
+            : []),
+        ...(typeof summary.usage.cost === 'number'
+            ? [`cost=${formatSessionUsageCost(summary.usage.cost)}`]
+            : []),
         `commands=${summary.commandCount}`,
         `files=${summary.fileChangeCount}`,
         `compacts=${summary.compactionCount}`,
@@ -23,6 +42,35 @@ export function formatSessionDetail(
     transcriptLimit: number,
     historyLimit: number,
 ): string {
+    const verificationHistory = session.getVerificationHistory ? session.getVerificationHistory() : [];
+    const checkpointHistory = session.getCheckpointHistory ? session.getCheckpointHistory() : [];
+    const conversationEvents = Array.isArray(session.getConversationEvents?.())
+        ? session.getConversationEvents!() as ConversationEventStoreRecord[]
+        : undefined;
+    const conversationEventEnvelopes = Array.isArray(session.getConversationEventEnvelopes?.())
+        ? session.getConversationEventEnvelopes!() as ConversationEventEnvelope[]
+        : undefined;
+    const conversationSignals = buildProjectedConversationTranscript({
+        messages: session.getMessages(),
+        toolHistory: session.getToolHistory().map((entry) => ({
+            id: entry.id ?? '',
+            name: entry.name,
+            success: entry.success,
+        })).filter((entry) => entry.id.length > 0),
+        verificationHistory: verificationHistory.map((entry, index) => ({
+            id: `verification:${index}`,
+            ok: entry.ok,
+            blocked: entry.blocked,
+            summary: entry.summary,
+            messages: entry.messages,
+        })),
+        ...selectConversationTranscriptProjectionSources({
+            ...(conversationEventEnvelopes ? { conversationEventEnvelopes } : {}),
+            ...(conversationEvents ? { conversationEvents } : {}),
+        }),
+    })
+        .slice(-transcriptLimit)
+        .map(formatConversationSignalLine);
     const transcript = session.getMessages()
         .slice(-transcriptLimit)
         .map((message) => `- [${message.role}] ${truncateText(singleLine(message.content), 180)}`);
@@ -35,6 +83,11 @@ export function formatSessionDetail(
         .slice(-historyLimit)
         .map((entry) => (
             `- [${formatDateTime(entry.timestamp)}] ${formatFileChangeStatus(entry.changeType, entry.success)} ${truncateText(entry.path, 160)} (${entry.bytes} B)`
+        ));
+    const checkpoints = checkpointHistory
+        .slice(-historyLimit)
+        .map((entry) => (
+            `- [${formatDateTime(entry.timestamp)}] ${entry.toolName} status=${entry.status}${entry.rollbackPointId ? ` rollback=${entry.rollbackPointId}` : ''}`
         ));
     const toolHistory = session.getToolHistory()
         .slice(-historyLimit)
@@ -50,12 +103,15 @@ export function formatSessionDetail(
         `Created: ${formatDateTime(summary.createdAt)}`,
         `Updated: ${formatDateTime(summary.updatedAt)}`,
         `Messages: ${summary.messageCount}/${summary.maxMessages}`,
-        `Tokens: prompt=${summary.usage.promptTokens}, completion=${summary.usage.completionTokens}, total=${summary.usage.totalTokens}`,
+        `Usage: ${formatSessionUsageSummary(summary.usage)}`,
         `Compactions: ${summary.compactionCount}`,
         `Commands: ${summary.commandCount}`,
         `File Changes: ${summary.fileChangeCount}`,
         summary.lastUserMessage ? `Last User Message: ${truncateText(singleLine(summary.lastUserMessage), 180)}` : undefined,
         session.getCompactSummary() ? `Auto Summary:\n${session.getCompactSummary()}` : undefined,
+        '',
+        'Conversation Signals:',
+        ...(conversationSignals.length > 0 ? conversationSignals : ['- None']),
         '',
         'Recent Transcript:',
         ...(transcript.length > 0 ? transcript : ['- None']),
@@ -66,9 +122,31 @@ export function formatSessionDetail(
         'File Changes:',
         ...(fileChanges.length > 0 ? fileChanges : ['- None']),
         '',
+        'Checkpoint History:',
+        ...(checkpoints.length > 0 ? checkpoints : ['- None']),
+        '',
         'Tool History:',
         ...(toolHistory.length > 0 ? toolHistory : ['- None']),
     ].filter((line): line is string => line !== undefined).join('\n');
+}
+
+function formatConversationSignalLine(
+    entry: ReturnType<typeof buildProjectedConversationTranscript>[number],
+): string {
+    if (entry.type === 'tool') {
+        return `- [tool${entry.toolName ? `:${entry.toolName}` : ''}] ${truncateText(singleLine(entry.content), 180)}`;
+    }
+
+    if (entry.type === 'verification') {
+        const status = entry.blocked === true
+            ? 'verification:block'
+            : entry.ok === false
+                ? 'verification:fail'
+                : 'verification:ok';
+        return `- [${status}] ${truncateText(singleLine(entry.content), 180)}`;
+    }
+
+    return `- [${entry.type}] ${truncateText(singleLine(entry.content), 180)}`;
 }
 
 function formatDateTime(value: Date): string {

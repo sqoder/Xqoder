@@ -2,6 +2,9 @@ export interface SessionUsageSummary {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+    cost?: number;
 }
 
 export interface SessionSummary {
@@ -41,11 +44,29 @@ export interface SessionFileChangeEntry {
 }
 
 export interface SessionToolHistoryEntry {
+    id?: string;
     completedAt: Date;
     success: boolean;
     name: string;
     args: unknown;
     outputPreview: string;
+}
+
+export interface SessionVerificationHistoryEntry {
+    createdAt: Date;
+    ok: boolean;
+    blocked: boolean;
+    summary: string;
+    messages: string[];
+}
+
+export interface SessionCheckpointHistoryEntry {
+    timestamp: Date;
+    toolCallId: string;
+    toolName: string;
+    required: boolean;
+    status: 'not_required' | 'captured' | 'missing';
+    rollbackPointId?: string;
 }
 
 export interface SessionDetail {
@@ -54,6 +75,10 @@ export interface SessionDetail {
     getCommandHistory(): SessionCommandHistoryEntry[];
     getFileChanges(): SessionFileChangeEntry[];
     getToolHistory(): SessionToolHistoryEntry[];
+    getVerificationHistory?(): SessionVerificationHistoryEntry[];
+    getCheckpointHistory?(): SessionCheckpointHistoryEntry[];
+    getConversationEvents?(): unknown[];
+    getConversationEventEnvelopes?(): unknown[];
     getCompactSummary(): string | undefined;
 }
 

@@ -1,6 +1,7 @@
 import * as http from 'node:http';
 import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'bun:test';
+import { AgentSession } from '../src/core/agent/session/session.js';
 import type { MessageAttachment } from '@xqoder/shared';
 import { handleMessageRoutes, handleSessionRoutes } from '../src/interfaces/http/server-session.js';
 
@@ -22,6 +23,14 @@ describe('HTTP session routes', () => {
                     createdAt,
                     updatedAt,
                     messageCount: 3,
+                    usage: {
+                        promptTokens: 21,
+                        completionTokens: 5,
+                        totalTokens: 26,
+                        cacheReadTokens: 8,
+                        cacheCreationTokens: 3,
+                        cost: 0.45,
+                    },
                 }];
             },
         };
@@ -49,6 +58,14 @@ describe('HTTP session routes', () => {
             createdAt: createdAt.toISOString(),
             updatedAt: updatedAt.toISOString(),
             messageCount: 3,
+            usage: {
+                promptTokens: 21,
+                completionTokens: 5,
+                totalTokens: 26,
+                cacheReadTokens: 8,
+                cacheCreationTokens: 3,
+                cost: 0.45,
+            },
         }]);
     });
 
@@ -105,9 +122,141 @@ describe('HTTP session routes', () => {
             messageCount: 0,
         });
     });
+
+    it('returns usage, transcript, and conversation signals in session detail payloads for inspect-style reads', async () => {
+        const res = new MockServerResponse();
+        const createdAt = new Date('2026-04-19T10:00:00.000Z');
+        const updatedAt = new Date('2026-04-19T10:05:00.000Z');
+        const session = createInspectableSession();
+        const store = {
+            getSessionSummary: () => ({
+                id: 'session-usage',
+                projectRoot: '/body-project',
+                cwd: '/body-project',
+                model: 'openai/gpt-4.1',
+                title: 'Usage Detail',
+                createdAt,
+                updatedAt,
+                messageCount: 2,
+                usage: {
+                    promptTokens: 34,
+                    completionTokens: 8,
+                    totalTokens: 42,
+                    cacheReadTokens: 13,
+                    cacheCreationTokens: 4,
+                    cost: 0.19,
+                },
+            }),
+            getSession: () => session,
+        };
+
+        const handled = await handleSessionRoutes({
+            req: { method: 'GET' } as http.IncomingMessage,
+            res: res.asResponse(),
+            pathParts: ['session', 'session-usage'],
+            parsed: { query: {} } as any,
+            cwd: '/default-project',
+            defaultModel: 'openai/gpt-4.1',
+            store: store as any,
+            corsHeaders: { 'Access-Control-Allow-Origin': '*' },
+        });
+
+        expect(handled).toBe(true);
+        expect(parseJsonBody(res)).toEqual({
+            id: 'session-usage',
+            projectRoot: '/body-project',
+            cwd: '/body-project',
+            model: 'openai/gpt-4.1',
+            title: 'Usage Detail',
+            createdAt: createdAt.toISOString(),
+            updatedAt: updatedAt.toISOString(),
+            messageCount: 2,
+            usage: {
+                promptTokens: 34,
+                completionTokens: 8,
+                totalTokens: 42,
+                cacheReadTokens: 13,
+                cacheCreationTokens: 4,
+                cost: 0.19,
+            },
+            transcript: [
+                { role: 'system', content: 'system' },
+                { role: 'user', content: 'inspect my session' },
+                { role: 'tool', content: 'patched http payload', toolCallId: 'tool-http-1' },
+                { role: 'system', content: 'Verification passed: inspect payload includes transcript signals' },
+                { role: 'assistant', content: 'session detail now exposes transcript and signals' },
+            ],
+            conversationSignals: [
+                { type: 'user', content: 'inspect my session' },
+                {
+                    type: 'tool',
+                    content: 'patched http payload',
+                    toolCallId: 'tool-http-1',
+                    toolName: 'write_file',
+                    success: true,
+                },
+                {
+                    type: 'verification',
+                    content: 'Verification passed: inspect payload includes transcript signals',
+                    ok: true,
+                    blocked: false,
+                    summary: 'Verification passed: inspect payload includes transcript signals',
+                },
+                { type: 'assistant', content: 'session detail now exposes transcript and signals' },
+            ],
+        });
+    });
 });
 
 describe('HTTP message routes', () => {
+    it('returns transcript messages together with conversation signals for read-style transcript APIs', async () => {
+        const res = new MockServerResponse();
+        const session = createInspectableSession();
+        const store = {
+            getSession: () => session,
+        };
+
+        const handled = await handleSessionRoutes({
+            req: { method: 'GET' } as http.IncomingMessage,
+            res: res.asResponse(),
+            pathParts: ['session', 'session-http-inspect', 'messages'],
+            parsed: { query: {} } as any,
+            cwd: '/default-project',
+            defaultModel: 'openai/gpt-4.1',
+            store: store as any,
+            corsHeaders: { 'Access-Control-Allow-Origin': '*' },
+        });
+
+        expect(handled).toBe(true);
+        expect(parseJsonBody(res)).toEqual({
+            messages: [
+                { role: 'system', content: 'system' },
+                { role: 'user', content: 'inspect my session' },
+                { role: 'tool', content: 'patched http payload', toolCallId: 'tool-http-1' },
+                { role: 'system', content: 'Verification passed: inspect payload includes transcript signals' },
+                { role: 'assistant', content: 'session detail now exposes transcript and signals' },
+            ],
+            conversationSignals: [
+                { type: 'user', content: 'inspect my session' },
+                {
+                    type: 'tool',
+                    content: 'patched http payload',
+                    toolCallId: 'tool-http-1',
+                    toolName: 'write_file',
+                    success: true,
+                },
+                {
+                    type: 'verification',
+                    content: 'Verification passed: inspect payload includes transcript signals',
+                    ok: true,
+                    blocked: false,
+                    summary: 'Verification passed: inspect payload includes transcript signals',
+                },
+                { type: 'assistant', content: 'session detail now exposes transcript and signals' },
+            ],
+        });
+    });
+
     it('runs direct messages against the resolved session and trims input', async () => {
         const res = new MockServerResponse();
         const attachments: MessageAttachment[] = [{
@@ -272,4 +421,39 @@ function createStreamControllerStub(overrides: Record<string, unknown> = {}): an
         resolveQuestionRequest: () => ({ ok: true }),
         ...overrides,
     };
+}
+
+function createInspectableSession(): AgentSession {
+    const session = new AgentSession({
+        id: 'session-http-inspect',
+        title: 'HTTP Inspect',
+        systemPrompt: 'system',
+        createdAt: new Date('2026-04-19T10:00:00.000Z'),
+        maxMessages: 64,
+    });
+    session.addUserMessage('inspect my session');
+    session.recordToolExecution({
+        id: 'tool-http-1',
+        name: 'write_file',
+        args: { path: 'src/interfaces/http/server-session.ts' },
+        success: true,
+        output: 'patched http payload',
+    });
+    session.addToolResult('tool-http-1', 'patched http payload');
+    session.addMessage({
+        role: 'system',
+        content: 'Verification passed: inspect payload includes transcript signals',
+    });
+    session.recordVerification({
+        ok: true,
+        blocked: false,
+        summary: 'Verification passed: inspect payload includes transcript signals',
+        messages: ['Verification passed: inspect payload includes transcript signals'],
+    });
+    session.addAssistantMessage({
+        role: 'assistant',
+        content: 'session detail now exposes transcript and signals',
+    });
+
+    return session;
 }

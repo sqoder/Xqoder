@@ -7,6 +7,7 @@ import {
     type TestReport,
 } from '@xqoder/shared';
 import { PackageManagerDetector } from './package-manager-detector.js';
+import { buildShellCommandInvocation } from './shell-command.js';
 
 export interface ProjectTestRunnerOptions {
     command?: string;
@@ -72,7 +73,8 @@ export class ProjectTestRunner {
             let output = '';
             let timedOut = false;
             const timeout = options.timeout ?? 120000;
-            const child = spawn('sh', ['-c', command], {
+            const invocation = buildShellCommandInvocation(command);
+            const child = spawn(invocation.executable, invocation.args, {
                 cwd: projectDir,
                 env: process.env,
                 stdio: ['ignore', 'pipe', 'pipe'],

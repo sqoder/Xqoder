@@ -132,6 +132,7 @@ export function runCreateShareCommand(
         title: resolved.summary.title,
         format: options.format,
         content: payload,
+        usage: resolved.summary.usage,
     });
 
     logger.success(`Local share created: ${share.id}`);

@@ -2,10 +2,26 @@
 // AWS S3 + CloudFront Deployment Provider
 // ============================================================
 
-import { execSync } from 'node:child_process';
+import {
+    execFileSync,
+    execSync,
+    type ExecFileSyncOptionsWithStringEncoding,
+    type ExecSyncOptionsWithStringEncoding,
+} from 'node:child_process';
 import * as path from 'node:path';
 import { DeployTarget, DeployStatus, type DeployConfig, type DeployResult } from '@xqoder/shared';
 import { BaseDeployer } from '../deployer.js';
+
+type ExecFileSyncLike = (
+    file: string,
+    args: string[],
+    options: ExecFileSyncOptionsWithStringEncoding,
+) => string;
+
+type ExecSyncLike = (
+    command: string,
+    options: ExecSyncOptionsWithStringEncoding,
+) => string;
 
 /**
  * AWSDeployer
@@ -16,16 +32,22 @@ export class AWSDeployer extends BaseDeployer {
     private bucket?: string;
     private region: string;
     private distributionId?: string;
+    private readonly execFile: ExecFileSyncLike;
+    private readonly execShell: ExecSyncLike;
 
     constructor(options?: {
         bucket?: string;
         region?: string;
         distributionId?: string;
+        execFileSync?: ExecFileSyncLike;
+        execSync?: ExecSyncLike;
     }) {
         super();
         this.bucket = options?.bucket ?? process.env['AWS_S3_BUCKET'];
         this.region = options?.region ?? process.env['AWS_DEFAULT_REGION'] ?? 'us-east-1';
         this.distributionId = options?.distributionId ?? process.env['AWS_CLOUDFRONT_DISTRIBUTION_ID'];
+        this.execFile = options?.execFileSync ?? ((file, args, execOptions) => execFileSync(file, args, execOptions));
+        this.execShell = options?.execSync ?? execSync;
     }
 
     async deploy(config: DeployConfig): Promise<DeployResult> {
@@ -45,7 +67,7 @@ export class AWSDeployer extends BaseDeployer {
 
             // 2. Build project
             if (config.buildCommand) {
-                execSync(config.buildCommand, {
+                this.execShell(config.buildCommand, {
                     cwd: config.projectDir,
                     encoding: 'utf-8',
                     timeout: 300_000,
@@ -57,15 +79,15 @@ export class AWSDeployer extends BaseDeployer {
                 ? path.join(config.projectDir, config.outputDir)
                 : config.projectDir;
 
-            const syncCmd = [
-                'aws', 's3', 'sync',
+            const syncArgs = [
+                's3', 'sync',
                 deployDir,
                 `s3://${bucket}`,
                 '--region', this.region,
                 '--delete',
-            ].join(' ');
+            ];
 
-            execSync(syncCmd, {
+            this.execFile('aws', syncArgs, {
                 cwd: config.projectDir,
                 encoding: 'utf-8',
                 timeout: 300_000,
@@ -74,14 +96,14 @@ export class AWSDeployer extends BaseDeployer {
 
             // 4. Create CloudFront invalidation if distributionId exists
             if (this.distributionId) {
-                const invalidateCmd = [
-                    'aws', 'cloudfront', 'create-invalidation',
+                const invalidateArgs = [
+                    'cloudfront', 'create-invalidation',
                     '--distribution-id', this.distributionId,
-                    '--paths', '"/*"',
-                ].join(' ');
+                    '--paths', '/*',
+                ];
 
                 try {
-                    execSync(invalidateCmd, {
+                    this.execFile('aws', invalidateArgs, {
                         cwd: config.projectDir,
                         encoding: 'utf-8',
                         timeout: 60_000,
@@ -138,7 +160,7 @@ export class AWSDeployer extends BaseDeployer {
 
         // Check if AWS CLI is available
         try {
-            execSync('aws --version', { encoding: 'utf-8', timeout: 5000 });
+            this.execFile('aws', ['--version'], { encoding: 'utf-8', timeout: 5000 });
         } catch {
             errors.push('AWS CLI not installed or not in PATH');
         }

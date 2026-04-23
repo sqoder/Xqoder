@@ -1,6 +1,8 @@
 import type { AgentSession } from './session/session.js';
 import type { AgentConfig } from '@xqoder/agent';
 import {
+    type ApprovalPolicy,
+    type ExecutionCapability,
     resolveAgentLLMConfig,
     resolveDefaultAgentName,
     resolveSmallModelConfig,
@@ -8,6 +10,8 @@ import {
     type AgentSettings,
     type AgentPermissionMode,
     type LLMProviderConfig,
+    type PermissionSettings,
+    type TaskMode,
     type XQoderConfig,
 } from '@xqoder/shared';
 
@@ -185,6 +189,11 @@ export function buildAgentConfigFromXQoderConfig(
         session?: AgentSession;
         sessionTitle?: string;
         autoApproveTools?: boolean;
+        runtimeProfile?: AgentConfig['runtimeProfile'];
+        permissionsOverride?: PermissionSettings;
+        taskMode?: TaskMode;
+        executionCapability?: ExecutionCapability;
+        approvalPolicy?: ApprovalPolicy;
     } = {},
 ): AgentConfig {
     const runtime = resolveAgentRuntimeConfig(
@@ -198,6 +207,7 @@ export function buildAgentConfigFromXQoderConfig(
     );
 
     return {
+        agentName: runtime.name,
         llmConfig: runtime.llmConfig,
         systemPrompt: runtime.systemPrompt,
         cwd: options.cwd ?? runtime.cwd,
@@ -210,10 +220,15 @@ export function buildAgentConfigFromXQoderConfig(
         session: options.session,
         sessionTitle: options.sessionTitle,
         autoApproveTools: options.autoApproveTools,
-        permissions: config.permissions,
+        permissions: options.permissionsOverride ?? config.permissions,
         disableAllHooks: config.disableAllHooks,
         hooks: config.hooks,
         compaction: config.compaction,
+        runtimeProfile: options.runtimeProfile,
+        contextPaths: config.contextPaths,
+        ...(options.taskMode ? { taskMode: options.taskMode } : {}),
+        ...(options.executionCapability ? { executionCapability: options.executionCapability } : {}),
+        ...(options.approvalPolicy ? { approvalPolicy: options.approvalPolicy } : {}),
     };
 }
 

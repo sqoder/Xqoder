@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { createConversationEventEnvelopeEmitter } from '@xqoder/protocol';
 import {
     createTuiRuntimeDescriptor,
     createTuiRuntimeEventRelay,
@@ -20,19 +21,14 @@ describe('tui agent runtime support', () => {
             },
         });
 
-        relay.emit({
-            type: 'tool.called',
-            sessionId: 'session-1',
-            timestamp: 1,
+        const eventEmitter = createConversationEventEnvelopeEmitter('session-1', 'session-1:turn:test');
+        relay.emit(eventEmitter.emitRecord('tool.called', {
             source: 'tool',
             provider: 'local',
             tool: 'read_file',
             args: { path: 'README.md' },
-        });
-        relay.emit({
-            type: 'message.completed',
-            sessionId: 'session-1',
-            timestamp: 2,
+        }));
+        relay.emit(eventEmitter.emitRecord('message.completed', {
             source: 'agent',
             message: {
                 id: 'assistant-1',
@@ -41,24 +37,18 @@ describe('tui agent runtime support', () => {
                 content: 'hello',
                 createdAt: 2,
             },
-        });
-        relay.emit({
-            type: 'tool.completed',
-            sessionId: 'session-1',
-            timestamp: 3,
+        }));
+        relay.emit(eventEmitter.emitRecord('tool.completed', {
             source: 'tool',
             provider: 'local',
             tool: 'read_file',
             success: true,
-        });
-        relay.emit({
-            type: 'error',
-            sessionId: 'session-1',
-            timestamp: 4,
+        }));
+        relay.emit(eventEmitter.emitRecord('error', {
             source: 'runtime',
             message: 'boom',
             recoverable: false,
-        });
+        }));
 
         expect(receivedEvents).toEqual([
             'tool.called',

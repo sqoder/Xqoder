@@ -1,19 +1,36 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import {
     canLaunchInteractiveTui,
     resolveRootShellOutputFormat,
     runRootShellAction,
 } from '../src/cli/root-shell.js';
+import { XQoderAgent } from '../src/core/agent/agent.js';
+import {
+    createMvpTypeErrorDemoProvider,
+    createMvpTypeErrorDemoWorkspace,
+    MVP_TYPEERROR_DEMO_PROMPT,
+} from '../src/core/agent/mvp/demo.js';
+import { FileRollbackStore } from '../src/core/agent/tools/rollback-store.js';
 import {
     createTuiInterfaceCommand,
     runTuiInterface,
 } from '../src/interfaces/tui/index.js';
 
 const descriptorRestorers: Array<() => void> = [];
+const tempDirs: string[] = [];
 
 afterEach(() => {
     while (descriptorRestorers.length > 0) {
         descriptorRestorers.pop()?.();
+    }
+
+    while (tempDirs.length > 0) {
+        const dir = tempDirs.pop();
+        if (dir) {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
     }
 });
 
@@ -28,6 +45,16 @@ describe('root shell helpers', () => {
             quiet: true,
             model: 'gpt-4.1',
             agent: 'coder',
+            resume: 'session-7',
+            continue: true,
+            forkSession: true,
+            permissionMode: 'allow',
+            approvalPolicy: 'workspace_auto',
+            effort: 'high',
+            maxTurns: 3,
+            noSessionPersistence: true,
+            allowedTools: 'read_file, write_file',
+            disallowedTools: 'bash',
         }, {
             promptRunner: promptRunner,
         });
@@ -40,6 +67,16 @@ describe('root shell helpers', () => {
             quiet: true,
             model: 'gpt-4.1',
             agent: 'coder',
+            resume: 'session-7',
+            continue: true,
+            forkSession: true,
+            permissionMode: 'allow',
+            approvalPolicy: 'workspace_auto',
+            effort: 'high',
+            maxTurns: 3,
+            noSessionPersistence: true,
+            allowedTools: ['read_file', 'write_file'],
+            disallowedTools: ['bash'],
         });
     });
 
@@ -61,6 +98,49 @@ describe('root shell helpers', () => {
         expect(resolveRootShellOutputFormat('text', false)).toBe('text');
         expect(resolveRootShellOutputFormat('json', false)).toBe('json');
         expect(() => resolveRootShellOutputFormat('xml', false)).toThrow('invalid format option: xml');
+    });
+
+    it('drives the TypeError demo through the root shell non-interactive CLI path', async () => {
+        const cwd = createMvpTypeErrorDemoWorkspace();
+        tempDirs.push(cwd);
+        const stdout = captureStream(process.stdout, 'write');
+        const savedCalls: Array<Record<string, unknown>> = [];
+
+        const result = await runRootShellAction({
+            prompt: MVP_TYPEERROR_DEMO_PROMPT,
+            cwd,
+            outputFormat: 'text',
+            quiet: true,
+        }, {
+            chatDependencies: {
+                configManager: { load: () => createLoadedConfig('test-key') },
+                sessionStore: {
+                    findLatestSession: () => null,
+                    getSession: () => null,
+                    saveSession: (input: Record<string, unknown>) => {
+                        savedCalls.push(input);
+                        return { id: 'root-shell-demo-summary' };
+                    },
+                },
+                agentFactory: (config) => {
+                    const provider = createMvpTypeErrorDemoProvider();
+                    return new XQoderAgent({
+                        ...(config as unknown as ConstructorParameters<typeof XQoderAgent>[0]),
+                        rollbackStore: new FileRollbackStore(path.join(cwd, '.rollbacks')),
+                        providerFactory: async () => provider,
+                        permissions: {
+                            defaultMode: 'allow',
+                            tools: {},
+                        },
+                    });
+                },
+            },
+        });
+
+        expect(result).toBe('handled');
+        expect(savedCalls).toHaveLength(1);
+        expect(stdout.value).toContain('修复完成：src/utils.ts 已补上 guard clause');
+        expect(fs.readFileSync(path.join(cwd, 'src/utils.ts'), 'utf-8')).toContain("return 'UNKNOWN';");
     });
 });
 
@@ -175,4 +255,59 @@ function setProperty<T extends object, K extends keyof T>(target: T, key: K, val
         }
         delete (target as Record<string, unknown>)[key as string];
     });
+}
+
+function createLoadedConfig(apiKey: string) {
+    return {
+        llm: {
+            provider: 'openai',
+            model: 'gpt-4.1',
+            apiKey,
+        },
+        providers: {
+            openai: {
+                apiKey,
+                defaultModel: 'gpt-4.1',
+            },
+        },
+        contextPaths: ['xqoder.md'],
+        defaultAgent: 'general',
+        agents: {
+            general: {
+                mode: 'primary',
+                provider: 'openai',
+                model: 'gpt-4.1',
+            },
+        },
+        sandbox: {
+            mode: 'project',
+            allowedPaths: [],
+        },
+    };
+}
+
+function captureStream<
+    T extends { [K in P]: (...args: any[]) => unknown },
+    P extends keyof T,
+>(target: T, property: P): { value: string } {
+    const previous = Object.getOwnPropertyDescriptor(target, property);
+    const captured = { value: '' };
+
+    Object.defineProperty(target, property, {
+        configurable: true,
+        value: (...args: unknown[]) => {
+            captured.value += String(args[0] ?? '');
+            return true;
+        },
+    });
+
+    descriptorRestorers.push(() => {
+        if (previous) {
+            Object.defineProperty(target, property, previous);
+            return;
+        }
+        delete (target as Record<string, unknown>)[property as string];
+    });
+
+    return captured;
 }
