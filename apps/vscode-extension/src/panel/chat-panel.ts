@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { showApprovalDiffPreview } from '../review/diff-view';
 
 type PanelTranscriptMessage = {
-    role: 'user' | 'assistant' | 'system';
+    role: 'user' | 'assistant' | 'system' | 'tool';
     content: string;
 };
 
@@ -59,6 +59,11 @@ interface PersistedPanelState extends PanelStatePayload {
     activeStreamId?: string;
 }
 
+interface SessionDetailPayload {
+    id?: unknown;
+    transcript?: unknown;
+}
+
 const PANEL_STATE_KEY = 'xqoder.chatPanelState';
 
 export class XQoderChatPanel {
@@ -100,6 +105,7 @@ export class XQoderChatPanel {
             await this.handleWebviewMessage(message);
         });
         this.postState();
+        void this.restoreSessionView();
     }
 
     private async handleWebviewMessage(message: unknown): Promise<void> {
@@ -417,19 +423,95 @@ export class XQoderChatPanel {
             return;
         }
 
+        const transcript = Array.isArray(persisted.transcript) ? persisted.transcript : [];
+        const approvals = Array.isArray(persisted.approvals) ? persisted.approvals : [];
+        const questions = Array.isArray(persisted.questions) ? persisted.questions : [];
         this.sessionId = persisted.sessionId ?? this.sessionId;
         this.activeStreamId = persisted.activeStreamId;
-        this.busy = persisted.busy;
+        const hasInteractiveState = Boolean(this.activeStreamId)
+            || approvals.length > 0
+            || questions.length > 0;
+        this.busy = hasInteractiveState && persisted.busy;
         this.status = persisted.status || 'idle';
-        this.transcript.push(...persisted.transcript);
+        this.transcript.push(...transcript);
 
-        for (const approval of persisted.approvals) {
+        for (const approval of approvals) {
             this.pendingApprovals.set(approval.requestId, approval);
         }
 
-        for (const question of persisted.questions) {
+        for (const question of questions) {
             this.pendingQuestions.set(question.requestId, question);
         }
+    }
+
+    private async restoreSessionView(): Promise<void> {
+        if (!this.sessionId || this.activeStreamId || this.pendingApprovals.size > 0 || this.pendingQuestions.size > 0) {
+            return;
+        }
+
+        const previousStatus = this.status;
+        if (!this.busy) {
+            this.status = 'restoring';
+            this.postState();
+        }
+
+        try {
+            const detail = await this.fetchJson<SessionDetailPayload>(`/session/${encodeURIComponent(this.sessionId)}`);
+            const transcript = this.toTranscriptMessages(detail.transcript);
+            if (transcript.length > 0) {
+                this.transcript.splice(0, this.transcript.length, ...transcript);
+            }
+            if (typeof detail.id === 'string' && detail.id.trim().length > 0) {
+                this.sessionId = detail.id;
+            }
+        } catch (error) {
+            if (this.isMissingSessionError(error)) {
+                await this.clearSessionState();
+                return;
+            }
+        } finally {
+            if (!this.busy) {
+                this.status = previousStatus;
+            }
+            this.postState();
+        }
+    }
+
+    private async clearSessionState(): Promise<void> {
+        this.sessionId = undefined;
+        this.activeStreamId = undefined;
+        this.busy = false;
+        this.status = 'idle';
+        this.transcript.splice(0, this.transcript.length);
+        this.pendingApprovals.clear();
+        this.pendingQuestions.clear();
+        await this.context.workspaceState.update('xqoder.sessionId', undefined);
+    }
+
+    private toTranscriptMessages(rawTranscript: unknown): PanelTranscriptMessage[] {
+        if (!Array.isArray(rawTranscript)) {
+            return [];
+        }
+
+        return rawTranscript
+            .filter((entry): entry is { role?: unknown; content?: unknown } => typeof entry === 'object' && entry !== null)
+            .map((entry) => ({
+                role: this.toTranscriptRole(entry.role),
+                content: typeof entry.content === 'string'
+                    ? entry.content
+                    : String(entry.content ?? ''),
+            }));
+    }
+
+    private toTranscriptRole(value: unknown): PanelTranscriptMessage['role'] {
+        return value === 'assistant' || value === 'system' || value === 'tool'
+            ? value
+            : 'user';
+    }
+
+    private isMissingSessionError(error: unknown): boolean {
+        const message = error instanceof Error ? error.message : String(error);
+        return message.includes('Session not found');
     }
 
     private appendTranscript(role: PanelTranscriptMessage['role'], content: string): number {
@@ -541,6 +623,7 @@ export class XQoderChatPanel {
     .msg-user { border-left: 3px solid var(--vscode-textLink-foreground); padding-left: 8px; }
     .msg-assistant { border-left: 3px solid var(--vscode-charts-green); padding-left: 8px; }
     .msg-system { border-left: 3px solid var(--vscode-charts-yellow); padding-left: 8px; }
+    .msg-tool { border-left: 3px solid var(--vscode-charts-blue); padding-left: 8px; }
     pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; }
   </style>
 </head>
