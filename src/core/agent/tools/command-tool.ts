@@ -20,6 +20,15 @@ interface CommandExecutionResult {
 
 const SENTINEL_PREFIX = '___XQODER_SENTINEL___';
 const EXIT_CODE_PREFIX = '___XQODER_EXIT_CODE___';
+const SHELL_SYNTAX_PATTERN = /[;&|`$><(){}"'\\]/;
+
+export interface InstallPackageExecutionPlan {
+    packageManager: 'bun' | 'pnpm' | 'yarn' | 'npm' | 'pip';
+    executable: string;
+    args: string[];
+    packageSpecifiers: string[];
+    commandForDisplay: string;
+}
 
 class PersistentShell {
     private readonly shellPath: string;
@@ -326,57 +335,78 @@ export class InstallPackageTool implements ITool {
         const isDev = (args['dev'] as boolean) ?? false;
         const toolCallId = (args['toolCallId'] as string) ?? '';
 
-        let command: string;
-        let packageManager = 'unknown';
-
-        if (fs.existsSync(path.join(context.cwd, 'package.json'))) {
-            // Node.js project
-            if (fs.existsSync(path.join(context.cwd, 'bun.lock')) || fs.existsSync(path.join(context.cwd, 'bun.lockb'))) {
-                packageManager = 'bun';
-                command = `bun add ${isDev ? '-d ' : ''}${packages}`;
-            } else if (fs.existsSync(path.join(context.cwd, 'pnpm-lock.yaml'))) {
-                packageManager = 'pnpm';
-                command = `pnpm add ${isDev ? '-D ' : ''}${packages}`;
-            } else if (fs.existsSync(path.join(context.cwd, 'yarn.lock'))) {
-                packageManager = 'yarn';
-                command = `yarn add ${isDev ? '--dev' : ''} ${packages}`;
-            } else {
-                packageManager = 'npm';
-                command = `npm install ${isDev ? '--save-dev' : ''} ${packages}`;
-            }
-        } else if (
-            fs.existsSync(path.join(context.cwd, 'requirements.txt')) ||
-            fs.existsSync(path.join(context.cwd, 'pyproject.toml'))
-        ) {
-            // Python project
-            packageManager = 'pip';
-            command = `pip install ${packages}`;
-        } else {
+        let executionPlan: InstallPackageExecutionPlan;
+        try {
+            executionPlan = resolveInstallPackageExecution({
+                cwd: context.cwd,
+                packages,
+                dev: isDev,
+            });
+        } catch (err) {
             return {
                 toolCallId,
                 success: false,
                 output: '',
-                error: 'Unable to detect project type, please initialize the project first',
+                error: err instanceof Error ? err.message : String(err),
             };
         }
 
-        // Reuse RunCommandTool execution
-        const runTool = new RunCommandTool();
-        const result = await runTool.execute(
-            { command, toolCallId, timeout: 60000 },
+        const result = await executeDirectCommand(
+            {
+                executable: executionPlan.executable,
+                args: executionPlan.args,
+                cwd: context.cwd,
+                timeout: 60000,
+                commandForDisplay: executionPlan.commandForDisplay,
+            },
             context,
+            toolCallId,
         );
 
         return {
             ...result,
             metadata: {
                 ...(result.metadata ?? {}),
-                packageManager,
+                packageManager: executionPlan.packageManager,
                 packages,
+                packageSpecifiers: executionPlan.packageSpecifiers,
                 dev: isDev,
+                executable: executionPlan.executable,
+                argv: executionPlan.args,
             },
         };
     }
+}
+
+export function resolveInstallPackageExecution(input: {
+    cwd: string;
+    packages: string;
+    dev?: boolean;
+}): InstallPackageExecutionPlan {
+    const packageSpecifiers = parseInstallPackageSpecifiers(input.packages);
+    const isDev = input.dev ?? false;
+
+    if (fs.existsSync(path.join(input.cwd, 'package.json'))) {
+        if (fs.existsSync(path.join(input.cwd, 'bun.lock')) || fs.existsSync(path.join(input.cwd, 'bun.lockb'))) {
+            return createInstallPackageExecutionPlan('bun', ['add', ...(isDev ? ['-d'] : []), ...packageSpecifiers], packageSpecifiers);
+        }
+        if (fs.existsSync(path.join(input.cwd, 'pnpm-lock.yaml'))) {
+            return createInstallPackageExecutionPlan('pnpm', ['add', ...(isDev ? ['-D'] : []), ...packageSpecifiers], packageSpecifiers);
+        }
+        if (fs.existsSync(path.join(input.cwd, 'yarn.lock'))) {
+            return createInstallPackageExecutionPlan('yarn', ['add', ...(isDev ? ['--dev'] : []), ...packageSpecifiers], packageSpecifiers);
+        }
+        return createInstallPackageExecutionPlan('npm', ['install', ...(isDev ? ['--save-dev'] : []), ...packageSpecifiers], packageSpecifiers);
+    }
+
+    if (
+        fs.existsSync(path.join(input.cwd, 'requirements.txt'))
+        || fs.existsSync(path.join(input.cwd, 'pyproject.toml'))
+    ) {
+        return createInstallPackageExecutionPlan('pip', ['install', ...packageSpecifiers], packageSpecifiers);
+    }
+
+    throw new Error('Unable to detect project type, please initialize the project first');
 }
 
 function createCommandMetadata(
@@ -492,4 +522,165 @@ async function executeShellTool(args: Record<string, unknown>, context: ToolCont
         output: result.stdout + (result.stderr ? `\n[stderr]: ${result.stderr}` : ''),
         metadata: createCommandMetadata(command, cwd, timeout, startedAt, completedAt),
     };
+}
+
+async function executeDirectCommand(
+    input: {
+        executable: string;
+        args: string[];
+        cwd: string;
+        timeout: number;
+        commandForDisplay: string;
+    },
+    context: ToolContext,
+    toolCallId: string,
+): Promise<ToolResult> {
+    const startedAt = new Date();
+
+    return await new Promise((resolve) => {
+        let stdout = '';
+        let stderr = '';
+        let completed = false;
+        let interrupted = false;
+
+        const finish = (result: ToolResult, completedAt: Date): void => {
+            if (completed) {
+                return;
+            }
+            completed = true;
+            clearTimeout(timeoutId);
+            resolve({
+                ...result,
+                metadata: {
+                    ...createCommandMetadata(input.commandForDisplay, input.cwd, input.timeout, startedAt, completedAt),
+                    ...(result.metadata ?? {}),
+                },
+            });
+        };
+
+        const child = spawn(input.executable, input.args, {
+            cwd: input.cwd,
+            env: {
+                ...process.env,
+                ...context.env,
+                GIT_EDITOR: 'true',
+            },
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+
+        child.stdout?.on('data', (data: Buffer) => {
+            const chunk = data.toString('utf-8');
+            stdout += chunk;
+            context.onToolStream?.({
+                chunk,
+                stream: 'stdout',
+            });
+        });
+
+        child.stderr?.on('data', (data: Buffer) => {
+            const chunk = data.toString('utf-8');
+            stderr += chunk;
+            context.onToolStream?.({
+                chunk,
+                stream: 'stderr',
+            });
+        });
+
+        child.once('error', (err) => {
+            finish({
+                toolCallId,
+                success: false,
+                output: stdout.trimEnd(),
+                error: `Command failed to start: ${err.message}`,
+            }, new Date());
+        });
+
+        child.once('close', (exitCode, signal) => {
+            const completedAt = new Date();
+            const trimmedStdout = stdout.trimEnd();
+            const trimmedStderr = stderr.trimEnd();
+
+            if (interrupted) {
+                finish({
+                    toolCallId,
+                    success: false,
+                    output: trimmedStdout,
+                    error: `Command timed out (${input.timeout}ms): ${input.commandForDisplay}`,
+                }, completedAt);
+                return;
+            }
+
+            if (signal && exitCode === null) {
+                finish({
+                    toolCallId,
+                    success: false,
+                    output: trimmedStdout,
+                    error: `Command exited with signal ${signal}: ${input.commandForDisplay}`,
+                }, completedAt);
+                return;
+            }
+
+            if ((exitCode ?? 1) !== 0) {
+                finish({
+                    toolCallId,
+                    success: false,
+                    output: trimmedStdout,
+                    error: `Command exited with code ${exitCode ?? 1}: ${trimmedStderr || 'Unknown error'}`,
+                }, completedAt);
+                return;
+            }
+
+            finish({
+                toolCallId,
+                success: true,
+                output: trimmedStdout + (trimmedStderr ? `\n[stderr]: ${trimmedStderr}` : ''),
+            }, completedAt);
+        });
+
+        const timeoutId = setTimeout(() => {
+            interrupted = true;
+            child.kill('SIGTERM');
+        }, input.timeout);
+    });
+}
+
+function createInstallPackageExecutionPlan(
+    packageManager: InstallPackageExecutionPlan['packageManager'],
+    args: string[],
+    packageSpecifiers: string[],
+): InstallPackageExecutionPlan {
+    return {
+        packageManager,
+        executable: packageManager,
+        args,
+        packageSpecifiers,
+        commandForDisplay: formatCommandForDisplay(packageManager, args),
+    };
+}
+
+function parseInstallPackageSpecifiers(packages: string): string[] {
+    if (/[\x00-\x1F\x7F]/.test(packages)) {
+        throw new Error('Package list contains control characters; pass package specifiers separated by spaces only');
+    }
+
+    if (SHELL_SYNTAX_PATTERN.test(packages)) {
+        throw new Error('Package list contains unsupported shell syntax; pass package specifiers separated by spaces only');
+    }
+
+    const packageSpecifiers = packages
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+
+    if (packageSpecifiers.length === 0) {
+        throw new Error('Package list cannot be empty');
+    }
+
+    return packageSpecifiers;
+}
+
+function formatCommandForDisplay(executable: string, args: string[]): string {
+    return [executable, ...args]
+        .map((arg) => /\s/.test(arg) ? JSON.stringify(arg) : arg)
+        .join(' ');
 }

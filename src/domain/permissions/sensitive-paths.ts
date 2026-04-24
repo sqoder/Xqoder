@@ -34,12 +34,65 @@ const SENSITIVE_READ_DIR_SEGMENTS = new Set([
     '.kube',
     '.docker',
 ]);
+const SENSITIVE_AGENT_CONFIG_DIR_SEGMENTS = new Set([
+    '.xqoder',
+    '.codex',
+    '.omc',
+]);
+const SENSITIVE_AGENT_CONFIG_BASENAMES = new Set([
+    'config.json',
+    'config.toml',
+]);
+
+const PROTECTED_PATH_DIR_SEGMENTS = new Set([
+    '.aws',
+    '.codex',
+    '.docker',
+    '.git',
+    '.gnupg',
+    '.hg',
+    '.kube',
+    '.omc',
+    '.ssh',
+    '.svn',
+    '.xqoder',
+]);
+
+const PROTECTED_PATH_BASENAMES = new Set([
+    '.bash_login',
+    '.bash_profile',
+    '.bashrc',
+    '.git-credentials',
+    '.gitconfig',
+    '.netrc',
+    '.npmrc',
+    '.profile',
+    '.zprofile',
+    '.zshenv',
+    '.zshrc',
+]);
+
+const GIT_CLEAN_FORCE_DELETE_PATTERN = /\bgit\s+clean\b(?=[^;&|`$()]*?(?:-[A-Za-z]*f[A-Za-z]*|--force)\b)(?=[^;&|`$()]*?(?:-[A-Za-z]*d[A-Za-z]*|--directory)\b)/i;
 
 const DANGEROUS_COMMAND_PATTERNS = [
     /\brm\s+-rf\b/i,
     /\bgit\s+reset\s+--hard\b/i,
-    /\bgit\s+clean\s+-fd\b/i,
+    GIT_CLEAN_FORCE_DELETE_PATTERN,
     /\b(?:DROP|TRUNCATE)\s+TABLE\b/i,
+    /\bkubectl\s+delete\b/i,
+    /\bdd\s+if=/i,
+    /\bsudo(?:\s|$)/i,
+    /\bmkfs\b/i,
+    /\bshutdown\b/i,
+    /\breboot\b/i,
+    /\b(?:curl|wget)\b[^|]*\|\s*(?:sh|bash)\b/i,
+    /\bchmod\s+-R\s+777\b/i,
+    /\bchown\s+-R\b/i,
+];
+
+const FORBIDDEN_COMMAND_PATTERNS = [
+    /\bgit\s+reset\s+--hard\b/i,
+    GIT_CLEAN_FORCE_DELETE_PATTERN,
     /\bkubectl\s+delete\b/i,
     /\bdd\s+if=/i,
 ];
@@ -67,11 +120,32 @@ export function isSensitiveReadPath(targetPath: string): boolean {
         return true;
     }
 
+    if (
+        SENSITIVE_AGENT_CONFIG_BASENAMES.has(basename)
+        && segments.some((segment) => SENSITIVE_AGENT_CONFIG_DIR_SEGMENTS.has(segment))
+    ) {
+        return true;
+    }
+
     if (/^id_(?:rsa|dsa|ecdsa|ed25519)$/i.test(basename)) {
         return true;
     }
 
     return /\.(?:pem|key|p12|pfx|crt)$/i.test(basename);
+}
+
+export function isProtectedPath(targetPath: string): boolean {
+    const trimmed = targetPath.trim();
+    if (!trimmed) {
+        return false;
+    }
+
+    const normalized = path.normalize(trimmed).toLowerCase();
+    const segments = normalized.split(/[\\/]+/).filter(Boolean);
+    const basename = segments[segments.length - 1] ?? path.basename(normalized);
+
+    return PROTECTED_PATH_BASENAMES.has(basename)
+        || segments.some((segment) => PROTECTED_PATH_DIR_SEGMENTS.has(segment));
 }
 
 export function isPathOutsideProject(targetPath: string, projectRoot: string | undefined): boolean {
@@ -91,4 +165,12 @@ export function isDangerousCommand(command: string): boolean {
         return false;
     }
     return DANGEROUS_COMMAND_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+export function isForbiddenCommand(command: string): boolean {
+    const normalized = command.trim();
+    if (!normalized) {
+        return false;
+    }
+    return FORBIDDEN_COMMAND_PATTERNS.some((pattern) => pattern.test(normalized));
 }

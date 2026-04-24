@@ -186,6 +186,27 @@ describe('config normalizer helpers', () => {
         ]);
     });
 
+    it('treats url-backed MCP servers as remote even when transport is omitted', () => {
+        const normalized = normalizeXQoderConfig({
+            mcp: {
+                servers: [
+                    {
+                        name: 'implicit-remote',
+                        url: ' https://mcp.example.test ',
+                    },
+                ],
+            },
+        });
+
+        expect(normalized.mcp.servers[0]).toMatchObject({
+            name: 'implicit-remote',
+            transport: 'http',
+            url: 'https://mcp.example.test',
+            trust: 'untrusted',
+        });
+        expect('command' in normalized.mcp.servers[0]!).toBe(false);
+    });
+
     it('honors merge precedence while preserving base nested settings', () => {
         const base = normalizeXQoderConfig({
             providers: {

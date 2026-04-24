@@ -1,18 +1,30 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, expect, it } from 'bun:test';
 import type { ToolDefinition } from '@xqoder/shared';
-import { logger as defaultLogger } from '@xqoder/shared';
-import { executeAgentToolCalls, type AgentEventEmitter } from '../../src/core/agent/agent-tool-execution.js';
-import { AgentSession } from '../../src/core/agent/session/session.js';
+import type { AgentEventEmitter } from '../../src/core/agent/agent-tool-execution.js';
 import { RunCommandTool, RunShellTool } from '../../src/core/agent/tools/command-tool.js';
 import { DiagnosticsTool } from '../../src/core/agent/tools/diagnostics-tool.js';
-import { GrepContentTool } from '../../src/core/agent/tools/discovery-tools.js';
-import { ToolRegistry, type ITool, type ToolApprovalRequest } from '../../src/core/agent/tools/tool.js';
+import { GlobFilesTool, GrepContentTool, ListFilesTool } from '../../src/core/agent/tools/discovery-tools.js';
+import type { ITool, ToolApprovalRequest } from '../../src/core/agent/tools/tool.js';
+import { createExecutionHarness } from './agent-tool-execution.test-support.js';
 
 describe('agent tool execution helper', () => {
     it('records successful tool results and emits the tool_request -> tool_response chain', async () => {
-        const registry = new ToolRegistry();
-        const session = new AgentSession({ id: 'session-agent-tool-success' });
         const emitted: string[] = [];
+        const { toolRegistry: registry, session, executeToolCalls } = createExecutionHarness({
+            sessionId: 'session-agent-tool-success',
+            autoApproveTools: true,
+            emit: ((type, data) => {
+                if (type === 'tool_request') {
+                    emitted.push(`request:${data.name}`);
+                }
+                if (type === 'tool_response') {
+                    emitted.push(`response:${data.name}:${data.success}`);
+                }
+            }) as AgentEventEmitter,
+        });
 
         registry.register({
             definition: {
@@ -27,45 +39,11 @@ describe('agent tool execution helper', () => {
             }),
         } satisfies ITool);
 
-        await executeAgentToolCalls(
-            {
-                toolRegistry: registry,
-                session,
-                toolContext: {
-                    cwd: '/tmp/project',
-                    projectRoot: '/tmp/project',
-                },
-                logger: defaultLogger.child('agent-tool-execution-test'),
-                llmConfig: {
-                    provider: 'openai',
-                    model: 'test-model',
-                    apiKey: 'test-key',
-                },
-                autoApproveTools: true,
-                permissions: {
-                    defaultMode: 'allow',
-                    tools: {},
-                },
-                disableAllHooks: true,
-                emit: ((type, data) => {
-                    if (type === 'tool_request') {
-                        emitted.push(`request:${data.name}`);
-                    }
-                    if (type === 'tool_response') {
-                        emitted.push(`response:${data.name}:${data.success}`);
-                    }
-                }) as AgentEventEmitter,
-            },
-            [
-                {
-                    id: 'call-success-1',
-                    name: 'echo_result_tool',
-                    arguments: '{"target":"file.txt"}',
-                },
-            ],
-            undefined,
-            'test-stream',
-        );
+        await executeToolCalls([{
+            id: 'call-success-1',
+            name: 'echo_result_tool',
+            arguments: '{"target":"file.txt"}',
+        }]);
 
         expect(session.getToolHistory()).toMatchObject([
             {
@@ -90,11 +68,21 @@ describe('agent tool execution helper', () => {
     });
 
     it('records denied approval results without executing the tool', async () => {
-        const registry = new ToolRegistry();
-        const session = new AgentSession({ id: 'session-agent-tool-execution' });
         let executed = 0;
         let approvalRequest: ToolApprovalRequest | undefined;
         const emitted: string[] = [];
+        const { toolRegistry: registry, session, executeToolCalls } = createExecutionHarness({
+            sessionId: 'session-agent-tool-execution',
+            permissions: {
+                defaultMode: 'ask',
+                tools: {},
+            },
+            emit: ((type, data) => {
+                if (type === 'tool_response') {
+                    emitted.push(`${data.name}:${data.success}`);
+                }
+            }) as AgentEventEmitter,
+        });
 
         registry.register({
             definition: {
@@ -119,46 +107,18 @@ describe('agent tool execution helper', () => {
             },
         } satisfies ITool);
 
-        await executeAgentToolCalls(
-            {
-                toolRegistry: registry,
-                session,
-                toolContext: {
-                    cwd: '/tmp/project',
-                    projectRoot: '/tmp/project',
-                },
-                logger: defaultLogger.child('agent-tool-execution-test'),
-                llmConfig: {
-                    provider: 'openai',
-                    model: 'test-model',
-                    apiKey: 'test-key',
-                },
-                autoApproveTools: false,
-                permissions: {
-                    defaultMode: 'ask',
-                    tools: {},
-                },
-                disableAllHooks: true,
-                emit: ((type, data) => {
-                    if (type === 'tool_response') {
-                        emitted.push(`${data.name}:${data.success}`);
-                    }
-                }) as AgentEventEmitter,
-            },
-            [
-                {
-                    id: 'call-approval-1',
-                    name: 'approval_split_test_tool',
-                    arguments: '{"target":"file.txt"}',
-                },
-            ],
+        await executeToolCalls(
+            [{
+                id: 'call-approval-1',
+                name: 'approval_split_test_tool',
+                arguments: '{"target":"file.txt"}',
+            }],
             {
                 onToolApproval: async (request) => {
                     approvalRequest = request;
                     return false;
                 },
             },
-            'test-stream',
         );
 
         expect(executed).toBe(0);
@@ -175,9 +135,16 @@ describe('agent tool execution helper', () => {
     });
 
     it('keeps failed tool_response output aligned with the stored tool message content', async () => {
-        const registry = new ToolRegistry();
-        const session = new AgentSession({ id: 'session-agent-tool-failure-parity' });
         const emittedOutputs: string[] = [];
+        const { toolRegistry: registry, session, executeToolCalls } = createExecutionHarness({
+            sessionId: 'session-agent-tool-failure-parity',
+            autoApproveTools: true,
+            emit: ((type, data) => {
+                if (type === 'tool_response') {
+                    emittedOutputs.push(data.output);
+                }
+            }) as AgentEventEmitter,
+        });
 
         registry.register({
             definition: {
@@ -193,50 +160,25 @@ describe('agent tool execution helper', () => {
             }),
         } satisfies ITool);
 
-        await executeAgentToolCalls(
-            {
-                toolRegistry: registry,
-                session,
-                toolContext: {
-                    cwd: '/tmp/project',
-                    projectRoot: '/tmp/project',
-                },
-                logger: defaultLogger.child('agent-tool-execution-test'),
-                llmConfig: {
-                    provider: 'openai',
-                    model: 'test-model',
-                    apiKey: 'test-key',
-                },
-                autoApproveTools: true,
-                permissions: {
-                    defaultMode: 'allow',
-                    tools: {},
-                },
-                disableAllHooks: true,
-                emit: ((type, data) => {
-                    if (type === 'tool_response') {
-                        emittedOutputs.push(data.output);
-                    }
-                }) as AgentEventEmitter,
-            },
-            [{
-                id: 'call-failure-1',
-                name: 'failing_tool',
-                arguments: '{}',
-            }],
-            undefined,
-            'test-stream',
-        );
+        await executeToolCalls([{
+            id: 'call-failure-1',
+            name: 'failing_tool',
+            arguments: '{}',
+        }]);
 
         expect(session.getMessages().at(-1)?.content).toBe('Error: boom');
         expect(emittedOutputs).toEqual(['Error: boom']);
     });
 
     it('forces interactive approval before reading a path outside the project root', async () => {
-        const registry = new ToolRegistry();
-        const session = new AgentSession({ id: 'session-agent-tool-outside-project' });
         let executed = 0;
         let approvalRequest: ToolApprovalRequest | undefined;
+        const { toolRegistry: registry, session, executeToolCalls } = createExecutionHarness({
+            sessionId: 'session-agent-tool-outside-project',
+            toolContext: {
+                sandboxMode: 'full-access',
+            },
+        });
 
         registry.register({
             definition: {
@@ -254,43 +196,18 @@ describe('agent tool execution helper', () => {
             },
         } satisfies ITool);
 
-        await executeAgentToolCalls(
-            {
-                toolRegistry: registry,
-                session,
-                toolContext: {
-                    cwd: '/tmp/project',
-                    projectRoot: '/tmp/project',
-                    sandboxMode: 'full-access',
-                },
-                logger: defaultLogger.child('agent-tool-execution-test'),
-                llmConfig: {
-                    provider: 'openai',
-                    model: 'test-model',
-                    apiKey: 'test-key',
-                },
-                autoApproveTools: false,
-                permissions: {
-                    defaultMode: 'allow',
-                    tools: {},
-                },
-                disableAllHooks: true,
-                emit: (() => {}) as AgentEventEmitter,
-            },
-            [
-                {
-                    id: 'call-outside-read-1',
-                    name: 'read_file',
-                    arguments: '{"path":"../Desktop/notes.txt"}',
-                },
-            ],
+        await executeToolCalls(
+            [{
+                id: 'call-outside-read-1',
+                name: 'read_file',
+                arguments: '{"path":"../Desktop/notes.txt"}',
+            }],
             {
                 onToolApproval: async (request) => {
                     approvalRequest = request;
                     return false;
                 },
             },
-            'test-stream',
         );
 
         expect(executed).toBe(0);
@@ -303,10 +220,14 @@ describe('agent tool execution helper', () => {
     });
 
     it('forces interactive approval before reading sensitive files inside the project', async () => {
-        const registry = new ToolRegistry();
-        const session = new AgentSession({ id: 'session-agent-tool-sensitive-read' });
         let executed = 0;
         let approvalRequest: ToolApprovalRequest | undefined;
+        const { toolRegistry: registry, session, executeToolCalls } = createExecutionHarness({
+            sessionId: 'session-agent-tool-sensitive-read',
+            toolContext: {
+                sandboxMode: 'full-access',
+            },
+        });
 
         registry.register({
             definition: {
@@ -324,43 +245,18 @@ describe('agent tool execution helper', () => {
             },
         } satisfies ITool);
 
-        await executeAgentToolCalls(
-            {
-                toolRegistry: registry,
-                session,
-                toolContext: {
-                    cwd: '/tmp/project',
-                    projectRoot: '/tmp/project',
-                    sandboxMode: 'full-access',
-                },
-                logger: defaultLogger.child('agent-tool-execution-test'),
-                llmConfig: {
-                    provider: 'openai',
-                    model: 'test-model',
-                    apiKey: 'test-key',
-                },
-                autoApproveTools: false,
-                permissions: {
-                    defaultMode: 'allow',
-                    tools: {},
-                },
-                disableAllHooks: true,
-                emit: (() => {}) as AgentEventEmitter,
-            },
-            [
-                {
-                    id: 'call-sensitive-read-1',
-                    name: 'read_file',
-                    arguments: '{"path":".env.local"}',
-                },
-            ],
+        await executeToolCalls(
+            [{
+                id: 'call-sensitive-read-1',
+                name: 'read_file',
+                arguments: '{"path":".env.local"}',
+            }],
             {
                 onToolApproval: async (request) => {
                     approvalRequest = request;
                     return false;
                 },
             },
-            'test-stream',
         );
 
         expect(executed).toBe(0);
@@ -395,10 +291,14 @@ describe('agent tool execution helper', () => {
         ] as const;
 
         for (const testCase of cases) {
-            const registry = new ToolRegistry();
-            const session = new AgentSession({ id: `session-${testCase.toolName}` });
             let executed = 0;
             let approvalRequest: ToolApprovalRequest | undefined;
+            const { toolRegistry: registry, session, executeToolCalls } = createExecutionHarness({
+                sessionId: `session-${testCase.toolName}`,
+                toolContext: {
+                    sandboxMode: 'full-access',
+                },
+            });
 
             registry.register({
                 definition: {
@@ -416,43 +316,18 @@ describe('agent tool execution helper', () => {
                 },
             } satisfies ITool);
 
-            await executeAgentToolCalls(
-                {
-                    toolRegistry: registry,
-                    session,
-                    toolContext: {
-                        cwd: '/tmp/project',
-                        projectRoot: '/tmp/project',
-                        sandboxMode: 'full-access',
-                    },
-                    logger: defaultLogger.child('agent-tool-execution-test'),
-                    llmConfig: {
-                        provider: 'openai',
-                        model: 'test-model',
-                        apiKey: 'test-key',
-                    },
-                    autoApproveTools: false,
-                    permissions: {
-                        defaultMode: 'allow',
-                        tools: {},
-                    },
-                    disableAllHooks: true,
-                    emit: (() => {}) as AgentEventEmitter,
-                },
-                [
-                    {
-                        id: testCase.toolCallId,
-                        name: testCase.toolName,
-                        arguments: testCase.arguments,
-                    },
-                ],
+            await executeToolCalls(
+                [{
+                    id: testCase.toolCallId,
+                    name: testCase.toolName,
+                    arguments: testCase.arguments,
+                }],
                 {
                     onToolApproval: async (request) => {
                         approvalRequest = request;
                         return false;
                     },
                 },
-                'test-stream',
             );
 
             expect(executed).toBe(0);
@@ -466,49 +341,28 @@ describe('agent tool execution helper', () => {
     });
 
     it('forces interactive approval before grep_content searches outside the project root', async () => {
-        const registry = new ToolRegistry();
-        const session = new AgentSession({ id: 'session-grep-outside-project' });
         let approvalRequest: ToolApprovalRequest | undefined;
+        const { toolRegistry: registry, session, executeToolCalls } = createExecutionHarness({
+            sessionId: 'session-grep-outside-project',
+            toolContext: {
+                sandboxMode: 'full-access',
+            },
+        });
 
         registry.register(new GrepContentTool());
 
-        await executeAgentToolCalls(
-            {
-                toolRegistry: registry,
-                session,
-                toolContext: {
-                    cwd: '/tmp/project',
-                    projectRoot: '/tmp/project',
-                    sandboxMode: 'full-access',
-                },
-                logger: defaultLogger.child('agent-tool-execution-test'),
-                llmConfig: {
-                    provider: 'openai',
-                    model: 'test-model',
-                    apiKey: 'test-key',
-                },
-                autoApproveTools: false,
-                permissions: {
-                    defaultMode: 'allow',
-                    tools: {},
-                },
-                disableAllHooks: true,
-                emit: (() => {}) as AgentEventEmitter,
-            },
-            [
-                {
-                    id: 'call-outside-grep-1',
-                    name: 'grep_content',
-                    arguments: '{"pattern":"TODO","path":"../Desktop"}',
-                },
-            ],
+        await executeToolCalls(
+            [{
+                id: 'call-outside-grep-1',
+                name: 'grep_content',
+                arguments: '{"pattern":"TODO","path":"../Desktop"}',
+            }],
             {
                 onToolApproval: async (request) => {
                     approvalRequest = request;
                     return false;
                 },
             },
-            'test-stream',
         );
 
         expect(approvalRequest).toMatchObject({
@@ -519,50 +373,106 @@ describe('agent tool execution helper', () => {
         expect(session.getMessages().at(-1)?.content).toContain('Tool approval denied: grep_content');
     });
 
+    it('retries outside-project discovery tools with full-access after a single approval', async () => {
+        const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-discovery-approval-'));
+        const projectRoot = path.join(tempRoot, 'project');
+        const siblingRoot = path.join(tempRoot, 'external');
+        fs.mkdirSync(projectRoot, { recursive: true });
+        fs.mkdirSync(siblingRoot, { recursive: true });
+        fs.writeFileSync(path.join(siblingRoot, 'notes.md'), '# TODO: follow up\n', 'utf-8');
+
+        const cases = [
+            {
+                tool: new ListFilesTool(),
+                toolName: 'list_files',
+                toolCallId: 'call-list-approve-1',
+                arguments: '{"path":"../external"}',
+                expectedText: 'notes.md',
+            },
+            {
+                tool: new GlobFilesTool(),
+                toolName: 'glob_files',
+                toolCallId: 'call-glob-approve-1',
+                arguments: '{"pattern":"*.md","path":"../external"}',
+                expectedText: 'notes.md',
+            },
+            {
+                tool: new GrepContentTool(),
+                toolName: 'grep_content',
+                toolCallId: 'call-grep-approve-1',
+                arguments: '{"pattern":"TODO","path":"../external"}',
+                expectedText: 'TODO',
+            },
+        ] as const;
+
+        try {
+            for (const testCase of cases) {
+                let approvalRequests = 0;
+                const { toolRegistry: registry, session, executeToolCalls } = createExecutionHarness({
+                    sessionId: `session-${testCase.toolName}-approve`,
+                    toolContext: {
+                        cwd: projectRoot,
+                        projectRoot,
+                        sandboxMode: 'project',
+                    },
+                });
+
+                registry.register(testCase.tool);
+
+                await executeToolCalls(
+                    [{
+                        id: testCase.toolCallId,
+                        name: testCase.toolName,
+                        arguments: testCase.arguments,
+                    }],
+                    {
+                        onToolApproval: async () => {
+                            approvalRequests += 1;
+                            return true;
+                        },
+                    },
+                );
+
+                expect(approvalRequests).toBe(1);
+                expect(session.getToolHistory().at(-1)).toMatchObject({
+                    id: testCase.toolCallId,
+                    name: testCase.toolName,
+                    success: true,
+                });
+                expect(session.getMessages().at(-1)?.content).toContain(testCase.expectedText);
+            }
+        } finally {
+            fs.rmSync(tempRoot, { recursive: true, force: true });
+        }
+    });
+
     it('forces interactive approval before run_command uses an outside-project cwd', async () => {
-        const registry = new ToolRegistry();
-        const session = new AgentSession({ id: 'session-run-command-outside-project' });
         let approvalRequest: ToolApprovalRequest | undefined;
+        const { toolRegistry: registry, session, executeToolCalls } = createExecutionHarness({
+            sessionId: 'session-run-command-outside-project',
+            toolContext: {
+                sandboxMode: 'full-access',
+            },
+            permissions: {
+                defaultMode: 'allow',
+                tools: { bash: 'allow' },
+            },
+        });
 
         registry.register(new RunCommandTool());
 
-        await executeAgentToolCalls(
-            {
-                toolRegistry: registry,
-                session,
-                toolContext: {
-                    cwd: '/tmp/project',
-                    projectRoot: '/tmp/project',
-                    sandboxMode: 'full-access',
-                },
-                logger: defaultLogger.child('agent-tool-execution-test'),
-                llmConfig: {
-                    provider: 'openai',
-                    model: 'test-model',
-                    apiKey: 'test-key',
-                },
-                autoApproveTools: false,
-                permissions: {
-                    defaultMode: 'allow',
-                    tools: { bash: 'allow' },
-                },
-                disableAllHooks: true,
-                emit: (() => {}) as AgentEventEmitter,
-            },
-            [
-                {
-                    id: 'call-outside-cwd-1',
-                    name: 'run_command',
-                    arguments: '{"command":"pwd","cwd":"../Desktop"}',
-                },
-            ],
+        await executeToolCalls(
+            [{
+                id: 'call-outside-cwd-1',
+                name: 'run_command',
+                arguments: '{"command":"pwd","cwd":"../Desktop"}',
+            }],
             {
                 onToolApproval: async (request) => {
                     approvalRequest = request;
                     return false;
                 },
             },
-            'test-stream',
         );
 
         expect(approvalRequest).toMatchObject({
@@ -574,49 +484,32 @@ describe('agent tool execution helper', () => {
     });
 
     it('forces interactive approval before run_shell uses an outside-project cwd', async () => {
-        const registry = new ToolRegistry();
-        const session = new AgentSession({ id: 'session-run-shell-outside-project' });
         let approvalRequest: ToolApprovalRequest | undefined;
+        const { toolRegistry: registry, session, executeToolCalls } = createExecutionHarness({
+            sessionId: 'session-run-shell-outside-project',
+            toolContext: {
+                sandboxMode: 'full-access',
+            },
+            permissions: {
+                defaultMode: 'allow',
+                tools: { bash: 'allow' },
+            },
+        });
 
         registry.register(new RunShellTool());
 
-        await executeAgentToolCalls(
-            {
-                toolRegistry: registry,
-                session,
-                toolContext: {
-                    cwd: '/tmp/project',
-                    projectRoot: '/tmp/project',
-                    sandboxMode: 'full-access',
-                },
-                logger: defaultLogger.child('agent-tool-execution-test'),
-                llmConfig: {
-                    provider: 'openai',
-                    model: 'test-model',
-                    apiKey: 'test-key',
-                },
-                autoApproveTools: false,
-                permissions: {
-                    defaultMode: 'allow',
-                    tools: { bash: 'allow' },
-                },
-                disableAllHooks: true,
-                emit: (() => {}) as AgentEventEmitter,
-            },
-            [
-                {
-                    id: 'call-outside-shell-cwd-1',
-                    name: 'run_shell',
-                    arguments: '{"command":"pwd","cwd":"../Desktop"}',
-                },
-            ],
+        await executeToolCalls(
+            [{
+                id: 'call-outside-shell-cwd-1',
+                name: 'run_shell',
+                arguments: '{"command":"pwd","cwd":"../Desktop"}',
+            }],
             {
                 onToolApproval: async (request) => {
                     approvalRequest = request;
                     return false;
                 },
             },
-            'test-stream',
         );
 
         expect(approvalRequest).toMatchObject({
@@ -627,50 +520,140 @@ describe('agent tool execution helper', () => {
         expect(session.getMessages().at(-1)?.content).toContain('Tool approval denied: run_shell');
     });
 
+    it('forces interactive approval before reading local agent config files inside the project', async () => {
+        const cases = [
+            {
+                path: '.xqoder/config.json',
+                summary: 'Request access to sensitive file: .xqoder/config.json',
+            },
+            {
+                path: '.codex/config.toml',
+                summary: 'Request access to sensitive file: .codex/config.toml',
+            },
+            {
+                path: '.omc/config.json',
+                summary: 'Request access to sensitive file: .omc/config.json',
+            },
+        ] as const;
+
+        for (const testCase of cases) {
+            let executed = 0;
+            let approvalRequest: ToolApprovalRequest | undefined;
+            const { toolRegistry: registry, session, executeToolCalls } = createExecutionHarness({
+                sessionId: `session-${testCase.path}`,
+                toolContext: {
+                    sandboxMode: 'full-access',
+                },
+            });
+
+            registry.register({
+                definition: {
+                    name: 'read_file',
+                    description: 'read a file',
+                    parameters: [],
+                } satisfies ToolDefinition,
+                execute: async (args) => {
+                    executed += 1;
+                    return {
+                        toolCallId: `call-${testCase.path}`,
+                        success: true,
+                        output: `read:${String(args.path ?? '')}`,
+                    };
+                },
+            } satisfies ITool);
+
+            await executeToolCalls(
+                [{
+                    id: `call-${testCase.path}`,
+                    name: 'read_file',
+                    arguments: JSON.stringify({ path: testCase.path }),
+                }],
+                {
+                    onToolApproval: async (request) => {
+                        approvalRequest = request;
+                        return false;
+                    },
+                },
+            );
+
+            expect(executed).toBe(0);
+            expect(approvalRequest).toMatchObject({
+                toolName: 'read_file',
+                summary: testCase.summary,
+                risk: 'high',
+            });
+            expect(session.getMessages().at(-1)?.content).toContain('Tool approval denied: read_file');
+        }
+    });
+
+    it('does not force sensitive-read approval for regular project config files', async () => {
+        let executed = 0;
+        let approvalRequests = 0;
+        const { toolRegistry: registry, session, executeToolCalls } = createExecutionHarness({
+            sessionId: 'session-regular-config-read',
+            toolContext: {
+                sandboxMode: 'full-access',
+            },
+        });
+
+        registry.register({
+            definition: {
+                name: 'read_file',
+                description: 'read a file',
+                parameters: [],
+            } satisfies ToolDefinition,
+            execute: async (args) => {
+                executed += 1;
+                return {
+                    toolCallId: 'call-regular-config-read-1',
+                    success: true,
+                    output: `read:${String(args.path ?? '')}`,
+                };
+            },
+        } satisfies ITool);
+
+        await executeToolCalls(
+            [{
+                id: 'call-regular-config-read-1',
+                name: 'read_file',
+                arguments: '{"path":"src/config.json"}',
+            }],
+            {
+                onToolApproval: async () => {
+                    approvalRequests += 1;
+                    return false;
+                },
+            },
+        );
+
+        expect(approvalRequests).toBe(0);
+        expect(executed).toBe(1);
+        expect(session.getMessages().at(-1)?.content).toContain('read:src/config.json');
+    });
+
     it('forces interactive approval before file_path-based tools target outside-project files', async () => {
-        const registry = new ToolRegistry();
-        const session = new AgentSession({ id: 'session-diagnostics-outside-project' });
         let approvalRequest: ToolApprovalRequest | undefined;
+        const { toolRegistry: registry, session, executeToolCalls } = createExecutionHarness({
+            sessionId: 'session-diagnostics-outside-project',
+            toolContext: {
+                sandboxMode: 'full-access',
+            },
+        });
 
         registry.register(new DiagnosticsTool());
 
-        await executeAgentToolCalls(
-            {
-                toolRegistry: registry,
-                session,
-                toolContext: {
-                    cwd: '/tmp/project',
-                    projectRoot: '/tmp/project',
-                    sandboxMode: 'full-access',
-                },
-                logger: defaultLogger.child('agent-tool-execution-test'),
-                llmConfig: {
-                    provider: 'openai',
-                    model: 'test-model',
-                    apiKey: 'test-key',
-                },
-                autoApproveTools: false,
-                permissions: {
-                    defaultMode: 'allow',
-                    tools: {},
-                },
-                disableAllHooks: true,
-                emit: (() => {}) as AgentEventEmitter,
-            },
-            [
-                {
-                    id: 'call-outside-diagnostics-1',
-                    name: 'diagnostics',
-                    arguments: '{"file_path":"../Desktop/notes.ts"}',
-                },
-            ],
+        await executeToolCalls(
+            [{
+                id: 'call-outside-diagnostics-1',
+                name: 'diagnostics',
+                arguments: '{"file_path":"../Desktop/notes.ts"}',
+            }],
             {
                 onToolApproval: async (request) => {
                     approvalRequest = request;
                     return false;
                 },
             },
-            'test-stream',
         );
 
         expect(approvalRequest).toMatchObject({
@@ -682,10 +665,15 @@ describe('agent tool execution helper', () => {
     });
 
     it('turns ask-mode into a real approval gate even for tools without native approval requests', async () => {
-        const registry = new ToolRegistry();
-        const session = new AgentSession({ id: 'session-generic-ask-policy' });
         let executed = 0;
         let approvalRequest: ToolApprovalRequest | undefined;
+        const { toolRegistry: registry, session, executeToolCalls } = createExecutionHarness({
+            sessionId: 'session-generic-ask-policy',
+            permissions: {
+                defaultMode: 'ask',
+                tools: {},
+            },
+        });
 
         registry.register({
             definition: {
@@ -703,42 +691,18 @@ describe('agent tool execution helper', () => {
             },
         } satisfies ITool);
 
-        await executeAgentToolCalls(
-            {
-                toolRegistry: registry,
-                session,
-                toolContext: {
-                    cwd: '/tmp/project',
-                    projectRoot: '/tmp/project',
-                },
-                logger: defaultLogger.child('agent-tool-execution-test'),
-                llmConfig: {
-                    provider: 'openai',
-                    model: 'test-model',
-                    apiKey: 'test-key',
-                },
-                autoApproveTools: false,
-                permissions: {
-                    defaultMode: 'ask',
-                    tools: {},
-                },
-                disableAllHooks: true,
-                emit: (() => {}) as AgentEventEmitter,
-            },
-            [
-                {
-                    id: 'call-generic-ask-1',
-                    name: 'delegate_task',
-                    arguments: '{"task":"Inspect the routing layer"}',
-                },
-            ],
+        await executeToolCalls(
+            [{
+                id: 'call-generic-ask-1',
+                name: 'delegate_task',
+                arguments: '{"task":"Inspect the routing layer"}',
+            }],
             {
                 onToolApproval: async (request) => {
                     approvalRequest = request;
                     return false;
                 },
             },
-            'test-stream',
         );
 
         expect(executed).toBe(0);
@@ -750,9 +714,15 @@ describe('agent tool execution helper', () => {
     });
 
     it('keeps MCP read-only tools available in plan capability', async () => {
-        const registry = new ToolRegistry();
-        const session = new AgentSession({ id: 'session-plan-mcp-readonly-tool' });
         let executed = 0;
+        const { toolRegistry: registry, session, executeToolCalls } = createExecutionHarness({
+            sessionId: 'session-plan-mcp-readonly-tool',
+            permissions: {
+                defaultMode: 'allow',
+                tools: { read: 'allow' },
+            },
+            executionCapability: 'plan',
+        });
 
         registry.register({
             definition: {
@@ -776,39 +746,11 @@ describe('agent tool execution helper', () => {
             },
         } satisfies ITool);
 
-        await executeAgentToolCalls(
-            {
-                toolRegistry: registry,
-                session,
-                toolContext: {
-                    cwd: '/tmp/project',
-                    projectRoot: '/tmp/project',
-                },
-                logger: defaultLogger.child('agent-tool-execution-test'),
-                llmConfig: {
-                    provider: 'openai',
-                    model: 'test-model',
-                    apiKey: 'test-key',
-                },
-                autoApproveTools: false,
-                permissions: {
-                    defaultMode: 'allow',
-                    tools: { read: 'allow' },
-                },
-                executionCapability: 'plan',
-                disableAllHooks: true,
-                emit: (() => {}) as AgentEventEmitter,
-            },
-            [
-                {
-                    id: 'call-plan-mcp-read-1',
-                    name: 'mcp.docs.resources.list',
-                    arguments: '{}',
-                },
-            ],
-            undefined,
-            'test-stream',
-        );
+        await executeToolCalls([{
+            id: 'call-plan-mcp-read-1',
+            name: 'mcp.docs.resources.list',
+            arguments: '{}',
+        }]);
 
         expect(executed).toBe(1);
         expect(session.getMessages().at(-1)).toMatchObject({
@@ -819,10 +761,16 @@ describe('agent tool execution helper', () => {
     });
 
     it('forces interactive approval for untrusted MCP reads even when auto-approve and read permissions are enabled', async () => {
-        const registry = new ToolRegistry();
-        const session = new AgentSession({ id: 'session-untrusted-mcp-read' });
         let executed = 0;
         let approvalRequest: ToolApprovalRequest | undefined;
+        const { toolRegistry: registry, session, executeToolCalls } = createExecutionHarness({
+            sessionId: 'session-untrusted-mcp-read',
+            autoApproveTools: true,
+            permissions: {
+                defaultMode: 'allow',
+                tools: { read: 'allow' },
+            },
+        });
 
         registry.register({
             definition: {
@@ -852,42 +800,18 @@ describe('agent tool execution helper', () => {
             },
         } satisfies ITool);
 
-        await executeAgentToolCalls(
-            {
-                toolRegistry: registry,
-                session,
-                toolContext: {
-                    cwd: '/tmp/project',
-                    projectRoot: '/tmp/project',
-                },
-                logger: defaultLogger.child('agent-tool-execution-test'),
-                llmConfig: {
-                    provider: 'openai',
-                    model: 'test-model',
-                    apiKey: 'test-key',
-                },
-                autoApproveTools: true,
-                permissions: {
-                    defaultMode: 'allow',
-                    tools: { read: 'allow' },
-                },
-                disableAllHooks: true,
-                emit: (() => {}) as AgentEventEmitter,
-            },
-            [
-                {
-                    id: 'call-untrusted-mcp-read-1',
-                    name: 'mcp.remote-docs.resources.read',
-                    arguments: '{"uri":"file://README.md"}',
-                },
-            ],
+        await executeToolCalls(
+            [{
+                id: 'call-untrusted-mcp-read-1',
+                name: 'mcp.remote-docs.resources.read',
+                arguments: '{"uri":"file://README.md"}',
+            }],
             {
                 onToolApproval: async (request) => {
                     approvalRequest = request;
                     return false;
                 },
             },
-            'test-stream',
         );
 
         expect(executed).toBe(0);
@@ -901,9 +825,11 @@ describe('agent tool execution helper', () => {
     });
 
     it('blocks hidden write tools before approval policy evaluation in plan capability', async () => {
-        const registry = new ToolRegistry();
-        const session = new AgentSession({ id: 'session-plan-hidden-tool' });
         let executed = 0;
+        const { toolRegistry: registry, session, executeToolCalls } = createExecutionHarness({
+            sessionId: 'session-plan-hidden-tool',
+            executionCapability: 'plan',
+        });
 
         registry.register({
             definition: {
@@ -921,39 +847,11 @@ describe('agent tool execution helper', () => {
             },
         } satisfies ITool);
 
-        await executeAgentToolCalls(
-            {
-                toolRegistry: registry,
-                session,
-                toolContext: {
-                    cwd: '/tmp/project',
-                    projectRoot: '/tmp/project',
-                },
-                logger: defaultLogger.child('agent-tool-execution-test'),
-                llmConfig: {
-                    provider: 'openai',
-                    model: 'test-model',
-                    apiKey: 'test-key',
-                },
-                autoApproveTools: false,
-                permissions: {
-                    defaultMode: 'allow',
-                    tools: {},
-                },
-                executionCapability: 'plan',
-                disableAllHooks: true,
-                emit: (() => {}) as AgentEventEmitter,
-            },
-            [
-                {
-                    id: 'call-hidden-write-1',
-                    name: 'write_file',
-                    arguments: '{"path":"src/app.ts","content":"patched"}',
-                },
-            ],
-            undefined,
-            'test-stream',
-        );
+        await executeToolCalls([{
+            id: 'call-hidden-write-1',
+            name: 'write_file',
+            arguments: '{"path":"src/app.ts","content":"patched"}',
+        }]);
 
         expect(executed).toBe(0);
         expect(session.getToolHistory()).toMatchObject([

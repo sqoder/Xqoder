@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import type { SandboxMode } from '@xqoder/shared';
+import { isForbiddenCommand } from '../../../domain/permissions/sensitive-paths.js';
 
 export class SandboxAccessError extends Error {
     readonly kind = 'sandbox_access_error';
@@ -65,11 +66,14 @@ export function resolveWorkingDirectory(
 }
 
 export function validateCommandSafety(command: string): string | undefined {
+    if (isForbiddenCommand(command)) {
+        return `Command rejected by sandbox: ${command}`;
+    }
+
     const dangerousPatterns = [
         /\bsudo\b/,
         /\brm\s+-rf\s+\/\b/,
         /\bmkfs\b/,
-        /\bdd\b/,
         /\bshutdown\b/,
         /\breboot\b/,
         /curl\b[^|]*\|\s*(sh|bash)\b/,

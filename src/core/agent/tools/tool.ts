@@ -152,9 +152,11 @@ export class ToolRegistry {
             };
         }
 
+        let approvalGranted = false;
+        let approvalRequest: ToolApprovalRequest | undefined;
         try {
             const builtApprovalRequest = await tool.buildApprovalRequest?.(args, context);
-            const approvalRequest = mergeToolApprovalRequest(
+            approvalRequest = mergeToolApprovalRequest(
                 name,
                 args,
                 toolCallId,
@@ -162,13 +164,13 @@ export class ToolRegistry {
                 context.approvalRequestPatch,
             );
             if (approvalRequest && context.requestToolApproval) {
-                const approved = await context.requestToolApproval({
+                approvalGranted = await context.requestToolApproval({
                     ...approvalRequest,
                     toolCallId,
                     toolName: name,
                 });
 
-                if (!approved) {
+                if (!approvalGranted) {
                     return {
                         toolCallId,
                         success: false,
@@ -187,14 +189,10 @@ export class ToolRegistry {
             }, context);
         } catch (err) {
             if (isSandboxAccessError(err) && context.requestToolApproval) {
-                const approved = await context.requestToolApproval({
-                    toolCallId,
-                    toolName: name,
-                    summary: `Request access to path outside project: ${err.inputPath}`,
-                    reason: 'Current operation requires access to files or directories outside the project directory.',
-                    preview: `resolved: ${err.resolvedPath}\nmode: ${err.sandboxMode}`,
-                    risk: 'high',
-                });
+                const sandboxApprovalRequest = createSandboxEscalationApprovalRequest(name, toolCallId, err);
+                const approved = approvalGranted && approvalRequestCoversSandboxAccess(approvalRequest, err)
+                    ? true
+                    : await context.requestToolApproval(sandboxApprovalRequest);
 
                 if (approved) {
                     try {
@@ -249,4 +247,43 @@ export class ToolRegistry {
     get size(): number {
         return this.tools.size;
     }
+}
+
+function createSandboxEscalationApprovalRequest(
+    toolName: string,
+    toolCallId: string,
+    error: {
+        inputPath: string;
+        resolvedPath: string;
+        sandboxMode: SandboxMode;
+    },
+): ToolApprovalRequest {
+    return {
+        toolCallId,
+        toolName,
+        summary: `Request access to path outside project: ${error.inputPath}`,
+        reason: 'Current operation requires access to files or directories outside the project directory.',
+        preview: `resolved: ${error.resolvedPath}\nmode: ${error.sandboxMode}`,
+        risk: 'high',
+    };
+}
+
+function approvalRequestCoversSandboxAccess(
+    request: ToolApprovalRequest | undefined,
+    error: {
+        inputPath: string;
+        resolvedPath: string;
+    },
+): boolean {
+    if (!request) {
+        return false;
+    }
+
+    return [
+        request.summary,
+        request.reason,
+        request.preview,
+    ]
+        .filter((value): value is string => typeof value === 'string' && value.length > 0)
+        .some((value) => value.includes(error.inputPath) || value.includes(error.resolvedPath));
 }

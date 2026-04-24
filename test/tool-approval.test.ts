@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'bun:test';
 import type { ToolDefinition, ToolResult } from '@xqoder/shared';
+import { SandboxAccessError } from '../src/core/agent/tools/sandbox.js';
 import { RunShellTool } from '../src/core/agent/tools/command-tool.js';
 import { WriteFileTool } from '../src/core/agent/tools/file-tools.js';
 import { ToolRegistry, type ITool, type ToolContext, type ToolApprovalRequest } from '../src/core/agent/tools/tool.js';
@@ -156,6 +157,146 @@ describe('tool approval flow', () => {
         } finally {
             fs.rmSync(cwd, { recursive: true, force: true });
         }
+    });
+
+    it('honors protected-path approval patches before writing files', async () => {
+        const registry = new ToolRegistry();
+        registry.register(new WriteFileTool());
+        let approvalRequest: ToolApprovalRequest | undefined;
+        const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-protected-write-'));
+
+        try {
+            const result = await registry.execute(
+                'write_file',
+                {
+                    path: '.git/config',
+                    content: '[core]\n\trepositoryformatversion = 0\n',
+                },
+                {
+                    cwd,
+                    projectRoot: cwd,
+                    approvalRequestPatch: {
+                        force: true,
+                        summary: 'Request write to protected path: .git/config',
+                        reason: 'Writes to version-control metadata, local credentials, shell startup files, or agent configuration require explicit approval.',
+                        risk: 'high',
+                    },
+                    requestToolApproval: async (request) => {
+                        approvalRequest = request;
+                        return false;
+                    },
+                },
+                'call-write-protected-1',
+            );
+
+            expect(approvalRequest?.summary).toBe('Request write to protected path: .git/config');
+            expect(approvalRequest?.reason).toContain('version-control metadata');
+            expect(approvalRequest?.risk).toBe('high');
+            expect(result.error).toBe('Tool approval denied: write_file');
+            expect(fs.existsSync(path.join(cwd, '.git', 'config'))).toBe(false);
+        } finally {
+            fs.rmSync(cwd, { recursive: true, force: true });
+        }
+    });
+
+    it('rejects forbidden destructive shell commands even after approval is granted', async () => {
+        const registry = new ToolRegistry();
+        registry.register(new RunShellTool());
+        let approvals = 0;
+
+        const resetResult = await registry.execute(
+            'run_shell',
+            { command: 'git reset --hard' },
+            {
+                cwd: '/tmp/project',
+                projectRoot: '/tmp/project',
+                requestToolApproval: async () => {
+                    approvals += 1;
+                    return true;
+                },
+            },
+            'call-shell-forbidden-1',
+        );
+
+        const cleanResult = await registry.execute(
+            'run_shell',
+            { command: 'git clean -xdf' },
+            {
+                cwd: '/tmp/project',
+                projectRoot: '/tmp/project',
+                requestToolApproval: async () => {
+                    approvals += 1;
+                    return true;
+                },
+            },
+            'call-shell-forbidden-2',
+        );
+
+        expect(approvals).toBe(2);
+        expect(resetResult.success).toBe(false);
+        expect(resetResult.error).toBe('Command rejected by sandbox: git reset --hard');
+        expect(cleanResult.success).toBe(false);
+        expect(cleanResult.error).toBe('Command rejected by sandbox: git clean -xdf');
+    });
+
+    it('requests a second approval before sandbox escalation when the first approval did not cover outside-project access', async () => {
+        const registry = new ToolRegistry();
+        const approvals: ToolApprovalRequest[] = [];
+        let executionCount = 0;
+
+        registry.register({
+            definition: {
+                name: 'outside_project_test_tool',
+                description: 'test outside-project escalation approvals',
+                parameters: [],
+            } satisfies ToolDefinition,
+            buildApprovalRequest: async () => ({
+                toolCallId: '',
+                toolName: 'outside_project_test_tool',
+                summary: 'Run privileged maintenance action',
+                reason: 'Needs confirmation before performing a risky operation.',
+                risk: 'high',
+            }),
+            execute: async (_args, context) => {
+                executionCount += 1;
+                if (context.sandboxMode !== 'full-access') {
+                    throw new SandboxAccessError('../Desktop/notes.txt', '/tmp/Desktop/notes.txt', 'project');
+                }
+
+                return {
+                    toolCallId: 'call-sandbox-escalation-1',
+                    success: true,
+                    output: 'ok',
+                };
+            },
+        } satisfies ITool);
+
+        const result = await registry.execute(
+            'outside_project_test_tool',
+            {},
+            {
+                cwd: '/tmp/project',
+                projectRoot: '/tmp/project',
+                requestToolApproval: async (request) => {
+                    approvals.push(request);
+                    return true;
+                },
+            },
+            'call-sandbox-escalation-1',
+        );
+
+        expect(result.success).toBe(true);
+        expect(executionCount).toBe(2);
+        expect(approvals).toHaveLength(2);
+        expect(approvals[0]).toMatchObject({
+            summary: 'Run privileged maintenance action',
+            toolName: 'outside_project_test_tool',
+        });
+        expect(approvals[1]).toMatchObject({
+            summary: 'Request access to path outside project: ../Desktop/notes.txt',
+            toolName: 'outside_project_test_tool',
+            risk: 'high',
+        });
     });
 });
 

@@ -2,10 +2,11 @@ import type {
     AgentPermissionMode,
     PermissionSettings,
 } from '@xqoder/foundation-shared/types/permissions.js';
-import type { ToolApprovalPatch } from './approval.js';
+import { mergeToolApprovalPatches, type ToolApprovalPatch } from './approval.js';
 import {
     isDangerousCommand,
     isPathOutsideProject,
+    isProtectedPath,
     isSensitiveConfigPath,
     isSensitiveReadPath,
 } from './sensitive-paths.js';
@@ -88,6 +89,12 @@ export interface ToolSecurityPolicyContext {
     operation?: McpToolOperation;
 }
 
+type ResolvedMcpSecurityContext = ToolSecurityPolicyContext & {
+    source: 'mcp';
+    trust: ToolTrustLevel;
+    operation: McpToolOperation;
+};
+
 export function getPermissionKeyForTool(
     toolName: string,
     securityContext?: ToolSecurityPolicyContext,
@@ -146,24 +153,25 @@ export function resolveToolPermissionDecision(
     }
 
     const requiresHardApproval = shouldForceExplicitApproval(input);
+    const requiresReadBeforeWriteApproval = shouldRequireReadBeforeWrite(toolName, input.hasPriorRead);
     const explicitlyAllowed = permissions?.allowedTools?.includes(toolName)
         || permissions?.allowedTools?.includes(key);
 
     if (explicitlyAllowed) {
-        return requiresHardApproval ? 'ask' : 'allow';
+        return requiresHardApproval || requiresReadBeforeWriteApproval ? 'ask' : 'allow';
     }
 
     let mode = resolveToolPermissionMode(toolName, permissions, input.securityContext);
 
     if (mode === 'bypassPermissions') {
-        return requiresHardApproval ? 'ask' : 'allow';
+        return requiresHardApproval || requiresReadBeforeWriteApproval ? 'ask' : 'allow';
     }
 
     if (mode === 'deny') {
         return 'deny';
     }
 
-    if (requiresHardApproval) {
+    if (requiresHardApproval || requiresReadBeforeWriteApproval) {
         return 'ask';
     }
 
@@ -207,12 +215,13 @@ function evaluateToolRisk(
     args?: Record<string, unknown>,
     securityContext?: ToolSecurityPolicyContext,
 ): ToolRisk {
-    if (isMcpToolSecurityContext(securityContext)) {
-        if (securityContext.trust === 'untrusted') {
+    const mcpContext = resolveMcpSecurityContextForPolicy(toolName, securityContext);
+    if (mcpContext) {
+        if (mcpContext.trust === 'untrusted') {
             return 'high';
         }
 
-        return isMcpReadOnlyOperation(securityContext) ? 'low' : 'medium';
+        return isMcpReadOnlyOperation(mcpContext, toolName) ? 'low' : 'medium';
     }
 
     if (isReadLikeTool(toolName, securityContext)) return 'low';
@@ -273,22 +282,60 @@ export function createToolPolicyApprovalPatch(
         hasNativeApprovalRequest?: boolean;
     },
 ): ToolApprovalPatch | undefined {
-    const targetPath = resolvePolicyTargetPath(input.toolName, input.args);
-    if (targetPath && isPathOutsideProject(targetPath, input.projectRoot)) {
-        return {
+    const targetPaths = resolvePolicyTargetPaths(input.toolName, input.args);
+    const targetPath = targetPaths[0];
+    let approvalPatch: ToolApprovalPatch | undefined;
+    const outsideProjectTargetPath = targetPaths.find((candidate) => isPathOutsideProject(candidate, input.projectRoot));
+    const protectedTargetPath = targetPaths.find((candidate) => isProtectedPath(candidate));
+    const highRiskConfigTargetPath = isWriteLikeTool(input.toolName)
+        ? targetPaths.find((candidate) => isSensitiveConfigPath(candidate))
+        : undefined;
+
+    if (outsideProjectTargetPath) {
+        approvalPatch = mergeToolApprovalPatches(approvalPatch, {
             force: true,
-            summary: `Request access to path outside project: ${targetPath}`,
+            summary: `Request access to path outside project: ${outsideProjectTargetPath}`,
             reason: 'This operation targets a path outside the current project root and requires explicit approval.',
             preview: [
                 `projectRoot: ${input.projectRoot ?? '(unknown)'}`,
-                `targetPath: ${targetPath}`,
+                `targetPath: ${outsideProjectTargetPath}`,
             ].join('\n'),
             risk: 'high',
-        };
+        });
+    }
+
+    if (protectedTargetPath) {
+        approvalPatch = mergeToolApprovalPatches(approvalPatch, {
+            force: true,
+            summary: isWriteLikeTool(input.toolName)
+                ? `Request write to protected path: ${protectedTargetPath}`
+                : `Request access to protected path: ${protectedTargetPath}`,
+            reason: 'Writes or direct access to version-control metadata, local credentials, shell startup files, or agent configuration require explicit approval.',
+            preview: [
+                `tool: ${input.toolName}`,
+                `projectRoot: ${input.projectRoot ?? '(unknown)'}`,
+                `targetPath: ${protectedTargetPath}`,
+            ].join('\n'),
+            risk: 'high',
+        });
+    }
+
+    if (highRiskConfigTargetPath) {
+        approvalPatch = mergeToolApprovalPatches(approvalPatch, {
+            force: true,
+            summary: `Request write to high-risk config path: ${highRiskConfigTargetPath}`,
+            reason: 'This operation modifies project configuration or environment files and requires explicit approval.',
+            preview: [
+                `tool: ${input.toolName}`,
+                `projectRoot: ${input.projectRoot ?? '(unknown)'}`,
+                `targetPath: ${highRiskConfigTargetPath}`,
+            ].join('\n'),
+            risk: 'high',
+        });
     }
 
     if (requiresSensitiveReadApproval(input.toolName, input.args)) {
-        return {
+        approvalPatch = mergeToolApprovalPatches(approvalPatch, {
             force: true,
             summary: targetPath
                 ? `Request access to sensitive file: ${targetPath}`
@@ -296,12 +343,25 @@ export function createToolPolicyApprovalPatch(
             reason: 'This operation may read secrets, credentials, or local machine identity material and requires explicit approval.',
             preview: buildSensitiveReadPreview(input, targetPath),
             risk: 'high',
-        };
+        });
     }
 
     const externalToolPatch = createExternalToolApprovalPatch(input);
     if (externalToolPatch) {
-        return externalToolPatch;
+        approvalPatch = mergeToolApprovalPatches(approvalPatch, externalToolPatch);
+    }
+
+    const readBeforeWritePatch = createReadBeforeWriteApprovalPatch(
+        input,
+        targetPath,
+        approvalPatch !== undefined,
+    );
+    if (readBeforeWritePatch) {
+        approvalPatch = mergeToolApprovalPatches(approvalPatch, readBeforeWritePatch);
+    }
+
+    if (approvalPatch) {
+        return approvalPatch;
     }
 
     if (input.permissionMode !== 'ask' || input.hasNativeApprovalRequest) {
@@ -319,6 +379,7 @@ export function createToolPolicyApprovalPatch(
 
 function shouldForceExplicitApproval(input: ToolPolicyDecisionInput): boolean {
     return requiresOutsideProjectApproval(input)
+        || requiresProtectedPathApproval(input)
         || requiresExternalToolApproval(input)
         || requiresNetworkApproval(input.toolName)
         || requiresSensitiveReadApproval(input.toolName, input.args)
@@ -410,6 +471,48 @@ function buildGenericApprovalPreview(
     }
 }
 
+function createReadBeforeWriteApprovalPatch(
+    input: ToolPolicyDecisionInput & {
+        hasNativeApprovalRequest?: boolean;
+    },
+    targetPath: string | undefined,
+    hasExistingPatch: boolean,
+): ToolApprovalPatch | undefined {
+    if (!shouldRequireReadBeforeWrite(input.toolName, input.hasPriorRead)) {
+        return undefined;
+    }
+
+    return {
+        force: true,
+        ...(!input.hasNativeApprovalRequest && !hasExistingPatch
+            ? {
+                summary: targetPath
+                    ? `Review write before prior read: ${targetPath}`
+                    : `Review ${input.toolName} before prior read`,
+            }
+            : {}),
+        reason: 'This write request arrived before the agent read any project context in the current session and now requires explicit approval.',
+        preview: buildReadBeforeWritePreview(input, targetPath),
+        risk: 'high',
+    };
+}
+
+function buildReadBeforeWritePreview(
+    input: ToolPolicyDecisionInput,
+    targetPath: string | undefined,
+): string {
+    if (targetPath) {
+        return [
+            `projectRoot: ${input.projectRoot ?? '(unknown)'}`,
+            `targetPath: ${targetPath}`,
+            'hasPriorRead: false',
+        ].join('\n');
+    }
+
+    const genericPreview = buildGenericApprovalPreview(input, targetPath);
+    return `${genericPreview}\nhasPriorRead: false`;
+}
+
 function createExternalToolApprovalPatch(
     input: ToolPolicyDecisionInput & {
         hasNativeApprovalRequest?: boolean;
@@ -419,8 +522,8 @@ function createExternalToolApprovalPatch(
         return undefined;
     }
 
-    const securityContext = input.securityContext;
-    if (!isMcpToolSecurityContext(securityContext)) {
+    const securityContext = resolveMcpSecurityContextForPolicy(input.toolName, input.securityContext);
+    if (!securityContext) {
         return undefined;
     }
 
@@ -517,22 +620,22 @@ function requiresHighRiskConfigWriteApproval(
         return false;
     }
 
-    const targetPath = typeof args?.['path'] === 'string'
-        ? args['path']
-        : typeof args?.['file_path'] === 'string'
-            ? args['file_path']
-            : '';
-    return targetPath.length > 0 && isSensitiveConfigPath(targetPath);
+    return resolvePolicyTargetPaths(toolName, args).some((targetPath) => isSensitiveConfigPath(targetPath));
 }
 
 function requiresOutsideProjectApproval(input: ToolPolicyDecisionInput): boolean {
-    const targetPath = resolvePolicyTargetPath(input.toolName, input.args);
-    return Boolean(targetPath && isPathOutsideProject(targetPath, input.projectRoot));
+    return resolvePolicyTargetPaths(input.toolName, input.args)
+        .some((targetPath) => isPathOutsideProject(targetPath, input.projectRoot));
+}
+
+function requiresProtectedPathApproval(input: ToolPolicyDecisionInput): boolean {
+    return resolvePolicyTargetPaths(input.toolName, input.args)
+        .some((targetPath) => isProtectedPath(targetPath));
 }
 
 function requiresExternalToolApproval(input: ToolPolicyDecisionInput): boolean {
-    const securityContext = input.securityContext;
-    if (!isMcpToolSecurityContext(securityContext)) {
+    const securityContext = resolveMcpSecurityContextForPolicy(input.toolName, input.securityContext);
+    if (!securityContext) {
         return false;
     }
 
@@ -562,10 +665,44 @@ function resolveMcpOperation(
     securityContext: ToolSecurityPolicyContext | undefined,
 ): McpToolOperation | undefined {
     if (isMcpToolSecurityContext(securityContext)) {
-        return securityContext.operation ?? inferMcpToolOperation(toolName);
+        return securityContext.operation ?? inferMcpToolOperation(toolName) ?? 'tool_call';
     }
 
     return inferMcpToolOperation(toolName);
+}
+
+function resolveMcpSecurityContextForPolicy(
+    toolName: string,
+    securityContext: ToolSecurityPolicyContext | undefined,
+): ResolvedMcpSecurityContext | undefined {
+    const operation = resolveMcpOperation(toolName, securityContext);
+
+    if (isMcpToolSecurityContext(securityContext)) {
+        return {
+            ...securityContext,
+            trust: securityContext.trust ?? 'untrusted',
+            operation: operation ?? 'tool_call',
+            ...(securityContext.serverName
+                ? {}
+                : { serverName: inferMcpServerName(toolName) }),
+        };
+    }
+
+    if (!toolName.startsWith('mcp.')) {
+        return undefined;
+    }
+
+    return {
+        source: 'mcp',
+        trust: 'untrusted',
+        operation: operation ?? 'tool_call',
+        serverName: inferMcpServerName(toolName),
+    };
+}
+
+function inferMcpServerName(toolName: string): string {
+    const [, serverName] = toolName.split('.');
+    return serverName?.trim() || 'unknown';
 }
 
 function inferMcpToolOperation(toolName: string): McpToolOperation | undefined {
@@ -596,17 +733,63 @@ function resolvePolicyTargetPath(
     toolName: string,
     args: Record<string, unknown> | undefined,
 ): string | undefined {
+    return resolvePolicyTargetPaths(toolName, args)[0];
+}
+
+function resolvePolicyTargetPaths(
+    toolName: string,
+    args: Record<string, unknown> | undefined,
+): string[] {
     if (toolName === 'run_command' || toolName === 'run_shell') {
-        return typeof args?.['cwd'] === 'string' ? args['cwd'] : undefined;
+        return typeof args?.['cwd'] === 'string' ? [args['cwd']] : [];
+    }
+
+    if (toolName === 'apply_patch') {
+        return typeof args?.['patch'] === 'string' ? resolvePatchTargetPaths(args['patch']) : [];
     }
 
     if (typeof args?.['path'] === 'string') {
-        return args['path'];
+        return [args['path']];
     }
 
     if (typeof args?.['file_path'] === 'string') {
-        return args['file_path'];
+        return [args['file_path']];
     }
 
-    return undefined;
+    return [];
+}
+
+function resolvePatchTargetPaths(patch: string): string[] {
+    const targetPaths = new Set<string>();
+
+    for (const line of patch.split('\n')) {
+        if (line.startsWith('+++ ') || line.startsWith('--- ')) {
+            const rawPath = line.slice(4).trim();
+            if (rawPath && rawPath !== '/dev/null') {
+                targetPaths.add(stripPatchPrefix(rawPath));
+            }
+            continue;
+        }
+
+        const gitDiffMatch = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+        if (gitDiffMatch?.[2]) {
+            targetPaths.add(gitDiffMatch[2]);
+            continue;
+        }
+
+        const applyPatchMatch = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/);
+        if (applyPatchMatch?.[1]) {
+            targetPaths.add(applyPatchMatch[1].trim());
+        }
+    }
+
+    return Array.from(targetPaths).filter(Boolean);
+}
+
+function stripPatchPrefix(value: string): string {
+    if (value.startsWith('a/') || value.startsWith('b/')) {
+        return value.slice(2);
+    }
+
+    return value;
 }

@@ -4,7 +4,8 @@ import { spawnSync } from 'node:child_process';
 import type { ToolDefinition, ToolResult } from '@xqoder/shared';
 import type { ITool, ToolContext } from './tool.js';
 import { truncatePreview } from './diff.js';
-import { resolvePathWithinProject } from './sandbox.js';
+import { isSandboxAccessError, resolvePathWithinProject } from './sandbox.js';
+import { discoverSkillDocuments } from './skill-paths.js';
 
 const MAX_DISCOVERY_ITEMS = 200;
 
@@ -36,6 +37,9 @@ export class ListFilesTool implements ITool {
                 output: lines.length > 0 ? lines.slice(0, MAX_DISCOVERY_ITEMS).join('\n') : '(empty)',
             };
         } catch (err) {
+            if (isSandboxAccessError(err)) {
+                throw err;
+            }
             return {
                 toolCallId,
                 success: false,
@@ -107,6 +111,9 @@ export class GlobFilesTool implements ITool {
                 output: truncatePreview(formatGlobOutput(result.stdout || '', relativeRoot)),
             };
         } catch (err) {
+            if (isSandboxAccessError(err)) {
+                throw err;
+            }
             return {
                 toolCallId,
                 success: false,
@@ -202,6 +209,9 @@ export class GrepContentTool implements ITool {
                 output: truncatePreview(result.stdout || 'No matching results found'),
             };
         } catch (err) {
+            if (isSandboxAccessError(err)) {
+                throw err;
+            }
             return {
                 toolCallId,
                 success: false,
@@ -248,7 +258,7 @@ function walkDirectory(
 export class DiscoverSkillsTool implements ITool {
     readonly definition: ToolDefinition = {
         name: 'discover_skills',
-        description: 'Discover reusable agent skills in the project or global store by searching for SKILL.md files.',
+        description: 'Discover reusable agent skills in the project or global store by searching for skill markdown files.',
         parameters: [],
     };
 
@@ -256,30 +266,18 @@ export class DiscoverSkillsTool implements ITool {
         const toolCallId = (args['toolCallId'] as string) ?? '';
 
         try {
-            const skillPaths = [
-                path.join(context.projectRoot, '.xqoder', 'skills'),
-                path.join(context.projectRoot, 'skills'),
-            ];
-
-            const foundSkills: string[] = [];
-            for (const skillPath of skillPaths) {
-                if (fs.existsSync(skillPath) && fs.statSync(skillPath).isDirectory()) {
-                    const skillDirs = fs.readdirSync(skillPath);
-                    for (const dir of skillDirs) {
-                        const skillMd = path.join(skillPath, dir, 'SKILL.md');
-                        if (fs.existsSync(skillMd)) {
-                            foundSkills.push(`- ${dir} (at ${path.relative(context.projectRoot, skillMd)})`);
-                        }
-                    }
-                }
+            const foundSkills = new Set<string>();
+            for (const skill of discoverSkillDocuments(context.projectRoot)) {
+                const renderedPath = path.relative(context.projectRoot, skill.filePath);
+                foundSkills.add(`- ${skill.name} (at ${renderedPath.startsWith('..') ? skill.filePath : renderedPath})`);
             }
 
             return {
                 toolCallId,
                 success: true,
-                output: foundSkills.length > 0
-                    ? `Found the following skills:\n${foundSkills.join('\n')}\n\nTo use a skill, read its SKILL.md for instructions.`
-                    : 'No skills found in the project. You can create a skill by adding a folder with a SKILL.md in .xqoder/skills/.',
+                output: foundSkills.size > 0
+                    ? `Found the following skills:\n${Array.from(foundSkills).sort().join('\n')}\n\nTo use a skill, read its skill document for instructions.`
+                    : 'No skills found in the project. You can create a skill by adding a folder with a SKILL.md in .xqoder/skills/ or .claude/skills/.',
             };
         } catch (err) {
             return {

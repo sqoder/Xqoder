@@ -53,9 +53,7 @@ function normalizeMCPServerConfig(server: MCPServerConfig): MCPServerConfig {
             .map(([key, value]) => [key.trim(), value] as const)
             .filter(([key, value]) => key.length > 0 && typeof value === 'string'),
     );
-    const transport = server.transport === 'http' || server.transport === 'sse'
-        ? server.transport
-        : 'stdio';
+    const transport = resolveMcpTransport(server);
     const cwd = server.cwd?.trim() || undefined;
 
     return {
@@ -127,7 +125,7 @@ function normalizeTimeout(value: number | undefined): number {
 
 function normalizeMcpTrust(
     value: MCPServerTrustLevel | undefined,
-    transport: MCPServerConfig['transport'],
+    transport: NonNullable<MCPServerConfig['transport']>,
 ): MCPServerTrustLevel {
     if (value === 'trusted' || value === 'untrusted') {
         return value;
@@ -136,6 +134,18 @@ function normalizeMcpTrust(
     return transport === 'http' || transport === 'sse'
         ? 'untrusted'
         : 'trusted';
+}
+
+function resolveMcpTransport(server: MCPServerConfig): NonNullable<MCPServerConfig['transport']> {
+    if (server.transport === 'http' || server.transport === 'sse') {
+        return server.transport;
+    }
+
+    if (server.url?.trim()) {
+        return 'http';
+    }
+
+    return 'stdio';
 }
 
 function normalizePort(value: number | undefined): number {
