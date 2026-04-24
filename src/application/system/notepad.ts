@@ -43,13 +43,16 @@ export interface NotepadStats extends NotepadPaths {
 }
 
 export interface NotepadWriteResult extends NotepadSnapshot {
-    action: 'write_priority' | 'write_working' | 'write_manual' | 'prune';
+    action: 'write_priority' | 'write_working' | 'write_auto_working' | 'write_manual' | 'prune';
     changed: boolean;
     pruned?: number;
 }
 
 const DEFAULT_PRUNE_DAYS = 7;
 const PRIORITY_CHAR_LIMIT = 500;
+const AUTO_WORKING_PROMPT_LIMIT = 120;
+const AUTO_WORKING_RESPONSE_LIMIT = 220;
+const AUTO_WORKING_ENTRY_LIMIT = 50;
 
 export function resolveNotepadPaths(cwd: string): NotepadPaths {
     const resolvedCwd = path.resolve(cwd);
@@ -194,6 +197,57 @@ export function runWriteWorkingNotepadCommand(
     const result: NotepadWriteResult = {
         ...createNotepadSnapshot(options),
         action: 'write_working',
+        changed: true,
+    };
+    writeNotepadWriteResult(result, options, dependencies);
+    return result;
+}
+
+export function runWriteAutoWorkingNotepadCommand(
+    input: {
+        prompt: string;
+        response: string;
+    },
+    options: NotepadOutputOptions = {},
+    dependencies: NotepadCommandDependencies = {},
+): NotepadWriteResult {
+    const promptSummary = normalizeInlineNote(
+        input.prompt,
+        AUTO_WORKING_PROMPT_LIMIT,
+    );
+    const responseSummary = normalizeInlineNote(
+        input.response,
+        AUTO_WORKING_RESPONSE_LIMIT,
+    );
+
+    if (!promptSummary || !responseSummary) {
+        return {
+            ...createNotepadSnapshot(options),
+            action: 'write_auto_working',
+            changed: false,
+        };
+    }
+
+    const snapshot = createNotepadSnapshot(options);
+    const entryBody = `Task: ${promptSummary} | Outcome: ${responseSummary}`;
+    const latestEntry = snapshot.workingEntries.at(-1);
+    if (latestEntry && stripWorkingEntryTimestamp(latestEntry) === entryBody) {
+        return {
+            ...snapshot,
+            action: 'write_auto_working',
+            changed: false,
+        };
+    }
+
+    const entry = `[${new Date().toISOString()}] ${entryBody}`;
+    const appended = appendToSection(snapshot.content || createEmptyNotepad(), 'WORKING MEMORY', entry);
+    const keptEntries = parseWorkingEntries(extractSection(appended, 'WORKING MEMORY')).slice(-AUTO_WORKING_ENTRY_LIMIT);
+    const updated = replaceSection(appended, 'WORKING MEMORY', keptEntries.join('\n'));
+    writeNotepad(snapshot.notepadPath, updated);
+
+    const result: NotepadWriteResult = {
+        ...createNotepadSnapshot(options),
+        action: 'write_auto_working',
         changed: true,
     };
     writeNotepadWriteResult(result, options, dependencies);
@@ -367,6 +421,21 @@ function parseWorkingEntries(sectionContent: string): string[] {
         .split('\n')
         .map((line) => line.trim())
         .filter(Boolean);
+}
+
+function normalizeInlineNote(content: string, maxLength: number): string {
+    const collapsed = content.replace(/\s+/g, ' ').trim();
+    if (!collapsed) {
+        return '';
+    }
+    if (collapsed.length <= maxLength) {
+        return collapsed;
+    }
+    return `${collapsed.slice(0, Math.max(0, maxLength - 1)).trimEnd()}...`;
+}
+
+function stripWorkingEntryTimestamp(entry: string): string {
+    return entry.replace(/^\[[^\]]+\]\s*/, '').trim();
 }
 
 function extractSection(content: string, section: 'PRIORITY' | 'WORKING MEMORY' | 'MANUAL'): string {

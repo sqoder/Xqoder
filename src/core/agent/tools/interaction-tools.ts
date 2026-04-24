@@ -1,9 +1,9 @@
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ToolDefinition, ToolResult } from '@xqoder/shared';
 import type { ITool, QuestionPrompt, ToolContext } from './tool.js';
 import { resolvePathWithinProject } from './sandbox.js';
+import { resolveSkillDocumentPath } from './skill-paths.js';
 
 const TODO_STATUSES = new Set(['pending', 'in_progress', 'completed', 'cancelled']);
 const TODO_PRIORITIES = new Set(['high', 'medium', 'low']);
@@ -40,7 +40,7 @@ export class SkillTool implements ITool {
         if (filePath) {
             targetPath = resolvePathWithinProject(filePath, context);
         } else if (skillName) {
-            targetPath = resolveSkillPath(skillName, context.projectRoot);
+            targetPath = resolveSkillDocumentPath(skillName, context.projectRoot);
         }
 
         if (!targetPath) {
@@ -266,38 +266,6 @@ export class QuestionTool implements ITool {
             },
         };
     }
-}
-
-function resolveSkillPath(name: string, projectRoot: string): string | undefined {
-    const safeName = sanitizeSkillName(name);
-    if (!safeName) {
-        return undefined;
-    }
-
-    const home = os.homedir();
-    const candidates = [
-        path.join(projectRoot, '.xqoder', 'skills', `${safeName}.md`),
-        path.join(projectRoot, '.xqoder', 'skills', safeName, 'SKILL.md'),
-        path.join(projectRoot, '.opencode', 'skills', `${safeName}.md`),
-        path.join(projectRoot, '.opencode', 'skills', safeName, 'SKILL.md'),
-        path.join(home, '.agents', 'skills', safeName, 'SKILL.md'),
-        path.join(home, '.xqoder', 'skills', `${safeName}.md`),
-    ];
-
-    for (const candidate of candidates) {
-        if (fs.existsSync(candidate)) {
-            return candidate;
-        }
-    }
-
-    return undefined;
-}
-
-function sanitizeSkillName(name: string): string | undefined {
-    const trimmed = name.trim();
-    if (!trimmed) return undefined;
-    if (!/^[a-zA-Z0-9._-]+$/.test(trimmed)) return undefined;
-    return trimmed;
 }
 
 function normalizeTodos(raw: unknown): TodoItem[] | undefined {

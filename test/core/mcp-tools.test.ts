@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
     McpGetPromptTool,
+    McpListPromptsTool,
     McpListResourcesTool,
     McpReadResourceTool,
     McpRemoteTool,
@@ -155,6 +156,62 @@ describe('mcp tool adapters', () => {
             risk: 'low',
         });
         expect(resourceTool.buildApprovalRequest({}, {} as never).reason).toContain('trusted MCP server');
+    });
+
+    it('summarizes oversized MCP text payloads before returning them to the agent', async () => {
+        const longText = 'x'.repeat(5_000);
+        const client = createClient({
+            async callTool() {
+                return {
+                    content: [{ type: 'text', text: longText }],
+                };
+            },
+            async getPrompt() {
+                return {
+                    messages: [{ role: 'user', content: { type: 'text', text: longText } }],
+                };
+            },
+            async listPrompts() {
+                return [{ name: 'long-prompt', description: longText }];
+            },
+            async listResources() {
+                return [{ uri: 'file://long.md', name: 'long-resource', description: longText }];
+            },
+            async listResourceTemplates() {
+                return [{ uriTemplate: 'file://{path}', name: 'long-template', description: longText }];
+            },
+            async readResource(uri) {
+                return {
+                    contents: [{ uri, text: longText }],
+                };
+            },
+        });
+
+        const remoteTool = new McpRemoteTool('long_tool', 'docs', {
+            name: 'long.lookup',
+            inputSchema: { type: 'object' },
+        }, client);
+        const listPrompts = new McpListPromptsTool('docs', 'prompts_list', client);
+        const listResources = new McpListResourcesTool('docs', 'resources_list', client);
+        const getPrompt = new McpGetPromptTool('docs', 'prompts_get', client);
+        const readResource = new McpReadResourceTool('docs', 'resource_read', client);
+
+        const toolResult = await remoteTool.execute({ toolCallId: 'call-long-tool' }, {} as never);
+        const promptListResult = await listPrompts.execute({ toolCallId: 'call-long-prompt-list' }, {} as never);
+        const resourceIndexResult = await listResources.execute({ toolCallId: 'call-long-resource-list' }, {} as never);
+        const promptResult = await getPrompt.execute({ toolCallId: 'call-long-prompt', name: 'long' }, {} as never);
+        const resourceResult = await readResource.execute({ toolCallId: 'call-long-resource', uri: 'file://long.md' }, {} as never);
+
+        expect(toolResult.output.length).toBeLessThan(longText.length);
+        expect(promptListResult.output.length).toBeLessThan(longText.length);
+        expect(resourceIndexResult.output.length).toBeLessThan(longText.length);
+        expect(promptResult.output.length).toBeLessThan(longText.length);
+        expect(resourceResult.output.length).toBeLessThan(longText.length);
+        expect(toolResult.output).toEndWith('…');
+        expect(promptListResult.output).toContain('…');
+        expect(resourceIndexResult.output).toContain('…');
+        expect(promptResult.output).toContain('…');
+        expect(resourceResult.output).toContain('…');
     });
 });
 

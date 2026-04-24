@@ -24,6 +24,7 @@ import {
     createNotepadSnapshot,
     createNotepadStats,
     runPruneNotepadCommand,
+    runWriteAutoWorkingNotepadCommand,
     runWriteManualNotepadCommand,
     runWritePriorityNotepadCommand,
     runWriteWorkingNotepadCommand,
@@ -83,6 +84,22 @@ describe('memory command helpers', () => {
         expect(result.migratedFromLegacy).toBe(true);
         expect(snapshot.content).toBe('# Legacy\n');
     });
+
+    it('treats .claude/CLAUDE.md as an active compatibility path without creating duplicates', () => {
+        const cwd = createTempDir();
+        const compatPath = path.join(cwd, '.claude', 'CLAUDE.md');
+        fs.mkdirSync(path.dirname(compatPath), { recursive: true });
+        fs.writeFileSync(compatPath, '# Claude Compat\n', 'utf-8');
+
+        const snapshot = createMemorySnapshot({ cwd });
+        const initResult = runInitMemoryCommand({ cwd }, { writeOutput: () => {} });
+
+        expect(snapshot.claudeExists).toBe(false);
+        expect(snapshot.claudeCompatExists).toBe(true);
+        expect(snapshot.activePath).toBe(compatPath);
+        expect(initResult.changed).toBe(false);
+        expect(fs.existsSync(path.join(cwd, 'CLAUDE.md'))).toBe(false);
+    });
 });
 
 describe('chat prompt helpers', () => {
@@ -93,6 +110,7 @@ describe('chat prompt helpers', () => {
 
         expect(prompt).toContain('The current project directory is: /tmp/demo-project.');
         expect(prompt).toContain('If the user asks about "this project", "this repo", "the current codebase"');
+        expect(prompt).toContain('prefer read-only inspection first: use search_code and read_file before considering run_shell');
         expect(prompt).toContain('Only ask the user to provide files or paths after you have already tried inspecting the current project');
         expect(prompt).toContain("prefer the user's language");
     });
@@ -228,6 +246,25 @@ describe('notepad command helpers', () => {
         expect(result.workingEntries).toHaveLength(1);
         expect(result.workingEntries[0]).toContain('fresh entry');
         expect(stats.workingEntryCount).toBe(1);
+    });
+
+    it('writes automatic working-memory summaries without duplicating the latest entry', () => {
+        const cwd = createTempDir();
+
+        const first = runWriteAutoWorkingNotepadCommand({
+            prompt: 'Fix the HTTP approval bridge so remote sessions can resume after approvals.',
+            response: 'Implemented remote approval resolution, added tests, and verified the HTTP stream path.',
+        }, { cwd }, { writeOutput: () => {} });
+        const second = runWriteAutoWorkingNotepadCommand({
+            prompt: 'Fix the HTTP approval bridge so remote sessions can resume after approvals.',
+            response: 'Implemented remote approval resolution, added tests, and verified the HTTP stream path.',
+        }, { cwd }, { writeOutput: () => {} });
+
+        expect(first.changed).toBe(true);
+        expect(second.changed).toBe(false);
+        expect(first.workingEntries).toHaveLength(1);
+        expect(first.workingEntries[0]).toContain('Task: Fix the HTTP approval bridge');
+        expect(first.workingEntries[0]).toContain('Outcome: Implemented remote approval resolution');
     });
 });
 

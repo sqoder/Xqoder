@@ -14,6 +14,7 @@ import {
     type TaskMode,
     type XQoderConfig,
 } from '@xqoder/shared';
+import { getMarkdownAgentDefinition } from './markdown-agents.js';
 
 export interface BuiltInAgentDefinition {
     name: string;
@@ -30,6 +31,7 @@ export interface ResolvedAgentRuntimeConfig {
     systemPrompt: string;
     instructions: string[];
     tools?: string[];
+    disallowedTools?: string[];
     cwd?: string;
     permissionMode?: AgentPermissionMode;
 }
@@ -139,23 +141,29 @@ export function resolveAgentRuntimeConfig(
         modelOverride?: string;
         promptOverride?: string;
         promptAppendix?: string;
+        cwd?: string;
     } = {},
 ): ResolvedAgentRuntimeConfig {
     const normalizedName = agentName.trim() || resolveDefaultAgentName(config);
     const builtIn = getBuiltInAgentDefinition(normalizedName);
+    const markdownAgent = getMarkdownAgentDefinition(normalizedName, options.cwd);
     const configured = config.agents?.[normalizedName] ?? {};
     const useSmallModel = configured.useSmallModel
         ?? builtIn?.defaultUseSmallModel
         ?? false;
+    const resolvedModel = options.modelOverride
+        ?? configured.model
+        ?? markdownAgent?.model;
     const llmConfig = useSmallModel
         ? resolveSmallModelConfig(config, configured.provider) ?? resolveAgentLLMConfig(config, normalizedName, {
-            model: options.modelOverride,
+            model: resolvedModel,
         })
         : resolveAgentLLMConfig(config, normalizedName, {
-            model: options.modelOverride,
+            model: resolvedModel,
         });
     const systemPrompt = buildSystemPrompt({
         builtIn,
+        markdownAgent,
         configured,
         globalInstructions: config.instructions ?? [],
         promptOverride: options.promptOverride,
@@ -164,16 +172,17 @@ export function resolveAgentRuntimeConfig(
 
     return {
         name: normalizedName,
-        mode: configured.mode ?? builtIn?.mode ?? 'primary',
+        mode: configured.mode ?? markdownAgent?.mode ?? builtIn?.mode ?? 'primary',
         llmConfig,
         systemPrompt,
         instructions: [
             ...(config.instructions ?? []),
             ...(configured.instructions ?? []),
         ],
-        tools: configured.tools,
+        tools: configured.tools ?? markdownAgent?.tools,
+        disallowedTools: markdownAgent?.disallowedTools,
         cwd: configured.cwd,
-        permissionMode: configured.permissionMode,
+        permissionMode: configured.permissionMode ?? markdownAgent?.permissionMode,
     };
 }
 
@@ -203,7 +212,14 @@ export function buildAgentConfigFromXQoderConfig(
             modelOverride: options.modelOverride,
             promptOverride: options.promptOverride,
             promptAppendix: options.promptAppendix,
+            cwd: options.cwd ?? options.projectRoot,
         },
+    );
+    const permissions = mergeAgentPermissionRestrictions(
+        options.permissionsOverride ?? config.permissions,
+        runtime.tools,
+        runtime.disallowedTools,
+        runtime.permissionMode,
     );
 
     return {
@@ -220,7 +236,7 @@ export function buildAgentConfigFromXQoderConfig(
         session: options.session,
         sessionTitle: options.sessionTitle,
         autoApproveTools: options.autoApproveTools,
-        permissions: options.permissionsOverride ?? config.permissions,
+        permissions,
         disableAllHooks: config.disableAllHooks,
         hooks: config.hooks,
         compaction: config.compaction,
@@ -234,13 +250,16 @@ export function buildAgentConfigFromXQoderConfig(
 
 function buildSystemPrompt(options: {
     builtIn?: BuiltInAgentDefinition;
+    markdownAgent?: {
+        prompt: string;
+    };
     configured: AgentSettings;
     globalInstructions: string[];
     promptOverride?: string;
     promptAppendix?: string;
 }): string {
     const sections = [
-        options.builtIn?.systemPrompt,
+        options.markdownAgent?.prompt ?? options.builtIn?.systemPrompt,
         options.configured.prompt,
         options.promptOverride,
         formatInstructions('Global Instructions', options.globalInstructions),
@@ -260,4 +279,71 @@ function formatInstructions(title: string, instructions: string[]): string | und
         `${title}:`,
         ...instructions.map((entry) => `- ${entry}`),
     ].join('\n');
+}
+
+function mergeAgentPermissionRestrictions(
+    base: PermissionSettings | undefined,
+    allowedTools: string[] | undefined,
+    disallowedTools: string[] | undefined,
+    permissionMode: AgentPermissionMode | undefined,
+): PermissionSettings | undefined {
+    const nextAllowedTools = mergeAllowedTools(base?.allowedTools, allowedTools);
+    const nextDisallowedTools = mergeToolLists(base?.disallowedTools, disallowedTools);
+    const nextDefaultMode = normalizeAgentDefaultPermissionMode(permissionMode);
+
+    if (!base && nextAllowedTools.length === 0 && nextDisallowedTools.length === 0 && !nextDefaultMode) {
+        return undefined;
+    }
+
+    return {
+        ...(base ?? {}),
+        ...(nextDefaultMode ? { defaultMode: nextDefaultMode } : {}),
+        ...(nextAllowedTools.length > 0 ? { allowedTools: nextAllowedTools } : {}),
+        ...(nextDisallowedTools.length > 0 ? { disallowedTools: nextDisallowedTools } : {}),
+    };
+}
+
+function normalizeAgentDefaultPermissionMode(
+    permissionMode: AgentPermissionMode | undefined,
+): AgentPermissionMode | undefined {
+    return permissionMode && permissionMode !== 'default'
+        ? permissionMode
+        : undefined;
+}
+
+function mergeAllowedTools(
+    base: string[] | undefined,
+    agentTools: string[] | undefined,
+): string[] {
+    const normalizedBase = normalizeToolList(base);
+    const normalizedAgent = normalizeToolList(agentTools);
+
+    if (normalizedAgent.length === 0) {
+        return normalizedBase;
+    }
+
+    if (normalizedBase.length === 0) {
+        return normalizedAgent;
+    }
+
+    const agentSet = new Set(normalizedAgent);
+    return normalizedBase.filter((tool) => agentSet.has(tool));
+}
+
+function mergeToolLists(
+    left: string[] | undefined,
+    right: string[] | undefined,
+): string[] {
+    return Array.from(new Set([
+        ...normalizeToolList(left),
+        ...normalizeToolList(right),
+    ]));
+}
+
+function normalizeToolList(
+    values: string[] | undefined,
+): string[] {
+    return (values ?? [])
+        .map((value) => value.trim())
+        .filter(Boolean);
 }

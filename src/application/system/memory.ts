@@ -15,11 +15,14 @@ export interface MemoryCommandDependencies {
 export interface MemoryPaths {
     cwd: string;
     claudePath: string;
+    claudeCompatPath: string;
+    preferredClaudePath: string;
     legacyPath: string;
 }
 
 export interface MemorySnapshot extends MemoryPaths {
     claudeExists: boolean;
+    claudeCompatExists: boolean;
     legacyExists: boolean;
     activePath: string;
     activeExists: boolean;
@@ -56,9 +59,13 @@ const DEFAULT_CLAUDE_MD = [
 
 export function resolveMemoryPaths(cwd: string): MemoryPaths {
     const resolvedCwd = path.resolve(cwd);
+    const claudePath = path.join(resolvedCwd, 'CLAUDE.md');
+    const claudeCompatPath = path.join(resolvedCwd, '.claude', 'CLAUDE.md');
     return {
         cwd: resolvedCwd,
-        claudePath: path.join(resolvedCwd, 'CLAUDE.md'),
+        claudePath,
+        claudeCompatPath,
+        preferredClaudePath: claudePath,
         legacyPath: path.join(resolvedCwd, 'XQoder.md'),
     };
 }
@@ -71,14 +78,24 @@ export function createMemorySnapshot(
     const loaded = manager.load({ cwd: paths.cwd });
     const { config } = resolveConfigWithEnvOverrides(loaded);
     const claudeExists = fs.existsSync(paths.claudePath);
+    const claudeCompatExists = fs.existsSync(paths.claudeCompatPath);
     const legacyExists = fs.existsSync(paths.legacyPath);
-    const activePath = claudeExists ? paths.claudePath : paths.legacyPath;
+    const preferredClaudePath = claudeExists || !claudeCompatExists
+        ? paths.claudePath
+        : paths.claudeCompatPath;
+    const activePath = claudeExists
+        ? paths.claudePath
+        : claudeCompatExists
+            ? paths.claudeCompatPath
+            : paths.legacyPath;
     const activeExists = fs.existsSync(activePath);
     const content = activeExists ? fs.readFileSync(activePath, 'utf-8') : '';
 
     return {
         ...paths,
         claudeExists,
+        claudeCompatExists,
+        preferredClaudePath,
         legacyExists,
         activePath,
         activeExists,
@@ -102,6 +119,7 @@ export function runShowMemoryCommand(
     const lines = [
         `cwd=${snapshot.cwd}`,
         `claude=${snapshot.claudePath} exists=${snapshot.claudeExists ? 'yes' : 'no'}`,
+        `claude_compat=${snapshot.claudeCompatPath} exists=${snapshot.claudeCompatExists ? 'yes' : 'no'}`,
         `legacy=${snapshot.legacyPath} exists=${snapshot.legacyExists ? 'yes' : 'no'}`,
         `active=${snapshot.activePath} exists=${snapshot.activeExists ? 'yes' : 'no'}`,
         `contextPaths=${snapshot.contextPaths.join(', ') || '-'}`,
@@ -122,15 +140,15 @@ export function runMemoryPathCommand(
     options: MemoryCommandOutputOptions = {},
     dependencies: MemoryCommandDependencies = {},
 ): MemoryPaths {
-    const paths = resolveMemoryPaths(options.cwd ?? process.cwd());
+    const activePaths = createMemorySnapshot(options);
 
     if (options.json) {
-        writeOutput(JSON.stringify(paths, null, 2), dependencies);
+        writeOutput(JSON.stringify(activePaths, null, 2), dependencies);
     } else {
-        writeOutput(paths.claudePath, dependencies);
+        writeOutput(activePaths.preferredClaudePath, dependencies);
     }
 
-    return paths;
+    return activePaths;
 }
 
 export function runInitMemoryCommand(
@@ -139,7 +157,7 @@ export function runInitMemoryCommand(
 ): MemoryWriteResult {
     const snapshot = createMemorySnapshot(options);
 
-    if (snapshot.claudeExists && !options.force) {
+    if ((snapshot.claudeExists || snapshot.claudeCompatExists) && !options.force) {
         const unchanged: MemoryWriteResult = {
             ...snapshot,
             action: 'init',
@@ -154,7 +172,8 @@ export function runInitMemoryCommand(
         ? fs.readFileSync(snapshot.legacyPath, 'utf-8')
         : DEFAULT_CLAUDE_MD;
 
-    fs.writeFileSync(snapshot.claudePath, nextContent, 'utf-8');
+    fs.mkdirSync(path.dirname(snapshot.preferredClaudePath), { recursive: true });
+    fs.writeFileSync(snapshot.preferredClaudePath, nextContent, 'utf-8');
 
     const result: MemoryWriteResult = {
         ...createMemorySnapshot(options),
@@ -182,7 +201,7 @@ export function runMigrateMemoryCommand(
         return unchanged;
     }
 
-    if (snapshot.claudeExists && !options.force) {
+    if ((snapshot.claudeExists || snapshot.claudeCompatExists) && !options.force) {
         const unchanged: MemoryWriteResult = {
             ...snapshot,
             action: 'migrate',
@@ -193,7 +212,8 @@ export function runMigrateMemoryCommand(
         return unchanged;
     }
 
-    fs.writeFileSync(snapshot.claudePath, fs.readFileSync(snapshot.legacyPath, 'utf-8'), 'utf-8');
+    fs.mkdirSync(path.dirname(snapshot.preferredClaudePath), { recursive: true });
+    fs.writeFileSync(snapshot.preferredClaudePath, fs.readFileSync(snapshot.legacyPath, 'utf-8'), 'utf-8');
 
     const result: MemoryWriteResult = {
         ...createMemorySnapshot(options),
@@ -224,11 +244,14 @@ function writeMemoryWriteResult(
         return;
     }
 
+    const outputPath = result.activeExists
+        ? result.activePath
+        : result.preferredClaudePath;
     const detail = result.changed
-        ? `${result.action} completed path=${result.claudePath} migratedFromLegacy=${result.migratedFromLegacy ? 'yes' : 'no'}`
+        ? `${result.action} completed path=${outputPath} migratedFromLegacy=${result.migratedFromLegacy ? 'yes' : 'no'}`
         : result.action === 'migrate'
             ? 'No migration performed.'
-            : `CLAUDE.md already exists: ${result.claudePath}`;
+            : `CLAUDE.md already exists: ${outputPath}`;
     writeOutput(detail, dependencies);
 }
 

@@ -59,6 +59,9 @@ interface McpReadResourceResultLike {
     }>;
 }
 
+const MCP_RESULT_SECTION_MAX_CHARS = 2_000;
+const MCP_RESULT_MAX_CHARS = 4_000;
+
 export function buildRoots(projectRoot: string, allowedPaths: string[] = []): Array<{ uri: string; name: string }> {
     const roots = [projectRoot, ...allowedPaths];
     const unique = Array.from(new Set(roots.map((entry) => path.resolve(entry))));
@@ -239,7 +242,7 @@ export function formatToolCallResult(result: McpCallToolResultLike): string {
     if (Array.isArray(result.content)) {
         for (const item of result.content) {
             if (item.type === 'text' && typeof item.text === 'string') {
-                sections.push(item.text);
+                sections.push(truncateMcpResultText(item.text));
                 continue;
             }
 
@@ -256,7 +259,7 @@ export function formatToolCallResult(result: McpCallToolResultLike): string {
         sections.push(safeStringify(result.structuredContent));
     }
 
-    return sections.filter(Boolean).join('\n\n') || '(empty MCP result)';
+    return truncateMcpResultText(sections.filter(Boolean).join('\n\n'), MCP_RESULT_MAX_CHARS) || '(empty MCP result)';
 }
 
 export function formatPromptList(prompts: McpPromptDescriptorLike[]): string {
@@ -264,7 +267,7 @@ export function formatPromptList(prompts: McpPromptDescriptorLike[]): string {
         return 'No MCP prompts available.';
     }
 
-    return prompts.map((prompt) => {
+    const output = prompts.map((prompt) => {
         const args = (prompt.arguments ?? [])
             .map((argument) => `${argument.name}${argument.required ? '*' : ''}`)
             .join(', ');
@@ -275,6 +278,7 @@ export function formatPromptList(prompts: McpPromptDescriptorLike[]): string {
             `Arguments: ${args || '(none)'}`,
         ].filter(Boolean).join('\n');
     }).join('\n\n');
+    return truncateMcpResultText(output, MCP_RESULT_MAX_CHARS);
 }
 
 export function formatPromptResult(promptName: string, result: McpGetPromptResultLike): string {
@@ -285,7 +289,7 @@ export function formatPromptResult(promptName: string, result: McpGetPromptResul
 
     const messages = (result.messages ?? []).map((message, index) => {
         const role = typeof message.role === 'string' ? message.role : `message_${index + 1}`;
-        return `${role}: ${formatPromptMessageContent(message.content)}`;
+        return `${role}: ${truncateMcpResultText(formatPromptMessageContent(message.content))}`;
     });
 
     if (messages.length > 0) {
@@ -293,7 +297,7 @@ export function formatPromptResult(promptName: string, result: McpGetPromptResul
         sections.push(messages.join('\n\n'));
     }
 
-    return sections.join('\n\n');
+    return truncateMcpResultText(sections.join('\n\n'), MCP_RESULT_MAX_CHARS);
 }
 
 export function formatResourceIndex(
@@ -320,7 +324,7 @@ export function formatResourceIndex(
         ].filter(Boolean).join('\n')).join('\n\n')
         : 'Resource Templates: (none)');
 
-    return sections.join('\n\n');
+    return truncateMcpResultText(sections.join('\n\n'), MCP_RESULT_MAX_CHARS);
 }
 
 export function formatReadResourceResult(uri: string, result: McpReadResourceResultLike): string {
@@ -329,14 +333,14 @@ export function formatReadResourceResult(uri: string, result: McpReadResourceRes
         return `Resource: ${uri}\n\n(empty resource)`;
     }
 
-    return contents.map((entry) => {
+    const output = contents.map((entry) => {
         const parts = [
             `Resource: ${typeof entry.uri === 'string' ? entry.uri : uri}`,
             typeof entry.mimeType === 'string' ? `MIME: ${entry.mimeType}` : '',
         ].filter(Boolean);
 
         if (typeof entry.text === 'string') {
-            parts.push(entry.text);
+            parts.push(truncateMcpResultText(entry.text));
         } else if (typeof entry.blob === 'string') {
             parts.push(`[blob:${entry.blob.length} bytes]`);
         } else {
@@ -345,6 +349,7 @@ export function formatReadResourceResult(uri: string, result: McpReadResourceRes
 
         return parts.join('\n\n');
     }).join('\n\n');
+    return truncateMcpResultText(output, MCP_RESULT_MAX_CHARS);
 }
 
 export function formatNotificationMessage(params: unknown): string {
@@ -367,6 +372,12 @@ export function safeStringify(value: unknown, maxLength = 2_000): string {
     }
 
     return `${raw.slice(0, maxLength)}…`;
+}
+
+function truncateMcpResultText(value: string, maxLength = MCP_RESULT_SECTION_MAX_CHARS): string {
+    return value.length <= maxLength
+        ? value
+        : `${value.slice(0, maxLength)}…`;
 }
 
 function sanitizeAliasSegment(value: string): string {

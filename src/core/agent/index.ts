@@ -19,6 +19,12 @@ export {
     type BuiltInAgentDefinition,
     type ResolvedAgentRuntimeConfig,
 } from './agents.js';
+export {
+    getMarkdownAgentDefinition,
+    listMarkdownAgents,
+    type MarkdownAgentDefinition,
+    type MarkdownAgentSource,
+} from './markdown-agents.js';
 export { type ILLMProvider, BaseLLMProvider, type CompletionRequest, type CompletionResponse } from './llm/provider.js';
 export { OpenAIProvider } from '@xqoder/provider-openai';
 export { AnthropicProvider } from '@xqoder/provider-anthropic';
@@ -72,7 +78,7 @@ export {
 } from './hooks.js';
 export { ReadFileTool, WriteFileTool, PreviewDiffTool, SearchCodeTool } from './tools/file-tools.js';
 export { SourcegraphTool, type SourcegraphParams } from './tools/sourcegraph-tool.js';
-export { ListFilesTool, GlobFilesTool, GrepContentTool } from './tools/discovery-tools.js';
+export { ListFilesTool, GlobFilesTool, GrepContentTool, DiscoverSkillsTool } from './tools/discovery-tools.js';
 export {
     LspCompletionTool,
     createDefaultLspTools,

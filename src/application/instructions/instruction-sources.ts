@@ -29,6 +29,8 @@ const DEFAULT_PROJECT_RULE_CANDIDATES = [
     'XQODER.local.md',
     'CLAUDE.md',
     'CLAUDE.local.md',
+    '.claude/CLAUDE.md',
+    '.claude/CLAUDE.local.md',
     'AGENTS.md',
 ];
 const MAX_RULE_FILE_CHARS = 1_200;
@@ -90,24 +92,8 @@ function readProjectRules(cwd: string, candidates: string[] | undefined): string
         resolvedEntries.push(`${relativePath}:\n${truncate(content, MAX_RULE_FILE_CHARS)}`);
     }
 
-    // 2. Directory-specific rules from .xqoder/rules/*.md
-    const xqoderRulesDir = path.resolve(cwd, '.xqoder', 'rules');
-    if (fs.existsSync(xqoderRulesDir) && fs.statSync(xqoderRulesDir).isDirectory()) {
-        try {
-            const files = fs.readdirSync(xqoderRulesDir);
-            for (const file of files) {
-                if (file.endsWith('.md')) {
-                    const absolutePath = path.join(xqoderRulesDir, file);
-                    const content = fs.readFileSync(absolutePath, 'utf-8').trim();
-                    if (content) {
-                        resolvedEntries.push(`.xqoder/rules/${file}:\n${truncate(content, MAX_RULE_FILE_CHARS)}`);
-                    }
-                }
-            }
-        } catch (err) {
-            // ignore readdir errors
-        }
-    }
+    collectRuleDirectoryEntries(cwd, path.resolve(cwd, '.xqoder', 'rules'), '.xqoder/rules', resolvedEntries);
+    collectRuleDirectoryEntries(cwd, path.resolve(cwd, '.claude', 'rules'), '.claude/rules', resolvedEntries);
 
     return resolvedEntries.slice(0, MAX_RULE_FILES + 5); // Allow a few more for specific rules
 }
@@ -140,4 +126,32 @@ function truncate(value: string, maxChars: number): string {
     return value.length > maxChars
         ? `${value.slice(0, maxChars)}...`
         : value;
+}
+
+function collectRuleDirectoryEntries(
+    cwd: string,
+    directory: string,
+    renderedPrefix: string,
+    output: string[],
+): void {
+    if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) {
+        return;
+    }
+
+    try {
+        const files = fs.readdirSync(directory)
+            .filter((file) => file.endsWith('.md'))
+            .sort((left, right) => left.localeCompare(right));
+        for (const file of files) {
+            const absolutePath = path.join(directory, file);
+            const content = fs.readFileSync(absolutePath, 'utf-8').trim();
+            if (!content) {
+                continue;
+            }
+            const relativePath = path.relative(cwd, absolutePath) || `${renderedPrefix}/${file}`;
+            output.push(`${relativePath}:\n${truncate(content, MAX_RULE_FILE_CHARS)}`);
+        }
+    } catch {
+        // ignore readdir errors
+    }
 }

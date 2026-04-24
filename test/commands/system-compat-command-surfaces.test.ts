@@ -73,6 +73,37 @@ describe('memory command compatibility surface', () => {
             content: '# Legacy instructions\n',
         });
     });
+
+    it('returns the Claude compatibility path when only .claude/CLAUDE.md exists', () => {
+        const cwd = createTempDir();
+        const compatPath = path.join(cwd, '.claude', 'CLAUDE.md');
+        const output: string[] = [];
+        const initOutput: string[] = [];
+        const migrateOutput: string[] = [];
+
+        fs.mkdirSync(path.dirname(compatPath), { recursive: true });
+        fs.writeFileSync(compatPath, '# Compat memory\n', 'utf-8');
+        fs.writeFileSync(path.join(cwd, 'XQoder.md'), '# Legacy memory\n', 'utf-8');
+
+        const memoryPath = runMemoryPathCommand({ cwd }, { writeOutput: (line) => output.push(line) });
+        const init = runInitMemoryCommand({ cwd }, { writeOutput: (line) => initOutput.push(line) });
+        const migrate = runMigrateMemoryCommand({ cwd, force: true }, { writeOutput: (line) => migrateOutput.push(line) });
+        const snapshot = runShowMemoryCommand({ cwd, json: true }, { writeOutput: () => {} });
+
+        expect(memoryPath.preferredClaudePath).toBe(compatPath);
+        expect(output[0]).toBe(compatPath);
+        expect(init.changed).toBe(false);
+        expect(initOutput[0]).toContain(compatPath);
+        expect(initOutput[0]).not.toContain(path.join(cwd, 'CLAUDE.md'));
+        expect(migrate.changed).toBe(true);
+        expect(migrateOutput[0]).toContain(compatPath);
+        expect(migrateOutput[0]).not.toContain(path.join(cwd, 'CLAUDE.md'));
+        expect(snapshot).toMatchObject({
+            claudeCompatExists: true,
+            activePath: compatPath,
+            content: '# Legacy memory\n',
+        });
+    });
 });
 
 describe('mcp command compatibility surface', () => {

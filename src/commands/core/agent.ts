@@ -11,7 +11,9 @@ import {
 } from '@xqoder/shared';
 import {
     getBuiltInAgentDefinition,
+    getMarkdownAgentDefinition,
     listBuiltInAgents,
+    listMarkdownAgents,
     resolveAgentRuntimeConfig,
 } from '@xqoder/agent';
 
@@ -40,7 +42,7 @@ interface AgentSetOptions {
 
 interface AgentSummary {
     name: string;
-    source: 'built-in' | 'custom' | 'built-in+custom';
+    source: string;
     mode: AgentMode;
     default: boolean;
     disabled: boolean;
@@ -132,30 +134,36 @@ export function runListAgentsCommand(
     dependencies: AgentCommandDependencies = {},
     manager: Pick<ConfigManager, 'load'> = configManager,
 ): AgentSummary[] {
-    const config = manager.load({ cwd: dependencies.cwd ?? process.cwd() });
+    const resolvedCwd = dependencies.cwd ?? process.cwd();
+    const config = manager.load({ cwd: resolvedCwd });
     const defaultAgent = resolveDefaultAgentName(config);
+    const markdownAgents = listMarkdownAgents(resolvedCwd);
     const names = new Set([
         ...listBuiltInAgents().map((agent) => agent.name),
+        ...markdownAgents.map((agent) => agent.name),
         ...Object.keys(config.agents ?? {}),
     ]);
     const agents = Array.from(names)
         .sort((left, right) => left.localeCompare(right))
         .map((name) => {
             const builtIn = getBuiltInAgentDefinition(name);
+            const markdown = markdownAgents.find((agent) => agent.name === name);
             const configured = config.agents?.[name];
-            const runtime = resolveAgentRuntimeConfig(config, name);
+            const runtime = resolveAgentRuntimeConfig(config, name, { cwd: resolvedCwd });
 
             return {
                 name,
-                source: builtIn
-                    ? (configured ? 'built-in+custom' : 'built-in')
-                    : 'custom',
+                source: describeAgentSource({
+                    builtIn: Boolean(builtIn),
+                    markdown: Boolean(markdown),
+                    configured: Boolean(configured),
+                }),
                 mode: runtime.mode,
                 default: defaultAgent === name,
                 disabled: configured?.disabled === true,
                 provider: runtime.llmConfig.provider,
                 model: runtime.llmConfig.model,
-                description: builtIn?.description,
+                description: builtIn?.description ?? markdown?.description,
             } satisfies AgentSummary;
         });
 
@@ -184,23 +192,28 @@ export function runShowAgentCommand(
     dependencies: AgentCommandDependencies = {},
     manager: Pick<ConfigManager, 'load'> = configManager,
 ): Record<string, unknown> {
-    const config = manager.load({ cwd: dependencies.cwd ?? process.cwd() });
+    const resolvedCwd = dependencies.cwd ?? process.cwd();
+    const config = manager.load({ cwd: resolvedCwd });
     const builtIn = getBuiltInAgentDefinition(name);
+    const markdown = getMarkdownAgentDefinition(name, resolvedCwd);
     const configured = config.agents?.[name];
 
-    if (!builtIn && !configured) {
+    if (!builtIn && !markdown && !configured) {
         throw new Error(`Agent not found: ${name}`);
     }
 
     const payload = {
         name,
         default: resolveDefaultAgentName(config) === name,
-        source: builtIn
-            ? (configured ? 'built-in+custom' : 'built-in')
-            : 'custom',
+        source: describeAgentSource({
+            builtIn: Boolean(builtIn),
+            markdown: Boolean(markdown),
+            configured: Boolean(configured),
+        }),
         builtIn,
+        markdown: markdown ?? null,
         configured: configured ?? null,
-        runtime: resolveAgentRuntimeConfig(config, name),
+        runtime: resolveAgentRuntimeConfig(config, name, { cwd: resolvedCwd }),
     };
 
     if (options.json) {
@@ -214,14 +227,15 @@ export function runShowAgentCommand(
 
 export function runUseAgentCommand(
     name: string,
-    _dependencies: AgentCommandDependencies = {},
+    dependencies: AgentCommandDependencies = {},
     manager: Pick<ConfigManager, 'load' | 'update' | 'save'> = configManager,
 ): void {
     const currentConfig = manager.load({ mode: 'single' });
     const builtIn = getBuiltInAgentDefinition(name);
+    const markdown = getMarkdownAgentDefinition(name, dependencies.cwd ?? process.cwd());
     const configured = currentConfig.agents?.[name];
 
-    if (!builtIn && !configured) {
+    if (!builtIn && !markdown && !configured) {
         throw new Error(`Agent not found: ${name}`);
     }
 
@@ -326,6 +340,20 @@ export const agentCommand = createAgentCommand();
 
 function collectOption(value: string, previous: string[]): string[] {
     return [...previous, value];
+}
+
+function describeAgentSource(input: {
+    builtIn: boolean;
+    markdown: boolean;
+    configured: boolean;
+}): string {
+    const sources = [
+        input.builtIn ? 'built-in' : undefined,
+        input.markdown ? 'markdown' : undefined,
+        input.configured ? 'custom' : undefined,
+    ].filter(Boolean);
+
+    return sources.join('+');
 }
 
 function runAgentAction(action: () => void): void {

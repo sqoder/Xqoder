@@ -55,6 +55,23 @@ describe('instruction resolver', () => {
         expect(resolved.sources[0]?.entries[0]).toContain('Use Bun first.');
     });
 
+    it('loads Claude-compatible rule files from .claude/CLAUDE.md and .claude/rules', () => {
+        const cwd = createTempDir();
+        const claudeDir = path.join(cwd, '.claude');
+        fs.mkdirSync(path.join(claudeDir, 'rules'), { recursive: true });
+        fs.writeFileSync(path.join(claudeDir, 'CLAUDE.md'), 'Project Claude instructions.', 'utf-8');
+        fs.writeFileSync(path.join(claudeDir, 'rules', 'typescript.md'), 'Prefer exact optional property types.', 'utf-8');
+
+        const resolved = resolveInstructionSet({ cwd });
+        const projectRules = resolved.sources.find((source) => source.name === 'project_rules');
+        const combined = projectRules?.entries.join('\n') ?? '';
+
+        expect(combined).toContain('.claude/CLAUDE.md:');
+        expect(combined).toContain('Project Claude instructions.');
+        expect(combined).toContain('.claude/rules/typescript.md:');
+        expect(combined).toContain('Prefer exact optional property types.');
+    });
+
     it('injects priority, working memory, and manual notes from the project notepad', () => {
         const cwd = createTempDir();
         writeNotepad(cwd, [
