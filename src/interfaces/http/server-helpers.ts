@@ -72,6 +72,7 @@ export function listProjectFiles(root: string, limit = 1000): string[] {
         } catch {
             continue;
         }
+        entries.sort((left, right) => left.name.localeCompare(right.name));
         for (const entry of entries) {
             if (files.length >= limit) {
                 break;
