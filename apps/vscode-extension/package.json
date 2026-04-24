@@ -1,0 +1,64 @@
+{
+  "name": "xqoder-vscode-extension",
+  "displayName": "XQoder",
+  "description": "Thin VS Code shell for XQoder chat, approvals, and diff previews",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:xqoder.openChatPanel",
+    "onCommand:xqoder.openDiffPreview"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "xqoder.openChatPanel",
+        "title": "XQoder: Open Chat Panel"
+      },
+      {
+        "command": "xqoder.openDiffPreview",
+        "title": "XQoder: Open Diff Preview"
+      }
+    ],
+    "configuration": {
+      "title": "XQoder",
+      "properties": {
+        "xqoder.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:4096",
+          "description": "Base URL for a running `xqoder serve` process."
+        },
+        "xqoder.basicAuthUser": {
+          "type": "string",
+          "default": "xqoder",
+          "description": "Basic auth username when the XQoder server is protected."
+        },
+        "xqoder.basicAuthPassword": {
+          "type": "string",
+          "default": "",
+          "description": "Basic auth password when the XQoder server is protected."
+        },
+        "xqoder.autoIncludeSelection": {
+          "type": "boolean",
+          "default": true,
+          "description": "Attach the active editor selection to chat prompts."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p ./tsconfig.json",
+    "watch": "tsc -p ./tsconfig.json --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.15",
+    "@types/vscode": "^1.96.0",
+    "typescript": "^5.4.0"
+  }
+}

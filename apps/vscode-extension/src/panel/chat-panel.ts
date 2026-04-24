@@ -611,83 +611,205 @@ export class XQoderChatPanel {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>XQoder</title>
   <style>
-    body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 0; padding: 16px; color: var(--vscode-editor-foreground); background: var(--vscode-editor-background); }
-    .stack { display: grid; gap: 12px; }
-    textarea { width: 100%; min-height: 88px; resize: vertical; border: 1px solid var(--vscode-input-border); background: var(--vscode-input-background); color: var(--vscode-input-foreground); padding: 10px; }
-    button { border: 1px solid var(--vscode-button-border, transparent); background: var(--vscode-button-background); color: var(--vscode-button-foreground); padding: 6px 12px; cursor: pointer; }
-    button.secondary { background: transparent; color: var(--vscode-foreground); border-color: var(--vscode-input-border); }
-    .row { display: flex; gap: 8px; align-items: center; }
-    .muted { opacity: 0.75; font-size: 12px; }
-    .card { border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 10px; background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-editor-foreground) 8%); }
-    .transcript { display: grid; gap: 8px; }
-    .msg-user { border-left: 3px solid var(--vscode-textLink-foreground); padding-left: 8px; }
-    .msg-assistant { border-left: 3px solid var(--vscode-charts-green); padding-left: 8px; }
-    .msg-system { border-left: 3px solid var(--vscode-charts-yellow); padding-left: 8px; }
-    .msg-tool { border-left: 3px solid var(--vscode-charts-blue); padding-left: 8px; }
-    pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; }
+    body {
+      font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif);
+      font-size: var(--vscode-font-size, 13px);
+      line-height: 1.4;
+      margin: 0;
+      padding: 0;
+      color: var(--vscode-editor-foreground);
+      background: var(--vscode-editor-background);
+      overflow-x: hidden;
+    }
+    .container {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    .header {
+      padding: 8px 12px;
+      background: var(--vscode-sideBar-background);
+      border-bottom: 1px solid var(--vscode-panel-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      opacity: 0.8;
+    }
+    .scroll-area {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .input-area {
+      padding: 12px;
+      border-top: 1px solid var(--vscode-panel-border);
+      background: var(--vscode-editor-background);
+    }
+    textarea {
+      width: 100%;
+      min-height: 60px;
+      border: 1px solid var(--vscode-input-border);
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      padding: 8px;
+      resize: vertical;
+      font-family: inherit;
+      font-size: inherit;
+    }
+    textarea:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+    .button-row { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
+    button {
+      border: 1px solid var(--vscode-button-border, transparent);
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      padding: 4px 12px;
+      cursor: pointer;
+    }
+    button:hover { background: var(--vscode-button-hoverBackground); }
+    button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+    button.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
+    .muted { opacity: 0.7; font-size: 11px; }
+    .card {
+      border: 1px solid var(--vscode-panel-border);
+      padding: 10px;
+      background: color-mix(in srgb, var(--vscode-editor-background) 95%, var(--vscode-editor-foreground) 5%);
+    }
+    .msg-user { border-left: 2px solid var(--vscode-textLink-foreground); }
+    .msg-assistant { border-left: 2px solid var(--vscode-charts-green); }
+    .msg-system { opacity: 0.8; font-size: 12px; }
+    .card-header { font-weight: 600; margin-bottom: 4px; font-size: 11px; text-transform: uppercase; }
+    .card-content { white-space: pre-wrap; word-break: break-word; }
+    .diff-preview {
+      margin: 8px 0;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-panel-border);
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 11px;
+      padding: 4px;
+      max-height: 150px;
+      overflow-y: auto;
+      white-space: pre;
+    }
+    .diff-add { color: var(--vscode-charts-green); }
+    .diff-del { color: var(--vscode-charts-red); }
   </style>
 </head>
 <body>
-  <div class="stack">
-    <div class="row">
-      <strong>XQoder</strong>
-      <span id="status" class="muted">idle</span>
-      <span id="session" class="muted"></span>
+  <div class="container">
+    <div class="header">
+      <strong>XQODER</strong>
+      <div>
+        <span id="status">idle</span>
+        <span id="session" style="margin-left: 8px;">session=none</span>
+      </div>
     </div>
-    <textarea id="prompt" placeholder="Ask XQoder to inspect, edit, and verify the current project..."></textarea>
-    <div class="row">
-      <button id="send">Send</button>
-      <span class="muted">Selection is attached automatically when enabled in settings.</span>
+    <div id="scroll-area" class="scroll-area">
+      <div id="transcript" style="display: contents;"></div>
+      <div id="approvals" style="display: contents;"></div>
+      <div id="questions" style="display: contents;"></div>
     </div>
-    <div id="approvals" class="stack"></div>
-    <div id="questions" class="stack"></div>
-    <div id="transcript" class="transcript"></div>
+    <div class="input-area">
+      <textarea id="prompt" placeholder="Ask XQoder..."></textarea>
+      <div class="button-row">
+        <button id="send">Send</button>
+      </div>
+    </div>
   </div>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const status = document.getElementById('status');
     const session = document.getElementById('session');
     const prompt = document.getElementById('prompt');
+    const scrollArea = document.getElementById('scroll-area');
     const transcript = document.getElementById('transcript');
     const approvals = document.getElementById('approvals');
     const questions = document.getElementById('questions');
-    document.getElementById('send').addEventListener('click', () => {
-      vscode.postMessage({ type: 'send-prompt', prompt: prompt.value });
-      prompt.value = '';
+
+    prompt.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        doSend();
+      }
     });
+
+    document.getElementById('send').onclick = doSend;
+
+    function doSend() {
+      const val = prompt.value.trim();
+      if (!val) return;
+      vscode.postMessage({ type: 'send-prompt', prompt: val });
+      prompt.value = '';
+    }
+
     window.addEventListener('message', (event) => {
       const payload = event.data?.payload;
-      if (!payload) {
-        return;
-      }
+      if (!payload) return;
+
       status.textContent = payload.busy ? payload.status + '...' : payload.status;
       session.textContent = payload.sessionId ? 'session=' + payload.sessionId : 'session=none';
-      transcript.innerHTML = payload.transcript.map((entry) => '<div class="card msg-' + entry.role + '"><strong>' + entry.role + '</strong><pre>' + escapeHtml(entry.content) + '</pre></div>').join('');
-      approvals.innerHTML = payload.approvals.map((entry) => '<div class="card"><strong>Approval</strong><div>' + escapeHtml(entry.summary) + '</div><div class="muted">' + escapeHtml(entry.toolName) + (entry.risk ? ' · risk=' + escapeHtml(entry.risk) : '') + '</div><div class="row"><button data-request="' + escapeHtml(entry.requestId) + '" data-decision="allow">Allow</button><button class="secondary" data-request="' + escapeHtml(entry.requestId) + '" data-decision="deny">Deny</button><button class="secondary" data-preview="' + escapeHtml(entry.requestId) + '">Preview</button></div></div>').join('');
-      questions.innerHTML = payload.questions.map((entry) => '<div class="card"><strong>' + escapeHtml(entry.header || 'Question') + '</strong><div>' + escapeHtml(entry.question) + '</div><div class="row">' + entry.options.map((option) => '<button data-question="' + escapeHtml(entry.requestId) + '" data-option="' + escapeHtml(option.label) + '">' + escapeHtml(option.label) + '</button>').join('') + '</div></div>').join('');
-      document.querySelectorAll('[data-decision]').forEach((button) => {
-        button.onclick = () => vscode.postMessage({
-          type: 'resolve-approval',
-          requestId: button.getAttribute('data-request'),
-          decision: button.getAttribute('data-decision'),
-        });
-      });
-      document.querySelectorAll('[data-preview]').forEach((button) => {
-        button.onclick = () => vscode.postMessage({
-          type: 'open-preview',
-          requestId: button.getAttribute('data-preview'),
-        });
-      });
-      document.querySelectorAll('[data-question]').forEach((button) => {
-        button.onclick = () => vscode.postMessage({
-          type: 'resolve-question',
-          requestId: button.getAttribute('data-question'),
-          selected: button.getAttribute('data-option'),
-        });
-      });
+
+      transcript.innerHTML = (payload.transcript || []).map(msg => \`
+        <div class="card msg-\${msg.role}">
+          <div class="card-header">\${msg.role}</div>
+          <div class="card-content">\${escapeHtml(msg.content)}</div>
+        </div>
+      \`).join('');
+
+      approvals.innerHTML = (payload.approvals || []).map(item => \`
+        <div class="card">
+          <div class="card-header">Approval Requested</div>
+          <div>\${escapeHtml(item.summary)}</div>
+          <div class="muted">\${escapeHtml(item.toolName)}\${item.risk ? ' · risk=' + item.risk : ''}</div>
+          \${item.preview ? \`<div class="diff-preview">\${renderDiff(item.preview)}</div>\` : ''}
+          <div class="button-row">
+            <button data-request="\${escapeHtml(item.requestId)}" data-decision="allow">Allow</button>
+            <button class="secondary" data-request="\${escapeHtml(item.requestId)}" data-decision="deny">Deny</button>
+            \${item.preview ? \`<button class="secondary" data-preview="\${escapeHtml(item.requestId)}">Full Diff</button>\` : ''}
+          </div>
+        </div>
+      \`).join('');
+
+      questions.innerHTML = (payload.questions || []).map(item => \`
+        <div class="card">
+          <div class="card-header">\${escapeHtml(item.header || 'Question')}</div>
+          <div>\${escapeHtml(item.question)}</div>
+          <div class="button-row">
+            \${item.options.map(opt => \`<button data-question="\${escapeHtml(item.requestId)}" data-option="\${escapeHtml(opt.label)}">\${escapeHtml(opt.label)}</button>\`).join('')}
+          </div>
+        </div>
+      \`).join('');
+
+      attachListeners();
+      scrollArea.scrollTop = scrollArea.scrollHeight;
     });
+
+    function renderDiff(diff) {
+      return diff.split('\\n').slice(0, 8).map(line => {
+        let cls = '';
+        if (line.startsWith('+')) cls = 'class="diff-add"';
+        else if (line.startsWith('-')) cls = 'class="diff-del"';
+        return \`<div \${cls}>\${escapeHtml(line)}</div>\`;
+      }).join('');
+    }
+
+    function attachListeners() {
+      document.querySelectorAll('[data-decision]').forEach(btn => {
+        btn.onclick = () => vscode.postMessage({ type: 'resolve-approval', requestId: btn.getAttribute('data-request'), decision: btn.getAttribute('data-decision') });
+      });
+      document.querySelectorAll('[data-preview]').forEach(btn => {
+        btn.onclick = () => vscode.postMessage({ type: 'open-preview', requestId: btn.getAttribute('data-preview') });
+      });
+      document.querySelectorAll('[data-question]').forEach(btn => {
+        btn.onclick = () => vscode.postMessage({ type: 'resolve-question', requestId: btn.getAttribute('data-question'), selected: btn.getAttribute('data-option') });
+      });
+    }
+
     function escapeHtml(value) {
-      return String(value ?? '').replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char]));
+      return String(value ?? '').replace(/[&<>"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char]));
     }
   </script>
 </body>
