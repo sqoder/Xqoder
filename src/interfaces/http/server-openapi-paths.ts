@@ -782,6 +782,62 @@ export function createOpenApiPaths() {
                 },
             },
         },
+        '/session/{id}/approval/{requestId}/resolve': {
+            post: {
+                operationId: 'resolveSessionApproval',
+                tags: ['stream'],
+                summary: 'Resolve pending tool approval',
+                parameters: [
+                    { name: 'id', in: 'path', required: true, schema: { type: 'string', minLength: 1 } },
+                    { name: 'requestId', in: 'path', required: true, schema: { type: 'string', minLength: 1 } },
+                ],
+                requestBody: {
+                    required: true,
+                    content: {
+                        'application/json': {
+                            schema: { $ref: '#/components/schemas/SessionApprovalResolveRequest' },
+                            examples: {
+                                allow: {
+                                    summary: 'Allow the pending tool use',
+                                    value: {
+                                        decision: 'allow',
+                                        streamId: 'stream_123',
+                                    },
+                                },
+                                deny: {
+                                    summary: 'Deny the pending tool use',
+                                    value: {
+                                        decision: 'deny',
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                responses: {
+                    200: {
+                        description: 'Approval resolved',
+                        content: {
+                            'application/json': {
+                                schema: { $ref: '#/components/schemas/SessionApprovalResolveResponse' },
+                                examples: {
+                                    resolved: {
+                                        value: {
+                                            ok: true,
+                                            requestId: 'tool-call-123',
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    401: { $ref: '#/components/responses/UnauthorizedError' },
+                    400: { $ref: '#/components/responses/BadRequestError' },
+                    404: { $ref: '#/components/responses/NotFoundError' },
+                    409: { $ref: '#/components/responses/ConflictError' },
+                },
+            },
+        },
         '/session/{id}/stream/{streamId}/cancel': {
             post: {
                 operationId: 'cancelSessionStream',

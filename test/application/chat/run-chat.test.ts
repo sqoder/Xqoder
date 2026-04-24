@@ -1,5 +1,4 @@
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'bun:test';
 import type { ConversationEventEnvelope } from '@xqoder/protocol';
@@ -9,30 +8,25 @@ import {
     runChatMessageStream,
     runNonInteractivePrompt,
 } from '../../../src/application/chat/run-chat.js';
-import type { AgentCallbacks } from '../../../src/core/agent/agent.js';
-import { XQoderAgent } from '../../../src/core/agent/agent.js';
 import { AgentSession } from '../../../src/core/agent/session/session.js';
 import {
-    createMvpTypeErrorDemoProvider,
     createMvpTypeErrorDemoWorkspace,
     MVP_TYPEERROR_DEMO_PROMPT,
 } from '../../../src/core/agent/mvp/demo.js';
 import { FileRollbackStore } from '../../../src/core/agent/tools/rollback-store.js';
-
-const tempDirs: string[] = [];
-const descriptorRestorers: Array<() => void> = [];
+import {
+    captureStream,
+    cleanupRunChatTestState,
+    createAgentWithStreamingUsage,
+    createFakeAgent,
+    createLoadedConfig,
+    createProjectDir,
+    createTempDir,
+    expectStandardEnvelopeShape,
+} from './run-chat.test-support.js';
 
 afterEach(() => {
-    while (descriptorRestorers.length > 0) {
-        descriptorRestorers.pop()?.();
-    }
-
-    while (tempDirs.length > 0) {
-        const dir = tempDirs.pop();
-        if (dir) {
-            fs.rmSync(dir, { recursive: true, force: true });
-        }
-    }
+    cleanupRunChatTestState();
 });
 
 describe('chat runtime helpers', () => {
@@ -92,6 +86,50 @@ describe('chat runtime helpers', () => {
         expect(savedCalls[0]?.projectRoot).toBe(cwd);
         expect(savedCalls[0]?.cwd).toBe(cwd);
         expect(savedCalls[0]?.session).toBe(savedSession);
+    });
+
+    it('writes an automatic working-memory note after a successful persisted turn', async () => {
+        const cwd = createProjectDir();
+
+        await runChatHeadless('Stabilize the remote approval loop.', {
+            dir: cwd,
+        }, {
+            configManager: { load: () => createLoadedConfig('test-key') },
+            sessionStore: {
+                findLatestSession: () => null,
+                getSession: () => null,
+                saveSession: () => ({ id: 'auto-memory-session' }),
+            },
+            agentFactory: () => createFakeAgent({
+                response: 'Remote approval resolution is now wired through the HTTP stream path.',
+            }),
+        });
+
+        const notepadPath = path.join(cwd, '.xqoder', 'notepad.md');
+        const notepad = fs.readFileSync(notepadPath, 'utf-8');
+
+        expect(notepad).toContain('## WORKING MEMORY');
+        expect(notepad).toContain('Task: Stabilize the remote approval loop.');
+        expect(notepad).toContain('Outcome: Remote approval resolution is now wired through the HTTP stream path.');
+    });
+
+    it('does not write automatic working-memory notes when session persistence is disabled', async () => {
+        const cwd = createProjectDir();
+
+        await runNonInteractivePrompt({
+            prompt: 'Keep this ephemeral and do not persist memory.',
+            cwd,
+            outputFormat: 'text',
+            quiet: true,
+            noSessionPersistence: true,
+        }, {
+            configManager: { load: () => createLoadedConfig('test-key') },
+            agentFactory: () => createFakeAgent({
+                response: 'Ephemeral response',
+            }),
+        });
+
+        expect(fs.existsSync(path.join(cwd, '.xqoder', 'notepad.md'))).toBe(false);
     });
 
     it('surfaces the current API key guidance when no key is configured and no injected agent factory is provided', async () => {
@@ -806,175 +844,3 @@ describe('chat runtime helpers', () => {
     });
 
 });
-
-function createLoadedConfig(
-    apiKey: string,
-    options: {
-        provider?: 'openai' | 'local' | 'dashscope';
-        model?: string;
-        permissions?: {
-            defaultMode?: 'allow' | 'ask' | 'deny';
-            tools?: Record<string, 'allow' | 'ask' | 'deny'>;
-            approvalPolicy?: 'strict' | 'balanced' | 'workspace_auto';
-            allowedTools?: string[];
-            disallowedTools?: string[];
-        };
-    } = {},
-) {
-    const provider = options.provider ?? 'openai';
-    const model = options.model ?? 'gpt-4.1';
-
-    return {
-        llm: {
-            provider,
-            model,
-            apiKey,
-        },
-        providers: {
-            [provider]: {
-                apiKey,
-                defaultModel: model,
-                ...(provider === 'local'
-                    ? { baseUrl: 'http://localhost:11434/v1' }
-                    : {}),
-            },
-        },
-        defaultAgent: 'general',
-        agents: {
-            general: {
-                mode: 'primary',
-                provider,
-                model,
-            },
-        },
-        sandbox: {
-            mode: 'project',
-            allowedPaths: [],
-        },
-        ...(options.permissions
-            ? {
-                permissions: options.permissions,
-            }
-            : {}),
-    };
-}
-
-function createFakeAgent(options: {
-    response?: string;
-    session?: Record<string, unknown>;
-    onRun?: (
-        prompt: string,
-        callbacks?: AgentCallbacks,
-        attachments?: Array<Record<string, unknown>>,
-    ) => void | Promise<void>;
-}) {
-    return {
-        async run(
-            prompt: string,
-            callbacks?: AgentCallbacks,
-            attachments?: Array<Record<string, unknown>>,
-        ) {
-            if (options.onRun) {
-                await options.onRun(prompt, callbacks, attachments);
-            } else if (options.response) {
-                callbacks?.onToken?.(options.response);
-            }
-
-            return options.response ?? '';
-        },
-        getSession() {
-            return options.session ?? { id: 'agent-session' };
-        },
-        async dispose() {},
-    };
-}
-
-function createAgentWithStreamingUsage(config: Record<string, unknown>): XQoderAgent {
-    return new XQoderAgent({
-        ...(config as any),
-        providerFactory: async () => ({
-            name: 'fake-provider',
-            model: 'fake-model',
-            async complete() {
-                throw new Error('complete() should not be used');
-            },
-            async stream(_request: unknown, callbacks?: AgentCallbacks) {
-                callbacks?.onToken?.('USAGE_');
-                callbacks?.onToken?.('CHAIN');
-                return {
-                    finishReason: 'stop',
-                    message: {
-                        role: 'assistant',
-                        content: 'USAGE_CHAIN',
-                    },
-                    usage: {
-                        promptTokens: 17,
-                        completionTokens: 4,
-                        totalTokens: 21,
-                    },
-                };
-            },
-        }),
-    });
-}
-
-function createProjectDir(): string {
-    const cwd = createTempDir();
-    fs.writeFileSync(path.join(cwd, 'README.md'), '# Demo Project\n\nA sample app.\n', 'utf-8');
-    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
-        name: 'demo-project',
-        description: 'Sample terminal app',
-        scripts: {
-            build: 'bun run build',
-            test: 'bun test',
-        },
-    }, null, 2));
-    return cwd;
-}
-
-function createTempDir(): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-run-chat-'));
-    tempDirs.push(dir);
-    return dir;
-}
-
-function captureStream<
-    T extends { [K in P]: (...args: any[]) => unknown },
-    P extends keyof T,
->(target: T, property: P): { value: string } {
-    const previous = Object.getOwnPropertyDescriptor(target, property);
-    const captured = { value: '' };
-
-    Object.defineProperty(target, property, {
-        configurable: true,
-        value: ((chunk: unknown) => {
-            captured.value += String(chunk ?? '');
-            return true;
-        }) as T[P],
-    });
-
-    descriptorRestorers.push(() => {
-        if (previous) {
-            Object.defineProperty(target, property, previous);
-            return;
-        }
-        delete (target as Record<string, unknown>)[property as string];
-    });
-
-    return captured;
-}
-
-function expectStandardEnvelopeShape(
-    event: ConversationEventEnvelope | undefined,
-    type: ConversationEventEnvelope['type'],
-): void {
-    expect(event).toMatchObject({
-        schemaVersion: 1,
-        type,
-        eventId: expect.any(String),
-        sessionId: expect.any(String),
-        turnId: expect.any(String),
-        timestamp: expect.any(String),
-        payload: expect.any(Object),
-    });
-}

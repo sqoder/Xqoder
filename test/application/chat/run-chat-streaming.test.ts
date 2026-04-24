@@ -77,6 +77,44 @@ describe('chat runtime stream and routing helpers', () => {
         });
     });
 
+    it('handles permission-denied canonical stream turns without leaking unhandled rejections', async () => {
+        const cwd = createTempDir();
+        const events: ConversationEventEnvelope[] = [];
+
+        await expect(runChatMessageStream({
+            prompt: 'inspect working memory paths',
+            cwd,
+            startNewSession: true,
+            onEvent: (event) => {
+                events.push(event);
+            },
+        }, {
+            configManager: { load: () => createLoadedConfig('test-key') },
+            sessionStore: {
+                findLatestSession: () => null,
+                getSession: () => null,
+                saveSession: () => ({ id: 'canonical-permission-denied-summary' }),
+            },
+            agentFactory: (config) => createAgentWithStreamingPermissionDenied(config),
+        })).rejects.toThrow('Tool "run_shell" is not available in the current execution capability (read_only)');
+
+        await Promise.resolve();
+
+        expect(events.find((event) => event.type === 'error')).toMatchObject({
+            type: 'error',
+            payload: {
+                stopReason: 'permission_denied',
+            },
+        });
+        expect(events.at(-1)).toMatchObject({
+            type: 'status.changed',
+            payload: {
+                status: 'error',
+                stopReason: 'permission_denied',
+            },
+        });
+    });
+
     it('emits usage app events through the real provider -> engine -> stream chain', async () => {
         const cwd = createTempDir();
         const events: ConversationEventEnvelope[] = [];
@@ -111,6 +149,127 @@ describe('chat runtime stream and routing helpers', () => {
                 totalTokens: 21,
             },
         });
+    });
+
+    it('emits approval events and continues legacy agent.run turns after approval resolves', async () => {
+        const cwd = createTempDir();
+        const events: ConversationEventEnvelope[] = [];
+        const approvalRequests: Array<Parameters<NonNullable<AgentCallbacks['onToolApproval']>>[0]> = [];
+
+        const result = await runChatMessageStream({
+            prompt: 'approve the legacy tool',
+            cwd,
+            startNewSession: true,
+            onEvent: (event) => {
+                events.push(event);
+            },
+            requestToolApproval: async (request) => {
+                approvalRequests.push(request);
+                return true;
+            },
+        }, {
+            configManager: { load: () => createLoadedConfig('test-key') },
+            sessionStore: {
+                findLatestSession: () => null,
+                getSession: () => null,
+                saveSession: () => ({ id: 'legacy-approval-summary' }),
+            },
+            agentFactory: () => createFakeAgent({
+                async onRun(_prompt, callbacks) {
+                    const approved = await callbacks?.onToolApproval?.({
+                        toolCallId: 'legacy-tool-call-1',
+                        toolName: 'write_file',
+                        summary: 'Write src/legacy.ts',
+                        risk: 'high',
+                    });
+                    if (approved) {
+                        callbacks?.onToken?.('APPROVAL_CONTINUED');
+                    }
+                },
+                response: 'APPROVAL_CONTINUED',
+            }),
+        });
+
+        expect(result).toEqual({
+            response: 'APPROVAL_CONTINUED',
+            sessionId: 'legacy-approval-summary',
+        });
+        expect(approvalRequests).toEqual([
+            expect.objectContaining({
+                toolCallId: 'legacy-tool-call-1',
+                toolName: 'write_file',
+                summary: 'Write src/legacy.ts',
+            }),
+        ]);
+        expect(events.find((event) => event.type === 'approval.requested')).toMatchObject({
+            type: 'approval.requested',
+            payload: {
+                requestId: 'legacy-tool-call-1',
+                summary: 'Write src/legacy.ts',
+            },
+        });
+        expect(events.find((event) => event.type === 'approval.resolved')).toMatchObject({
+            type: 'approval.resolved',
+            payload: {
+                requestId: 'legacy-tool-call-1',
+                decision: 'allow',
+            },
+        });
+        expect(events.find((event) => event.type === 'message.delta')).toMatchObject({
+            type: 'message.delta',
+            payload: {
+                text: 'APPROVAL_CONTINUED',
+            },
+        });
+    });
+
+    it('writes automatic working-memory notes after canonical stream turns', async () => {
+        const cwd = createTempDir();
+
+        const result = await runChatMessageStream({
+            prompt: 'remember the canonical stream completion',
+            cwd,
+            startNewSession: true,
+            onEvent: () => {},
+        }, {
+            configManager: { load: () => createLoadedConfig('test-key') },
+            sessionStore: {
+                findLatestSession: () => null,
+                getSession: () => null,
+                saveSession: () => ({ id: 'canonical-memory-summary' }),
+            },
+            agentFactory: (config) => createAgentWithStreamingUsage(config),
+        });
+
+        const notepad = fs.readFileSync(path.join(cwd, '.xqoder', 'notepad.md'), 'utf-8');
+
+        expect(result).toEqual({
+            response: 'USAGE_CHAIN',
+            sessionId: 'canonical-memory-summary',
+        });
+        expect(notepad).toContain('Task: remember the canonical stream completion');
+        expect(notepad).toContain('Outcome: USAGE_CHAIN');
+    });
+
+    it('does not write automatic working-memory notes for non-persisted canonical stream turns', async () => {
+        const cwd = createTempDir();
+
+        const result = await runChatMessageStream({
+            prompt: 'do not persist canonical memory',
+            cwd,
+            startNewSession: true,
+            shouldPersistSession: false,
+            onEvent: () => {},
+        }, {
+            configManager: { load: () => createLoadedConfig('test-key') },
+            agentFactory: (config) => createAgentWithStreamingUsage(config),
+        });
+
+        expect(result).toEqual({
+            response: 'USAGE_CHAIN',
+            sessionId: expect.any(String),
+        });
+        expect(fs.existsSync(path.join(cwd, '.xqoder', 'notepad.md'))).toBe(false);
     });
 
     it('maps verification runtime events into verification.completed app events', async () => {
@@ -549,6 +708,39 @@ function createAgentWithStreamingUsage(config: Record<string, unknown>): XQoderA
                         promptTokens: 17,
                         completionTokens: 4,
                         totalTokens: 21,
+                    },
+                };
+            },
+        }),
+    });
+}
+
+function createAgentWithStreamingPermissionDenied(config: Record<string, unknown>): XQoderAgent {
+    return new XQoderAgent({
+        ...(config as any),
+        executionCapability: 'read_only',
+        providerFactory: async () => ({
+            name: 'fake-provider',
+            model: 'fake-model',
+            async complete() {
+                throw new Error('complete() should not be used');
+            },
+            async stream() {
+                return {
+                    finishReason: 'tool_calls',
+                    message: {
+                        role: 'assistant',
+                        content: '',
+                        toolCalls: [{
+                            id: 'permission-denied-run-shell',
+                            name: 'run_shell',
+                            arguments: '{"command":"pwd"}',
+                        }],
+                    },
+                    usage: {
+                        promptTokens: 9,
+                        completionTokens: 2,
+                        totalTokens: 11,
                     },
                 };
             },

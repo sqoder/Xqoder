@@ -20,6 +20,7 @@ import type {
     AgentCallbacks,
     AgentRuntimeProfile,
     AgentSession,
+    ToolApprovalRequest,
 } from '@xqoder/agent';
 import type {
     CompletionRequest,
@@ -367,7 +368,11 @@ async function executeConversationTurn(
 export function streamConversationTurn(
     dependencies: ConversationEngineDependencies,
 ): AsyncIterable<ConversationEventEnvelope> {
-    return createConversationTurnStream(dependencies).events;
+    const stream = createConversationTurnStream(dependencies);
+    // Stream-only callers consume terminal status/error envelopes rather than awaiting the
+    // internal completion promise, so sink rejections here to avoid unhandled promise noise.
+    void stream.completed.catch((): void => undefined);
+    return stream.events;
 }
 
 export async function runConversationTurn(
@@ -574,17 +579,24 @@ function createConversationTurnStream(
                 });
             },
             onToolApproval: async (request) => {
+                const requestId = String((request as { toolCallId?: unknown })?.toolCallId ?? `approval-${Date.now()}`);
+                const normalizedRequest: ToolApprovalRequest = {
+                    ...request,
+                    toolCallId: requestId,
+                    toolName: String((request as { toolName?: unknown })?.toolName ?? 'tool'),
+                    summary: String((request as { summary?: unknown })?.summary ?? 'Tool approval requested'),
+                };
                 emitRecord('approval.requested', {
                     source: 'agent',
-                    requestId: String((request as { toolCallId?: unknown })?.toolCallId ?? `approval-${Date.now()}`),
+                    requestId,
                     kind: 'tool',
-                    summary: String((request as { summary?: unknown })?.summary ?? 'Tool approval requested'),
-                    payload: request as unknown as JsonValue,
+                    summary: normalizedRequest.summary,
+                    payload: normalizedRequest as unknown as JsonValue,
                 });
-                const approved = await Promise.resolve(dependencies.callbacks?.onToolApproval?.(request) ?? true);
+                const approved = await Promise.resolve(dependencies.callbacks?.onToolApproval?.(normalizedRequest) ?? true);
                 emitRecord('approval.resolved', {
                     source: 'agent',
-                    requestId: String((request as { toolCallId?: unknown })?.toolCallId ?? `approval-${Date.now()}`),
+                    requestId,
                     decision: approved ? 'allow' : 'deny',
                 });
                 return approved;

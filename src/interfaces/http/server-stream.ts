@@ -466,7 +466,7 @@ export function createStreamController(options: StreamControllerOptions = {}): S
             sessionId: params.sessionId,
             projectRoot: params.projectRoot,
             message: params.message,
-            attachments: params.attachments,
+            ...(params.attachments ? { attachments: params.attachments } : {}),
             createdAt: Date.now(),
             nextSeq: 1,
             records: [],
@@ -486,7 +486,7 @@ export function createStreamController(options: StreamControllerOptions = {}): S
             projectRoot: params.projectRoot,
             sessionId: params.sessionId,
             message: params.message,
-            attachments: params.attachments,
+            ...(params.attachments ? { attachments: params.attachments } : {}),
             signal: op.abortController.signal,
             onEvent: (event) => {
                 if (isDuplicateStatusEvent(op, event)) {

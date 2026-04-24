@@ -36,6 +36,7 @@ describe('server OpenAPI document', () => {
         expect(paths['/session']).toBeDefined();
         expect(paths['/session/{id}/message/stream']).toBeDefined();
         expect(paths['/session/{id}/question/{requestId}/resolve']).toBeDefined();
+        expect(paths['/session/{id}/approval/{requestId}/resolve']).toBeDefined();
         expect(paths['/doc']).toBeDefined();
         expect(paths['/doc.openapi.json']).toBeDefined();
     });

@@ -13,6 +13,7 @@ import type {
     TuiAgentSettings,
 } from '../../application/agent/index.js';
 import type { ConversationTranscriptEntry } from '../../domain/conversation/messages.js';
+import type { ToolApprovalRequest } from '../../domain/permissions/index.js';
 
 type RemoteStreamWireRecord =
     | {
@@ -75,6 +76,20 @@ export class RemoteTuiAgentService implements RemoteAgentConversationPort {
     ): Promise<void> {
         await this.fetchApi<{ ok: boolean }>(
             `/session/${encodeURIComponent(sessionId)}/question/${encodeURIComponent(requestId)}/resolve`,
+            {
+                method: 'POST',
+                body: JSON.stringify(answer),
+            },
+        );
+    }
+
+    private async postApprovalResolve(
+        sessionId: string,
+        requestId: string,
+        answer: { decision: 'allow' | 'deny'; streamId?: string },
+    ): Promise<void> {
+        await this.fetchApi<{ ok: boolean }>(
+            `/session/${encodeURIComponent(sessionId)}/approval/${encodeURIComponent(requestId)}/resolve`,
             {
                 method: 'POST',
                 body: JSON.stringify(answer),
@@ -277,6 +292,18 @@ export class RemoteTuiAgentService implements RemoteAgentConversationPort {
                             if (record.type === 'event') {
                                 callbacks.onEvent(record.event);
 
+                                if (record.event.type === 'approval.requested') {
+                                    const approvalRequest = toToolApprovalRequest(record.event);
+                                    const approved = callbacks.onToolApproval
+                                        ? await callbacks.onToolApproval(approvalRequest)
+                                        : false;
+                                    await this.postApprovalResolve(activeId, record.event.payload.requestId, {
+                                        decision: approved ? 'allow' : 'deny',
+                                        streamId,
+                                    });
+                                    continue;
+                                }
+
                                 if (record.event.type === 'question.requested') {
                                     const answer = callbacks.onQuestion
                                         ? await callbacks.onQuestion({
@@ -337,4 +364,31 @@ export class RemoteTuiAgentService implements RemoteAgentConversationPort {
             this.activeStreamMeta = null;
         }
     }
+}
+
+function toToolApprovalRequest(event: Extract<AgentRuntimeEvent, { type: 'approval.requested' }>): ToolApprovalRequest {
+    const rawPayload = event.payload.payload;
+    const payload = typeof rawPayload === 'object' && rawPayload !== null
+        ? rawPayload as Record<string, unknown>
+        : {};
+    const risk = payload.risk;
+
+    return {
+        toolCallId: event.payload.requestId,
+        toolName: typeof payload.toolName === 'string' && payload.toolName.trim().length > 0
+            ? payload.toolName
+            : 'tool',
+        summary: typeof payload.summary === 'string' && payload.summary.trim().length > 0
+            ? payload.summary
+            : event.payload.summary,
+        ...(typeof payload.reason === 'string' && payload.reason.trim().length > 0
+            ? { reason: payload.reason }
+            : {}),
+        ...(typeof payload.preview === 'string' && payload.preview.trim().length > 0
+            ? { preview: payload.preview }
+            : {}),
+        ...(risk === 'low' || risk === 'medium' || risk === 'high'
+            ? { risk }
+            : {}),
+    };
 }

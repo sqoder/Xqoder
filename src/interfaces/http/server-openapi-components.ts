@@ -465,7 +465,26 @@ export function createOpenApiComponents() {
                     streamId: { type: 'string', minLength: 1 },
                 },
             },
+            SessionApprovalResolveRequest: {
+                type: 'object',
+                properties: {
+                    decision: {
+                        type: 'string',
+                        enum: ['allow', 'deny'],
+                    },
+                    streamId: { type: 'string', minLength: 1 },
+                },
+                required: ['decision'],
+            },
             SessionQuestionResolveResponse: {
+                type: 'object',
+                properties: {
+                    ok: { type: 'boolean' },
+                    requestId: { type: 'string' },
+                },
+                required: ['ok'],
+            },
+            SessionApprovalResolveResponse: {
                 type: 'object',
                 properties: {
                     ok: { type: 'boolean' },

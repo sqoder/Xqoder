@@ -109,8 +109,8 @@ function buildProviderSnapshot(snapshot: ResolvedConfigSnapshot): {
                 current: provider === activeProvider,
                 authenticated: Boolean(entry?.apiKey),
                 disabled: entry?.disabled ?? false,
-                defaultModel: entry?.defaultModel as string | undefined,
-                baseUrl: entry?.baseUrl as string | undefined,
+                ...(entry?.defaultModel ? { defaultModel: entry.defaultModel as string } : {}),
+                ...(entry?.baseUrl ? { baseUrl: entry.baseUrl as string } : {}),
             };
         }),
     };

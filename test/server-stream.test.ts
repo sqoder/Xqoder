@@ -8,6 +8,7 @@ import type { AppEvent, ConversationEventEnvelope } from '@xqoder/protocol';
 import type { QuestionPrompt } from '@xqoder/plugin-sdk';
 import { runChatMessageStream } from '../src/application/chat/run-chat.js';
 import { XQoderAgent, type AgentCallbacks } from '../src/core/agent/agent.js';
+import type { ToolApprovalRequest } from '../src/domain/permissions/index.js';
 import { createStreamController } from '../src/interfaces/http/server-stream.js';
 
 describe('HTTP stream controller', () => {
@@ -186,6 +187,118 @@ describe('HTTP stream controller', () => {
         await flushAsyncWork();
     });
 
+    it('requires streamId when multiple pending approval requests share the same session/request pair', async () => {
+        patchGlobalTime(1_500);
+
+        const controller = createStreamController({
+            randomId: createDeterministicIdFactory(),
+            questionTimeoutMs: 1_000,
+            streamGcTtlMs: 25,
+        });
+        const approvalRequest = createApprovalRequest();
+
+        const operationA = controller.beginStreamOperation({
+            sessionId: 'session-1',
+            projectRoot: '/project',
+            message: 'a',
+            timeoutMs: 1_000,
+            runMessageStream: async ({ requestToolApproval }) => {
+                await requestToolApproval(approvalRequest);
+                return { response: 'A', sessionId: 'session-1' };
+            },
+        });
+        const operationB = controller.beginStreamOperation({
+            sessionId: 'session-1',
+            projectRoot: '/project',
+            message: 'b',
+            timeoutMs: 1_000,
+            runMessageStream: async ({ requestToolApproval }) => {
+                await requestToolApproval(approvalRequest);
+                return { response: 'B', sessionId: 'session-1' };
+            },
+        });
+
+        await flushAsyncWork();
+
+        const ambiguous = controller.resolveApprovalRequest({
+            sessionId: 'session-1',
+            requestId: approvalRequest.toolCallId!,
+            decision: 'allow',
+        });
+        expect(ambiguous).toEqual({
+            ok: false,
+            status: 409,
+            body: {
+                error: 'Multiple pending approval requests; specify streamId',
+                sessionId: 'session-1',
+                requestId: approvalRequest.toolCallId,
+            },
+        });
+
+        const resolved = controller.resolveApprovalRequest({
+            sessionId: 'session-1',
+            streamId: operationA.id,
+            requestId: approvalRequest.toolCallId!,
+            decision: 'allow',
+        });
+        expect(resolved).toEqual({ ok: true });
+
+        const cancelled = controller.cancelStreamOperation('session-1', operationB.id);
+        expect(cancelled).toEqual({ ok: true, streamId: operationB.id });
+
+        await flushAsyncWork();
+    });
+
+    it('does not resolve approval requests across session boundaries even when streamId is provided', async () => {
+        patchGlobalTime(1_550);
+
+        const controller = createStreamController({
+            randomId: createDeterministicIdFactory(),
+            questionTimeoutMs: 1_000,
+            streamGcTtlMs: 25,
+        });
+        const approvalRequest = createApprovalRequest();
+
+        const operation = controller.beginStreamOperation({
+            sessionId: 'session-1',
+            projectRoot: '/project',
+            message: 'a',
+            timeoutMs: 1_000,
+            runMessageStream: async ({ requestToolApproval }) => {
+                await requestToolApproval(approvalRequest);
+                return { response: 'A', sessionId: 'session-1' };
+            },
+        });
+
+        await flushAsyncWork();
+
+        const wrongSession = controller.resolveApprovalRequest({
+            sessionId: 'session-2',
+            streamId: operation.id,
+            requestId: approvalRequest.toolCallId!,
+            decision: 'allow',
+        });
+        expect(wrongSession).toEqual({
+            ok: false,
+            status: 404,
+            body: {
+                error: 'Approval request not found',
+                sessionId: 'session-2',
+                requestId: approvalRequest.toolCallId,
+            },
+        });
+
+        const resolved = controller.resolveApprovalRequest({
+            sessionId: 'session-1',
+            streamId: operation.id,
+            requestId: approvalRequest.toolCallId!,
+            decision: 'allow',
+        });
+        expect(resolved).toEqual({ ok: true });
+
+        await flushAsyncWork();
+    });
+
     it('aborts active streams and resolves pending questions with fallback selections', async () => {
         patchGlobalTime(2_000);
 
@@ -244,6 +357,56 @@ describe('HTTP stream controller', () => {
             cursor: 1,
             reason: 'Cancelled by client',
         });
+    });
+
+    it('does not resolve question requests across session boundaries even when streamId is provided', async () => {
+        patchGlobalTime(2_050);
+
+        const controller = createStreamController({
+            randomId: createDeterministicIdFactory(),
+            questionTimeoutMs: 1_000,
+            streamGcTtlMs: 25,
+        });
+        const prompt = createQuestionPrompt();
+
+        const operation = controller.beginStreamOperation({
+            sessionId: 'session-1',
+            projectRoot: '/project',
+            message: 'a',
+            timeoutMs: 1_000,
+            runMessageStream: async ({ requestQuestion }) => {
+                await requestQuestion(prompt);
+                return { response: 'A', sessionId: 'session-1' };
+            },
+        });
+
+        await flushAsyncWork();
+
+        const wrongSession = controller.resolveQuestionRequest({
+            sessionId: 'session-2',
+            streamId: operation.id,
+            requestId: prompt.requestId,
+            selected: ['Allow'],
+        });
+        expect(wrongSession).toEqual({
+            ok: false,
+            status: 404,
+            body: {
+                error: 'Question request not found',
+                sessionId: 'session-2',
+                requestId: prompt.requestId,
+            },
+        });
+
+        const resolved = controller.resolveQuestionRequest({
+            sessionId: 'session-1',
+            streamId: operation.id,
+            requestId: prompt.requestId,
+            selected: ['Allow'],
+        });
+        expect(resolved).toEqual({ ok: true });
+
+        await flushAsyncWork();
     });
 
     it('can stream aligned application chat events through the HTTP NDJSON transport', async () => {
@@ -347,6 +510,108 @@ describe('HTTP stream controller', () => {
             cursor: expect.any(Number),
             response: 'HTTP_STREAM',
             sessionId: 'session-1',
+        });
+    });
+
+    it('continues an HTTP chat stream after resolving a legacy agent approval request', async () => {
+        patchGlobalTime(3_250);
+
+        const controller = createStreamController({
+            randomId: createDeterministicIdFactory(),
+            streamGcTtlMs: 25,
+        });
+        const ndjsonStream = new MockServerResponse();
+
+        const operation = controller.beginStreamOperation({
+            sessionId: 'session-approval-chat',
+            projectRoot: '/project',
+            message: 'approve over http',
+            timeoutMs: 1_000,
+            runMessageStream: async ({ projectRoot, sessionId, message, onEvent, requestQuestion, requestToolApproval, signal }) => {
+                return await runChatMessageStream({
+                    prompt: message,
+                    cwd: projectRoot,
+                    entrypoint: 'http',
+                    sessionId,
+                    startNewSession: true,
+                    onEvent,
+                    requestQuestion,
+                    requestToolApproval,
+                    signal,
+                }, {
+                    configManager: {
+                        load: () => createLoadedConfig('test-key'),
+                    },
+                    sessionStore: {
+                        findLatestSession: () => null,
+                        getSession: () => null,
+                        saveSession: () => ({ id: 'session-approval-chat' }),
+                    } as any,
+                    agentFactory: () => ({
+                        async run(_prompt: string, callbacks?: AgentCallbacks) {
+                            const approved = await callbacks?.onToolApproval?.(createApprovalRequest());
+                            if (!approved) {
+                                throw new Error('approval denied');
+                            }
+                            callbacks?.onToken?.('APPROVAL_OK');
+                            return 'APPROVAL_OK';
+                        },
+                        getSession() {
+                            return { id: 'session-approval-chat' } as any;
+                        },
+                        async dispose() {},
+                    }),
+                });
+            },
+        });
+
+        controller.attachStreamSubscriber(
+            operation,
+            ndjsonStream.asResponse(),
+            { 'Access-Control-Allow-Origin': '*' },
+            0,
+        );
+
+        const approvalRecord = await waitForRecord(ndjsonStream, (record) => {
+            const event = (record as { event?: ConversationEventEnvelope }).event;
+            return event?.type === 'approval.requested';
+        });
+        expect(approvalRecord).toMatchObject({
+            type: 'event',
+            streamId: operation.id,
+            event: {
+                type: 'approval.requested',
+                payload: {
+                    requestId: 'tool-call-1',
+                    summary: 'Write src/example.ts',
+                },
+            },
+        });
+
+        const resolved = controller.resolveApprovalRequest({
+            sessionId: 'session-approval-chat',
+            streamId: operation.id,
+            requestId: 'tool-call-1',
+            decision: 'allow',
+        });
+        expect(resolved).toEqual({ ok: true });
+
+        const doneRecord = await waitForRecord(ndjsonStream, (record) => (record as { type?: string }).type === 'done');
+        const records = parseNdjsonWrites(ndjsonStream);
+
+        expect(records.find((record) => {
+            const event = (record as { event?: ConversationEventEnvelope }).event;
+            return event?.type === 'approval.resolved' && event.payload.decision === 'allow';
+        })).toBeDefined();
+        expect(records.find((record) => {
+            const event = (record as { event?: ConversationEventEnvelope }).event;
+            return event?.type === 'message.delta' && event.payload.text === 'APPROVAL_OK';
+        })).toBeDefined();
+        expect(doneRecord).toMatchObject({
+            type: 'done',
+            streamId: operation.id,
+            response: 'APPROVAL_OK',
+            sessionId: 'session-approval-chat',
         });
     });
 
@@ -562,6 +827,16 @@ function createQuestionPrompt(): QuestionPrompt {
     };
 }
 
+function createApprovalRequest(): ToolApprovalRequest {
+    return {
+        toolCallId: 'tool-call-1',
+        toolName: 'write_file',
+        summary: 'Write src/example.ts',
+        preview: 'src/example.ts',
+        risk: 'high',
+    };
+}
+
 function createDeterministicIdFactory(): (prefix: string) => string {
     let counter = 0;
     return (prefix: string) => {
@@ -646,4 +921,19 @@ async function flushAsyncWork(): Promise<void> {
     await Promise.resolve();
     await Promise.resolve();
     await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function waitForRecord(
+    res: MockServerResponse,
+    predicate: (record: unknown) => boolean,
+): Promise<unknown> {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        const record = parseNdjsonWrites(res).find(predicate);
+        if (record) {
+            return record;
+        }
+        await flushAsyncWork();
+    }
+
+    throw new Error(`Timed out waiting for NDJSON record. Current body:\n${res.body}`);
 }

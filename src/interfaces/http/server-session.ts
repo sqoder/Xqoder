@@ -120,7 +120,7 @@ function toConversationSignalsPayload(
             messages: entry.messages,
         })),
         ...selectConversationTranscriptProjectionSources({
-            conversationEventEnvelopes,
+            ...(conversationEventEnvelopes ? { conversationEventEnvelopes } : {}),
             conversationEvents: session.getConversationEvents(),
         }),
     });
@@ -330,7 +330,7 @@ export async function handleMessageRoutes(params: MessageRouteParams): Promise<b
             sessionId,
             requestId,
             decision,
-            streamId: parsedBody.body.streamId,
+            ...(parsedBody.body.streamId ? { streamId: parsedBody.body.streamId } : {}),
         });
         if ('status' in result) {
             jsonResponse(res, result.status, result.body, corsHeaders);
@@ -364,8 +364,8 @@ export async function handleMessageRoutes(params: MessageRouteParams): Promise<b
             sessionId,
             requestId,
             selected,
-            customText: parsedBody.body.customText,
-            streamId: parsedBody.body.streamId,
+            ...(parsedBody.body.customText ? { customText: parsedBody.body.customText } : {}),
+            ...(parsedBody.body.streamId ? { streamId: parsedBody.body.streamId } : {}),
         });
         if ('status' in result) {
             jsonResponse(res, result.status, result.body, corsHeaders);
@@ -406,7 +406,7 @@ export async function handleMessageRoutes(params: MessageRouteParams): Promise<b
                 projectRoot: summary.projectRoot,
                 sessionId,
                 message: message.trim(),
-                attachments: parsedBody.body.attachments,
+                ...(parsedBody.body.attachments ? { attachments: parsedBody.body.attachments } : {}),
             });
             jsonResponse(res, 200, { response: result.response, sessionId: result.sessionId }, corsHeaders);
         } catch (error) {
@@ -462,7 +462,7 @@ export async function handleMessageRoutes(params: MessageRouteParams): Promise<b
                 sessionId,
                 projectRoot: summary.projectRoot,
                 message: message.trim(),
-                attachments: body.attachments,
+                ...(body.attachments ? { attachments: body.attachments } : {}),
                 timeoutMs: streamController.parseTimeoutMs(body.timeoutMs),
                 runMessageStream,
             });

@@ -150,6 +150,72 @@ describe('RemoteTuiAgentService', () => {
         });
     });
 
+    it('resolves remote approval requests with the active stream id', async () => {
+        const calls: FetchCall[] = [];
+        setGlobalFetch(async (input, init) => {
+            const call = toFetchCall(input, init);
+            calls.push(call);
+            const eventEmitter = createConversationEventEnvelopeEmitter('session-1', 'session-1:turn:remote-approval');
+
+            if (call.url.endsWith('/resolve')) {
+                return createJsonResponse({ ok: true });
+            }
+
+            return createNdjsonResponse([
+                {
+                    type: 'event',
+                    streamId: 'stream-approval',
+                    seq: 1,
+                    cursor: 1,
+                    event: eventEmitter.emitRecord('approval.requested', {
+                        source: 'agent',
+                        requestId: 'tool-call-1',
+                        kind: 'tool',
+                        summary: 'Write src/example.ts',
+                        payload: {
+                            toolCallId: 'tool-call-1',
+                            toolName: 'write_file',
+                            summary: 'Write src/example.ts',
+                            preview: 'src/example.ts',
+                            risk: 'high',
+                        },
+                    }),
+                },
+                {
+                    type: 'done',
+                    streamId: 'stream-approval',
+                    seq: 2,
+                    cursor: 2,
+                    sessionId: 'session-1',
+                    response: 'done',
+                },
+            ]);
+        });
+
+        const service = new RemoteTuiAgentService('http://example.test');
+        await service.sendMessage('hello', 'session-1', settings, [], {
+            onEvent() {},
+            onToolApproval: async (request) => {
+                expect(request).toMatchObject({
+                    toolCallId: 'tool-call-1',
+                    toolName: 'write_file',
+                    summary: 'Write src/example.ts',
+                    preview: 'src/example.ts',
+                    risk: 'high',
+                });
+                return true;
+            },
+        });
+
+        const resolveCall = calls.find((call) => call.url.endsWith('/approval/tool-call-1/resolve'));
+        expect(resolveCall?.url).toBe('http://example.test/session/session-1/approval/tool-call-1/resolve');
+        expect(resolveCall?.init?.method).toBe('POST');
+        expect(JSON.parse(String(resolveCall?.init?.body))).toEqual({
+            decision: 'allow',
+            streamId: 'stream-approval',
+        });
+    });
+
     it('propagates cancel requests to the remote stream endpoint once a stream id is known', async () => {
         const calls: FetchCall[] = [];
         let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;

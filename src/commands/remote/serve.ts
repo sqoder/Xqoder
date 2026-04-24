@@ -198,7 +198,7 @@ function createRunMessageStream(
                         params.onEvent(event);
                     },
                     onQuestion: (request) => params.requestQuestion(toQuestionPrompt(request)),
-                    onToolApproval: async () => false,
+                    onToolApproval: (request) => params.requestToolApproval(request),
                 },
             );
 

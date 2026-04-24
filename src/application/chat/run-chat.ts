@@ -46,6 +46,10 @@ import {
     emitDirectChatMessageStream,
     getSessionMessageCount,
 } from './run-chat-events.js';
+import {
+    createStreamToolApprovalHandler,
+    writeAutoWorkingMemoryNote,
+} from './run-chat-stream-helpers.js';
 export {
     buildAutoProjectContext,
     buildChatPromptAppendix,
@@ -532,6 +536,12 @@ async function runPreparedChatMessageStream(
     };
     options.signal?.addEventListener('abort', abortListener, { once: true });
 
+    const requestToolApproval = createStreamToolApprovalHandler({
+        emitEvent,
+        requestToolApproval: options.requestToolApproval,
+        sessionId,
+    });
+
     try {
         const finalResponse = await agent.run(execution.turnInput.preparedPrompt, {
             onIteration: () => {
@@ -622,7 +632,7 @@ async function runPreparedChatMessageStream(
                     status: 'thinking',
                 });
             },
-            onToolApproval: options.requestToolApproval,
+            onToolApproval: requestToolApproval,
             onQuestion: async (prompt) => {
                 emitEvent({
                     type: 'question.requested',
@@ -722,6 +732,7 @@ async function runPreparedChatMessageStream(
 
         recordCompletedWorkflowState(execution, agent.getSession());
         const persistedSessionId = persistChatSession(execution, agent);
+        writeAutoWorkingMemoryNote(execution, resolvedResponse);
         return {
             response: resolvedResponse,
             sessionId: persistedSessionId,
@@ -836,6 +847,7 @@ async function consumeCanonicalAgentStream(
 
         recordCompletedWorkflowState(execution, agent.getSession(), lastTurnId);
         const persistedSessionId = persistChatSession(execution, agent);
+        writeAutoWorkingMemoryNote(execution, assistantResponse);
         return {
             response: assistantResponse,
             sessionId: persistedSessionId,

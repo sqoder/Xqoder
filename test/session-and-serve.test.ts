@@ -259,6 +259,7 @@ describe('serve command helpers', () => {
                 requestId: prompt.requestId,
                 selected: [],
             }),
+            requestToolApproval: async () => false,
         });
 
         expect(streamed).toEqual({

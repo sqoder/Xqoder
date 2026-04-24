@@ -9,6 +9,7 @@ import { getXQoderVersion } from '../../cli/version.js';
 import {
     ExternalLanguageServerManager,
     type AgentSessionStore,
+    type ToolApprovalRequest,
 } from '@xqoder/agent';
 import {
     configManager,
@@ -63,6 +64,7 @@ export interface ServerOptions {
         attachments?: MessageAttachment[];
         onEvent: (event: ConversationEventEnvelope) => void;
         requestQuestion: (prompt: QuestionPrompt) => Promise<QuestionAnswer>;
+        requestToolApproval: (request: ToolApprovalRequest) => Promise<boolean>;
         signal?: AbortSignal;
     }) => Promise<{ response: string; sessionId: string }>;
 }
@@ -168,7 +170,7 @@ export function createServer(options: ServerOptions = {}): http.Server {
             hostname,
             port,
             corsHeaders,
-            shareStore: options.shareStore,
+            ...(options.shareStore ? { shareStore: options.shareStore } : {}),
             loadResolvedConfig,
         })) {
             return;
@@ -249,13 +251,14 @@ export function createServer(options: ServerOptions = {}): http.Server {
                 jsonResponse(res, 400, { error: 'Missing query parameter: query' }, corsHeaders);
                 return;
             }
+            const lspManager = getLspSymbolManager();
             const result = await findProjectSymbols({
                 projectRoot: cwd,
                 rawQuery,
                 kindFilter: String(parsed.query?.kind ?? ''),
                 rawCursor: String(parsed.query?.cursor ?? ''),
                 limit: Number(parsed.query?.limit) || 50,
-                lspManager: getLspSymbolManager(),
+                ...(lspManager ? { lspManager } : {}),
             });
 
             if (result.ok === false) {
@@ -274,7 +277,7 @@ export function createServer(options: ServerOptions = {}): http.Server {
             parsed,
             cwd,
             defaultModel,
-            store,
+            ...(store ? { store } : {}),
             corsHeaders,
         })) {
             return;
@@ -284,9 +287,9 @@ export function createServer(options: ServerOptions = {}): http.Server {
             req,
             res,
             pathParts,
-            store,
-            runMessage,
-            runMessageStream,
+            ...(store ? { store } : {}),
+            ...(runMessage ? { runMessage } : {}),
+            ...(runMessageStream ? { runMessageStream } : {}),
             streamController,
             corsHeaders,
         })) {
