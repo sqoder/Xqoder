@@ -60,7 +60,7 @@ Required result: both commands pass.
 | Full test suite | PASS | `bun test ./test`: 404 pass, 0 fail |
 | Release check | PASS | `bun run release:check` completed build, typecheck, coverage, CLI smoke, MCP live smoke, security hygiene, and size guardrail |
 | Extension development host | PASS | `code` CLI was not in PATH, so the host was launched through `/Applications/Visual Studio Code.app` with `--extensionDevelopmentPath=apps/vscode-extension` and remote debugging on `127.0.0.1:9333` |
-| Runtime bridge | PASS | `bun dist/index.js serve --dir /Users/wangxinglin/Desktop/xqoder-4.23/Xqoder --port 4096 --hostname 127.0.0.1`; `/provider` reported current provider `gemini` and default model `gemini-2.5-flash` |
+| Runtime bridge | PASS | `bun dist/index.js serve --dir /Users/wangxinglin/Desktop/xqoder-4.23/Xqoder --port 4096 --hostname 127.0.0.1`; `/provider` reported the configured provider/model. Phase 8 UI signoff was run with `gemini/gemini-2.5-flash`; follow-up release verification switched the current provider to `dashscope/qwen-plus`. |
 | Approval display | PASS | Protected-path write prompt displayed `APPROVAL REQUESTED`, `write_file · risk=high`, and inline diff in the VS Code webview |
 | Diff preview | PASS | The `Full Diff` action opened the preview for the denied write flow |
 | Deny path | PASS | Clicking `Deny` cleared the pending approval and `.xqoder/vscode-deny-smoke.txt` was not written |
@@ -79,4 +79,14 @@ Required result: both commands pass.
 
 ## Exit Condition
 
-Phase 8 is product-signed for the current environment. The remaining release blocker is outside Phase 8: live golden with Gemini reached only 2/10 because the provider returned repeated 429 rate/quota errors, below the required 7/10 threshold.
+Phase 8 is product-signed for the current environment.
+
+## Release Follow-up
+
+The original live golden run with Gemini reached only 2/10 because the provider returned repeated 429 rate/quota errors. A follow-up live run with DashScope `qwen-plus` cleared that release blocker:
+
+```bash
+DASHSCOPE_API_KEY=<redacted> XQODER_GOLDEN_LIVE=1 XQODER_LLM_PROVIDER=dashscope XQODER_LLM_MODEL=qwen-plus bun run scripts/run-golden-tasks.ts --manifest docs/golden-tasks/xqoder-internal.sample.json --live --model qwen-plus
+```
+
+Result: 10/10 passed, required 7/10, accepted true.
