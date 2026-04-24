@@ -1,4 +1,5 @@
 import type {
+    AgentApprovalRecord,
     AgentConversationEventEnvelope,
     AgentCheckpointRecord,
     AgentConversationEventStoreRecord,
@@ -6,6 +7,7 @@ import type {
     AgentFileChangeEntry,
     AgentSessionCompaction,
     AgentSessionMetadataSnapshot,
+    AgentPendingApprovalRecord,
     AgentToolResultEventStoreRecord,
     AgentToolResultRendererEvent,
     AgentToolResultTranscriptEntry,
@@ -56,6 +58,16 @@ export function normalizeSessionMetadataSnapshot(
             ? source.checkpointHistory
                 .map(normalizeCheckpointRecord)
                 .filter((entry): entry is AgentCheckpointRecord => entry !== null)
+            : [],
+        approvalHistory: Array.isArray(source?.approvalHistory)
+            ? source.approvalHistory
+                .map(normalizeApprovalRecord)
+                .filter((entry): entry is AgentApprovalRecord => entry !== null)
+            : [],
+        pendingApprovals: Array.isArray(source?.pendingApprovals)
+            ? source.pendingApprovals
+                .map(normalizePendingApprovalRecord)
+                .filter((entry): entry is AgentPendingApprovalRecord => entry !== null)
             : [],
         commandHistory: Array.isArray(source?.commandHistory)
             ? source.commandHistory
@@ -329,6 +341,57 @@ function normalizeCheckpointRecord(value: unknown): AgentCheckpointRecord | null
             : 'missing',
         ...(readString(entry.rollbackPointId) ? { rollbackPointId: readString(entry.rollbackPointId) } : {}),
         timestamp,
+    };
+}
+
+function normalizePendingApprovalRecord(value: unknown): AgentPendingApprovalRecord | null {
+    if (typeof value !== 'object' || value === null) {
+        return null;
+    }
+
+    const entry = value as Partial<AgentPendingApprovalRecord>;
+    const requestId = readString(entry.requestId);
+    const kind = readString(entry.kind);
+    const summary = readString(entry.summary);
+    const requestedAt = normalizeDate(entry.requestedAt);
+
+    if (!requestId || !kind || !summary || !requestedAt) {
+        return null;
+    }
+
+    return {
+        requestId,
+        ...(readString(entry.toolCallId) ? { toolCallId: readString(entry.toolCallId) } : {}),
+        ...(readString(entry.toolName) ? { toolName: readString(entry.toolName) } : {}),
+        kind,
+        summary: createTextPreview(summary),
+        ...(readString(entry.reason) ? { reason: createTextPreview(readString(entry.reason)!) } : {}),
+        ...(readString(entry.preview) ? { preview: createTextPreview(readString(entry.preview)!) } : {}),
+        ...(entry.risk === 'low' || entry.risk === 'medium' || entry.risk === 'high'
+            ? { risk: entry.risk }
+            : {}),
+        requestedAt,
+        ...(readString(entry.source) ? { source: readString(entry.source) } : {}),
+        ...(readString(entry.streamId) ? { streamId: readString(entry.streamId) } : {}),
+    };
+}
+
+function normalizeApprovalRecord(value: unknown): AgentApprovalRecord | null {
+    const pending = normalizePendingApprovalRecord(value);
+    if (!pending || typeof value !== 'object' || value === null) {
+        return null;
+    }
+
+    const entry = value as Partial<AgentApprovalRecord>;
+    const resolvedAt = normalizeDate(entry.resolvedAt);
+    if (!resolvedAt || (entry.decision !== 'allow' && entry.decision !== 'ask' && entry.decision !== 'deny')) {
+        return null;
+    }
+
+    return {
+        ...pending,
+        decision: entry.decision,
+        resolvedAt,
     };
 }
 

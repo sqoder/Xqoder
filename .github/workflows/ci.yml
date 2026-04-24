@@ -32,6 +32,12 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - tracked-secret-hygiene
+    env:
+      HAS_DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY != '' }}
+      HAS_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+      HAS_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+      HAS_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY != '' }}
+      HAS_OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY != '' }}
 
     steps:
       - name: Checkout
@@ -52,6 +58,34 @@ jobs:
 
       - name: Release check (build + lint + coverage gate)
         run: bun run release:check
+
+      - name: Export acceptance metrics
+        run: bun run acceptance:metrics
+
+      - name: Upload acceptance metrics artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-metrics
+          path: docs/release/latest-acceptance-metrics.json
+
+      - name: Upload golden task report artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-task-report
+          path: |
+            docs/release/latest-golden-task-report.json
+            docs/release/latest-golden-task-report.md
+
+      - name: Export live acceptance metrics
+        if: ${{ env.HAS_DASHSCOPE_API_KEY == 'true' || env.HAS_OPENAI_API_KEY == 'true' || env.HAS_ANTHROPIC_API_KEY == 'true' || env.HAS_GEMINI_API_KEY == 'true' || env.HAS_OPENROUTER_API_KEY == 'true' }}
+        run: bun run acceptance:metrics:live
+
+      - name: Upload live acceptance metrics artifact
+        if: ${{ env.HAS_DASHSCOPE_API_KEY == 'true' || env.HAS_OPENAI_API_KEY == 'true' || env.HAS_ANTHROPIC_API_KEY == 'true' || env.HAS_GEMINI_API_KEY == 'true' || env.HAS_OPENROUTER_API_KEY == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-acceptance-metrics
+          path: docs/release/latest-live-acceptance-metrics.json
 
       - name: CLI smoke test
         run: bun dist/index.js --help

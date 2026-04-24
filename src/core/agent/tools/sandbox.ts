@@ -1,3 +1,4 @@
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { SandboxMode } from '@xqoder/shared';
 import { isForbiddenCommand } from '../../../domain/permissions/sensitive-paths.js';
@@ -46,11 +47,65 @@ export function resolvePathWithinProject(
     }
 
     const allowedRoots = getAllowedRoots(context);
-    if (!allowedRoots.some((root) => isPathInsideRoot(resolvedPath, root))) {
-        throw new SandboxAccessError(inputPath, resolvedPath, sandboxMode);
+    const candidatePaths = new Set<string>([resolvedPath]);
+    const realPath = resolveRealPathForNearestExistingPath(resolvedPath);
+    if (realPath) {
+        candidatePaths.add(realPath);
+    }
+
+    if (!Array.from(candidatePaths).every((candidatePath) => allowedRoots.some((root) => isPathInsideRoot(candidatePath, root)))) {
+        throw new SandboxAccessError(inputPath, realPath ?? resolvedPath, sandboxMode);
     }
 
     return resolvedPath;
+}
+
+function tryResolveRealPath(targetPath: string): string | null {
+    try {
+        return fs.realpathSync.native(targetPath);
+    } catch {
+        return null;
+    }
+}
+
+function resolveRealPathForNearestExistingPath(targetPath: string): string | null {
+    const pendingSegments: string[] = [];
+    let currentPath = targetPath;
+
+    while (!pathExistsForResolution(currentPath)) {
+        const parentPath = path.dirname(currentPath);
+        if (parentPath === currentPath) {
+            return null;
+        }
+
+        pendingSegments.unshift(path.basename(currentPath));
+        currentPath = parentPath;
+    }
+
+    const realBasePath = tryResolveRealPath(currentPath);
+    if (!realBasePath) {
+        return null;
+    }
+
+    return pendingSegments.length > 0
+        ? path.join(realBasePath, ...pendingSegments)
+        : realBasePath;
+}
+
+function pathExistsForResolution(targetPath: string): boolean {
+    try {
+        fs.lstatSync(targetPath);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function getPathCandidates(targetPath: string): string[] {
+    const realPath = resolveRealPathForNearestExistingPath(targetPath);
+    return realPath && realPath !== targetPath
+        ? [targetPath, realPath]
+        : [targetPath];
 }
 
 export function resolveWorkingDirectory(
@@ -89,6 +144,132 @@ export function validateCommandSafety(command: string): string | undefined {
     return undefined;
 }
 
+export function validateCommandSandbox(
+    command: string,
+    context: {
+        cwd: string;
+        projectRoot: string;
+        sandboxMode?: SandboxMode;
+        allowedPaths?: string[];
+    },
+): string | undefined {
+    const safetyError = validateCommandSafety(command);
+    if (safetyError) {
+        return safetyError;
+    }
+
+    const sensitiveEnvRead = findSensitiveEnvironmentRead(command);
+    if (sensitiveEnvRead) {
+        return `Command rejected by sandbox: sensitive environment variable read (${sensitiveEnvRead})`;
+    }
+
+    const outsideRedirection = findOutsideWorkspaceRedirection(command, context);
+    if (outsideRedirection) {
+        return `Command rejected by sandbox: redirection outside the allowed workspace (${outsideRedirection})`;
+    }
+
+    return undefined;
+}
+
+export function createSandboxedCommandEnv(
+    env: Record<string, string | undefined> | undefined,
+): Record<string, string | undefined> {
+    const allowedProcessKeys = [
+        'PATH',
+        'HOME',
+        'SHELL',
+        'USER',
+        'LOGNAME',
+        'TMPDIR',
+        'TMP',
+        'TEMP',
+        'LANG',
+        'LC_ALL',
+        'TERM',
+        'CI',
+        'FORCE_COLOR',
+        'NO_COLOR',
+    ];
+    const result: Record<string, string | undefined> = {};
+    for (const key of allowedProcessKeys) {
+        if (process.env[key] !== undefined && !isSensitiveEnvKey(key)) {
+            result[key] = process.env[key];
+        }
+    }
+
+    for (const [key, value] of Object.entries(env ?? {})) {
+        if (isSensitiveEnvKey(key)) {
+            continue;
+        }
+        result[key] = value;
+    }
+
+    result['GIT_EDITOR'] = 'true';
+    return result;
+}
+
+function findSensitiveEnvironmentRead(command: string): string | undefined {
+    const directVariable = command.match(/\$([A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Za-z0-9_]*)\b/i);
+    if (directVariable?.[1]) {
+        return directVariable[1];
+    }
+
+    const printenv = command.match(/\b(?:printenv|env)\b[^\n;&|`]*\b([A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Za-z0-9_]*)\b/i);
+    if (printenv?.[1]) {
+        return printenv[1];
+    }
+
+    if (/\b(?:printenv|env|set)\b[^\n;&|`]*\|\s*(?:grep|rg)\b[^\n;&|`]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i.test(command)) {
+        return 'secret-like environment filter';
+    }
+
+    return undefined;
+}
+
+function isSensitiveEnvKey(key: string): boolean {
+    return /(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|COOKIE|SESSION)/i.test(key);
+}
+
+function findOutsideWorkspaceRedirection(
+    command: string,
+    context: {
+        cwd: string;
+        projectRoot: string;
+        sandboxMode?: SandboxMode;
+        allowedPaths?: string[];
+    },
+): string | undefined {
+    const redirectionPattern = /(?:^|\s)(?:\d?>{1,2}|&>|<)\s*(["']?)([^"'\s;&|`]+)\1/g;
+    let match: RegExpExecArray | null;
+    while ((match = redirectionPattern.exec(command)) !== null) {
+        const rawTarget = match[2];
+        if (!rawTarget || rawTarget === '&1' || rawTarget === '&2' || rawTarget.startsWith('/dev/')) {
+            continue;
+        }
+
+        const target = rawTarget.startsWith('~')
+            ? rawTarget
+            : path.isAbsolute(rawTarget)
+                ? path.normalize(rawTarget)
+                : path.resolve(context.cwd, rawTarget);
+
+        if (rawTarget.startsWith('~')) {
+            return rawTarget;
+        }
+
+        try {
+            resolvePathWithinProject(target, context);
+        } catch (error) {
+            if (isSandboxAccessError(error)) {
+                return rawTarget;
+            }
+            throw error;
+        }
+    }
+
+    return undefined;
+}
+
 function getAllowedRoots(context: {
     projectRoot: string;
     allowedPaths?: string[];
@@ -98,7 +279,9 @@ function getAllowedRoots(context: {
         ...(context.allowedPaths ?? []).map((entry) => path.resolve(entry)),
     ];
 
-    return Array.from(new Set(roots));
+    return Array.from(new Set(
+        roots.flatMap((root) => getPathCandidates(root)),
+    ));
 }
 
 function isPathInsideRoot(targetPath: string, rootPath: string): boolean {

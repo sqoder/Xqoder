@@ -76,7 +76,14 @@ export function createServer(options: ServerOptions = {}): http.Server {
     const authUser = options.username ?? 'xqoder';
     const authPass = options.password;
     let lspSymbolManager: ExternalLanguageServerManager | undefined;
-    const streamController = createStreamController();
+    const streamController = createStreamController({
+        onApprovalPending: (record) => {
+            persistPendingApproval(options.sessionStore, record);
+        },
+        onApprovalResolved: (record) => {
+            persistResolvedApproval(options.sessionStore, record);
+        },
+    });
 
     const server = http.createServer(async (req, res) => {
         const parsed = url.parse(req.url ?? '/', true);
@@ -315,4 +322,93 @@ export function createServer(options: ServerOptions = {}): http.Server {
     });
 
     return server;
+}
+
+function persistPendingApproval(
+    store: AgentSessionStore | undefined,
+    record: {
+        sessionId: string;
+        streamId: string;
+        requestId: string;
+        request: ToolApprovalRequest;
+        requestedAt: Date;
+    },
+): void {
+    persistApprovalMutation(store, record.sessionId, (session) => {
+        const risk = record.request.risk;
+        session.recordApprovalRequested({
+            requestId: record.requestId,
+            ...(record.request.toolCallId ? { toolCallId: record.request.toolCallId } : {}),
+            ...(record.request.toolName ? { toolName: record.request.toolName } : {}),
+            kind: 'tool',
+            summary: record.request.summary,
+            ...(record.request.reason ? { reason: record.request.reason } : {}),
+            ...(record.request.preview ? { preview: record.request.preview } : {}),
+            ...(risk === 'low' || risk === 'medium' || risk === 'high' ? { risk } : {}),
+            requestedAt: record.requestedAt,
+            source: 'http',
+            streamId: record.streamId,
+        });
+    });
+}
+
+function persistResolvedApproval(
+    store: AgentSessionStore | undefined,
+    record: {
+        sessionId: string;
+        streamId: string;
+        requestId: string;
+        decision: 'allow' | 'deny';
+        resolvedAt: Date;
+    },
+): void {
+    persistApprovalMutation(store, record.sessionId, (session) => {
+        const pending = session.getPendingApprovals().find((entry) =>
+            entry.requestId === record.requestId
+            && entry.streamId === record.streamId
+        );
+        session.recordApprovalResolved({
+            requestId: record.requestId,
+            ...(pending?.toolCallId ? { toolCallId: pending.toolCallId } : {}),
+            ...(pending?.toolName ? { toolName: pending.toolName } : {}),
+            kind: pending?.kind ?? 'tool',
+            summary: pending?.summary ?? `Approval ${record.requestId}`,
+            ...(pending?.reason ? { reason: pending.reason } : {}),
+            ...(pending?.preview ? { preview: pending.preview } : {}),
+            ...(pending?.risk ? { risk: pending.risk } : {}),
+            decision: record.decision,
+            requestedAt: pending?.requestedAt ?? record.resolvedAt,
+            resolvedAt: record.resolvedAt,
+            source: pending?.source ?? 'http',
+            streamId: record.streamId,
+        });
+    });
+}
+
+function persistApprovalMutation(
+    store: AgentSessionStore | undefined,
+    sessionId: string,
+    mutate: (session: NonNullable<ReturnType<AgentSessionStore['getSession']>>) => void,
+): void {
+    if (!store) {
+        return;
+    }
+
+    const session = store.getSession(sessionId);
+    const summary = store.getSessionSummary(sessionId);
+    if (!session || !summary) {
+        return;
+    }
+
+    mutate(session);
+    store.saveSession({
+        session,
+        projectRoot: summary.projectRoot,
+        cwd: summary.cwd,
+        model: summary.model,
+        title: summary.title,
+        options: {
+            persistLastUserMessage: false,
+        },
+    });
 }

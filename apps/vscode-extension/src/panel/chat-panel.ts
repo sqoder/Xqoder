@@ -1,19 +1,19 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { showApprovalDiffPreview } from '../review/diff-view';
+import {
+    getApprovalKey,
+    resolveApprovalTarget,
+    toPanelApproval,
+    toPendingApproval,
+    toPendingApprovals,
+    type PanelApproval,
+    type PendingApproval,
+} from './approval-state';
 
 type PanelTranscriptMessage = {
     role: 'user' | 'assistant' | 'system' | 'tool';
     content: string;
-};
-
-type PendingApproval = {
-    requestId: string;
-    summary: string;
-    toolName: string;
-    preview?: string;
-    reason?: string;
-    risk?: 'low' | 'medium' | 'high';
 };
 
 type PendingQuestion = {
@@ -51,17 +51,19 @@ interface PanelStatePayload {
     status: string;
     busy: boolean;
     transcript: PanelTranscriptMessage[];
-    approvals: PendingApproval[];
+    approvals: PanelApproval[];
     questions: PendingQuestion[];
 }
 
-interface PersistedPanelState extends PanelStatePayload {
+interface PersistedPanelState extends Omit<PanelStatePayload, 'approvals'> {
+    approvals: PendingApproval[];
     activeStreamId?: string;
 }
 
 interface SessionDetailPayload {
     id?: unknown;
     transcript?: unknown;
+    pendingApprovals?: unknown;
 }
 
 const PANEL_STATE_KEY = 'xqoder.chatPanelState';
@@ -113,7 +115,7 @@ export class XQoderChatPanel {
             return;
         }
 
-        const typed = message as { type?: string; prompt?: string; requestId?: string; decision?: string; selected?: string; customText?: string };
+        const typed = message as { type?: string; prompt?: string; requestId?: string; approvalKey?: string; decision?: string; selected?: string; customText?: string };
         switch (typed.type) {
             case 'send-prompt':
                 if (typeof typed.prompt === 'string' && typed.prompt.trim()) {
@@ -121,8 +123,8 @@ export class XQoderChatPanel {
                 }
                 return;
             case 'resolve-approval':
-                if (typed.requestId && (typed.decision === 'allow' || typed.decision === 'deny')) {
-                    await this.resolveApproval(typed.requestId, typed.decision);
+                if ((typed.approvalKey || typed.requestId) && (typed.decision === 'allow' || typed.decision === 'deny')) {
+                    await this.resolveApproval(typed.approvalKey ?? typed.requestId!, typed.decision);
                 }
                 return;
             case 'resolve-question':
@@ -131,8 +133,8 @@ export class XQoderChatPanel {
                 }
                 return;
             case 'open-preview':
-                if (typed.requestId) {
-                    const approval = this.pendingApprovals.get(typed.requestId);
+                if (typed.approvalKey || typed.requestId) {
+                    const approval = this.pendingApprovals.get(typed.approvalKey ?? typed.requestId!);
                     if (approval?.preview) {
                         await showApprovalDiffPreview(approval.summary, approval.preview);
                     }
@@ -310,9 +312,9 @@ export class XQoderChatPanel {
                 }
 
                 if (event.type === 'approval.requested') {
-                    const approval = this.toPendingApproval(event.payload);
-                    this.pendingApprovals.set(approval.requestId, approval);
-                    if (approval.preview && approval.toolName === 'write_file') {
+                    const approval = toPendingApproval(event.payload, record.streamId);
+                    this.pendingApprovals.set(getApprovalKey(approval), approval);
+                    if (approval.preview && (approval.toolName === 'write_file' || approval.toolName === 'edit_file')) {
                         void showApprovalDiffPreview(approval.summary, approval.preview);
                     }
                     this.postState();
@@ -320,7 +322,10 @@ export class XQoderChatPanel {
                 }
 
                 if (event.type === 'approval.resolved') {
-                    this.pendingApprovals.delete(String(event.payload.requestId ?? ''));
+                    this.pendingApprovals.delete(getApprovalKey({
+                        requestId: String(event.payload.requestId ?? ''),
+                        streamId: record.streamId,
+                    }));
                     this.postState();
                     continue;
                 }
@@ -341,19 +346,20 @@ export class XQoderChatPanel {
         }
     }
 
-    private async resolveApproval(requestId: string, decision: 'allow' | 'deny'): Promise<void> {
+    private async resolveApproval(approvalKey: string, decision: 'allow' | 'deny'): Promise<void> {
         if (!this.sessionId) {
             return;
         }
 
-        await this.fetchJson(`/session/${encodeURIComponent(this.sessionId)}/approval/${encodeURIComponent(requestId)}/resolve`, {
+        const target = resolveApprovalTarget(approvalKey, this.pendingApprovals, this.activeStreamId);
+        await this.fetchJson(`/session/${encodeURIComponent(this.sessionId)}/approval/${encodeURIComponent(target.requestId)}/resolve`, {
             method: 'POST',
             body: JSON.stringify({
                 decision,
-                streamId: this.activeStreamId,
+                ...(target.streamId ? { streamId: target.streamId } : {}),
             }),
         });
-        this.pendingApprovals.delete(requestId);
+        this.pendingApprovals.delete(approvalKey);
         this.postState();
     }
 
@@ -376,27 +382,6 @@ export class XQoderChatPanel {
         });
         this.pendingQuestions.delete(requestId);
         this.postState();
-    }
-
-    private toPendingApproval(payload: Record<string, unknown>): PendingApproval {
-        const rawRequest = typeof payload.payload === 'object' && payload.payload !== null
-            ? payload.payload as Record<string, unknown>
-            : {};
-        const risk = rawRequest.risk;
-        return {
-            requestId: String(payload.requestId ?? rawRequest.toolCallId ?? 'approval'),
-            summary: String(rawRequest.summary ?? payload.summary ?? 'Tool approval requested'),
-            toolName: String(rawRequest.toolName ?? 'tool'),
-            ...(typeof rawRequest.preview === 'string' && rawRequest.preview.trim().length > 0
-                ? { preview: rawRequest.preview }
-                : {}),
-            ...(typeof rawRequest.reason === 'string' && rawRequest.reason.trim().length > 0
-                ? { reason: rawRequest.reason }
-                : {}),
-            ...(risk === 'low' || risk === 'medium' || risk === 'high'
-                ? { risk }
-                : {}),
-        };
     }
 
     private toPendingQuestion(payload: Record<string, unknown>): PendingQuestion {
@@ -435,8 +420,8 @@ export class XQoderChatPanel {
         this.status = persisted.status || 'idle';
         this.transcript.push(...transcript);
 
-        for (const approval of approvals) {
-            this.pendingApprovals.set(approval.requestId, approval);
+        for (const approval of toPendingApprovals(approvals)) {
+            this.pendingApprovals.set(getApprovalKey(approval), approval);
         }
 
         for (const question of questions) {
@@ -460,6 +445,9 @@ export class XQoderChatPanel {
             const transcript = this.toTranscriptMessages(detail.transcript);
             if (transcript.length > 0) {
                 this.transcript.splice(0, this.transcript.length, ...transcript);
+            }
+            for (const approval of toPendingApprovals(detail.pendingApprovals)) {
+                this.pendingApprovals.set(getApprovalKey(approval), approval);
             }
             if (typeof detail.id === 'string' && detail.id.trim().length > 0) {
                 this.sessionId = detail.id;
@@ -520,17 +508,19 @@ export class XQoderChatPanel {
     }
 
     private postState(): void {
+        const pendingApprovals = Array.from(this.pendingApprovals.values());
         const payload: PanelStatePayload = {
             sessionId: this.sessionId,
             status: this.status,
             busy: this.busy,
             transcript: this.transcript,
-            approvals: Array.from(this.pendingApprovals.values()),
+            approvals: pendingApprovals.map(toPanelApproval),
             questions: Array.from(this.pendingQuestions.values()),
         };
 
         void this.context.workspaceState.update(PANEL_STATE_KEY, {
             ...payload,
+            approvals: pendingApprovals,
             ...(this.activeStreamId ? { activeStreamId: this.activeStreamId } : {}),
         } satisfies PersistedPanelState);
 
@@ -759,19 +749,22 @@ export class XQoderChatPanel {
         </div>
       \`).join('');
 
-      approvals.innerHTML = (payload.approvals || []).map(item => \`
+      approvals.innerHTML = (payload.approvals || []).map(item => {
+        const approvalKey = item.approvalKey || (item.streamId ? item.streamId + ':' + item.requestId : item.requestId);
+        return \`
         <div class="card">
           <div class="card-header">Approval Requested</div>
           <div>\${escapeHtml(item.summary)}</div>
           <div class="muted">\${escapeHtml(item.toolName)}\${item.risk ? ' · risk=' + item.risk : ''}</div>
           \${item.preview ? \`<div class="diff-preview">\${renderDiff(item.preview)}</div>\` : ''}
           <div class="button-row">
-            <button data-request="\${escapeHtml(item.requestId)}" data-decision="allow">Allow</button>
-            <button class="secondary" data-request="\${escapeHtml(item.requestId)}" data-decision="deny">Deny</button>
-            \${item.preview ? \`<button class="secondary" data-preview="\${escapeHtml(item.requestId)}">Full Diff</button>\` : ''}
+            <button data-approval-key="\${escapeHtml(approvalKey)}" data-decision="allow">Allow</button>
+            <button class="secondary" data-approval-key="\${escapeHtml(approvalKey)}" data-decision="deny">Deny</button>
+            \${item.preview ? \`<button class="secondary" data-preview="\${escapeHtml(approvalKey)}">Full Diff</button>\` : ''}
           </div>
         </div>
-      \`).join('');
+      \`;
+      }).join('');
 
       questions.innerHTML = (payload.questions || []).map(item => \`
         <div class="card">
@@ -798,10 +791,10 @@ export class XQoderChatPanel {
 
     function attachListeners() {
       document.querySelectorAll('[data-decision]').forEach(btn => {
-        btn.onclick = () => vscode.postMessage({ type: 'resolve-approval', requestId: btn.getAttribute('data-request'), decision: btn.getAttribute('data-decision') });
+        btn.onclick = () => vscode.postMessage({ type: 'resolve-approval', approvalKey: btn.getAttribute('data-approval-key'), decision: btn.getAttribute('data-decision') });
       });
       document.querySelectorAll('[data-preview]').forEach(btn => {
-        btn.onclick = () => vscode.postMessage({ type: 'open-preview', requestId: btn.getAttribute('data-preview') });
+        btn.onclick = () => vscode.postMessage({ type: 'open-preview', approvalKey: btn.getAttribute('data-preview') });
       });
       document.querySelectorAll('[data-question]').forEach(btn => {
         btn.onclick = () => vscode.postMessage({ type: 'resolve-question', requestId: btn.getAttribute('data-question'), selected: btn.getAttribute('data-option') });

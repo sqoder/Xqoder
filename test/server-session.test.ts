@@ -205,6 +205,8 @@ describe('HTTP session routes', () => {
                 },
                 { type: 'assistant', content: 'session detail now exposes transcript and signals' },
             ],
+            pendingApprovals: [],
+            approvalHistory: [],
         });
     });
 

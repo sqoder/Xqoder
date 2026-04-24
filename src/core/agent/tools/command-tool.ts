@@ -8,7 +8,12 @@ import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { ToolDefinition, ToolResult } from '@xqoder/shared';
 import type { ITool, ToolApprovalRequest, ToolContext } from './tool.js';
-import { isSandboxAccessError, resolveWorkingDirectory, validateCommandSafety } from './sandbox.js';
+import {
+    createSandboxedCommandEnv,
+    isSandboxAccessError,
+    resolveWorkingDirectory,
+    validateCommandSandbox,
+} from './sandbox.js';
 
 interface CommandExecutionResult {
     stdout: string;
@@ -21,6 +26,7 @@ interface CommandExecutionResult {
 const SENTINEL_PREFIX = '___XQODER_SENTINEL___';
 const EXIT_CODE_PREFIX = '___XQODER_EXIT_CODE___';
 const SHELL_SYNTAX_PATTERN = /[;&|`$><(){}"'\\]/;
+const MAX_SHELL_OUTPUT_CHARS = 64_000;
 
 export interface InstallPackageExecutionPlan {
     packageManager: 'bun' | 'pnpm' | 'yarn' | 'npm' | 'pip';
@@ -93,11 +99,7 @@ class PersistentShell {
 
         const proc = spawn(this.shellPath, this.shellArgs, {
             cwd: this.cwd,
-            env: {
-                ...process.env,
-                ...this.env,
-                GIT_EDITOR: 'true',
-            },
+            env: this.env,
             stdio: ['pipe', 'pipe', 'pipe'],
         });
 
@@ -232,7 +234,14 @@ const persistentShells = new Map<string, PersistentShell>();
 function getPersistentShell(context: ToolContext, cwd: string): PersistentShell {
     const shellPath = context.shell?.path ?? process.env.SHELL ?? '/bin/sh';
     const shellArgs = context.shell?.args ?? ['-l'];
-    const key = context.sessionId ? `session:${context.sessionId}` : `cwd:${cwd}`;
+    const env = createSandboxedCommandEnv(context.env);
+    const key = JSON.stringify({
+        sessionId: context.sessionId ?? null,
+        cwd,
+        shellPath,
+        shellArgs,
+        env: Object.entries(env).sort(([left], [right]) => left.localeCompare(right)),
+    });
     const existing = persistentShells.get(key);
 
     if (existing && existing.isAlive()) {
@@ -243,7 +252,7 @@ function getPersistentShell(context: ToolContext, cwd: string): PersistentShell 
         shellPath,
         shellArgs,
         cwd,
-        env: context.env ?? {},
+        env,
     });
     persistentShells.set(key, shell);
     return shell;
@@ -443,17 +452,6 @@ async function executeShellTool(args: Record<string, unknown>, context: ToolCont
     const startedAt = new Date();
     let cwd: string;
 
-    const safetyError = validateCommandSafety(command);
-    if (safetyError) {
-        return {
-            toolCallId,
-            success: false,
-            output: '',
-            error: safetyError,
-            metadata: createCommandMetadata(command, context.cwd, timeout, startedAt, new Date()),
-        };
-    }
-
     try {
         cwd = resolveWorkingDirectory(args['cwd'] as string | undefined, context);
     } catch (err) {
@@ -469,19 +467,37 @@ async function executeShellTool(args: Record<string, unknown>, context: ToolCont
         };
     }
 
+    const sandboxError = validateCommandSandbox(command, {
+        cwd,
+        projectRoot: context.projectRoot,
+        sandboxMode: context.sandboxMode,
+        allowedPaths: context.allowedPaths,
+    });
+    if (sandboxError) {
+        return {
+            toolCallId,
+            success: false,
+            output: '',
+            error: sandboxError,
+            metadata: createCommandMetadata(command, cwd, timeout, startedAt, new Date()),
+        };
+    }
+
     const shell = getPersistentShell(context, cwd);
     const result = await shell.execute(command, timeout);
     const completedAt = new Date();
+    const stdout = truncateShellOutput(result.stdout);
+    const stderr = truncateShellOutput(result.stderr);
 
-    if (result.stdout) {
+    if (stdout) {
         context.onToolStream?.({
-            chunk: result.stdout,
+            chunk: stdout,
             stream: 'stdout',
         });
     }
-    if (result.stderr) {
+    if (stderr) {
         context.onToolStream?.({
-            chunk: result.stderr,
+            chunk: stderr,
             stream: 'stderr',
         });
     }
@@ -490,7 +506,7 @@ async function executeShellTool(args: Record<string, unknown>, context: ToolCont
         return {
             toolCallId,
             success: false,
-            output: result.stdout,
+            output: stdout,
             error: `Command timed out (${timeout}ms): ${command}`,
             metadata: createCommandMetadata(command, cwd, timeout, startedAt, completedAt),
         };
@@ -500,7 +516,7 @@ async function executeShellTool(args: Record<string, unknown>, context: ToolCont
         return {
             toolCallId,
             success: false,
-            output: result.stdout,
+            output: stdout,
             error: `Command failed to start: ${result.err.message}`,
             metadata: createCommandMetadata(command, cwd, timeout, startedAt, completedAt),
         };
@@ -510,8 +526,8 @@ async function executeShellTool(args: Record<string, unknown>, context: ToolCont
         return {
             toolCallId,
             success: false,
-            output: result.stdout,
-            error: `Command exited with code ${result.exitCode}: ${result.stderr || 'Unknown error'}`,
+            output: stdout,
+            error: `Command exited with code ${result.exitCode}: ${stderr || 'Unknown error'}`,
             metadata: createCommandMetadata(command, cwd, timeout, startedAt, completedAt),
         };
     }
@@ -519,7 +535,7 @@ async function executeShellTool(args: Record<string, unknown>, context: ToolCont
     return {
         toolCallId,
         success: true,
-        output: result.stdout + (result.stderr ? `\n[stderr]: ${result.stderr}` : ''),
+        output: stdout + (stderr ? `\n[stderr]: ${stderr}` : ''),
         metadata: createCommandMetadata(command, cwd, timeout, startedAt, completedAt),
     };
 }
@@ -560,11 +576,7 @@ async function executeDirectCommand(
 
         const child = spawn(input.executable, input.args, {
             cwd: input.cwd,
-            env: {
-                ...process.env,
-                ...context.env,
-                GIT_EDITOR: 'true',
-            },
+            env: createSandboxedCommandEnv(context.env),
             stdio: ['ignore', 'pipe', 'pipe'],
         });
 
@@ -642,6 +654,14 @@ async function executeDirectCommand(
             child.kill('SIGTERM');
         }, input.timeout);
     });
+}
+
+function truncateShellOutput(output: string): string {
+    if (output.length <= MAX_SHELL_OUTPUT_CHARS) {
+        return output;
+    }
+
+    return `${output.slice(0, MAX_SHELL_OUTPUT_CHARS)}\n... [truncated at ${MAX_SHELL_OUTPUT_CHARS} chars]`;
 }
 
 function createInstallPackageExecutionPlan(

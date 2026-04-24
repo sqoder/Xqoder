@@ -2,8 +2,10 @@ import type { LLMMessage } from '@xqoder/shared';
 
 import { sanitizeToolArgs } from './session-metadata.js';
 import type {
+    AgentApprovalRecord,
     AgentConversationEventEnvelope,
     AgentCheckpointRecord,
+    AgentPendingApprovalRecord,
     AgentConversationEventStoreRecord,
     AgentCommandHistoryEntry,
     AgentFileChangeEntry,
@@ -64,6 +66,21 @@ export function cloneCheckpointRecord(entry: AgentCheckpointRecord): AgentCheckp
     return {
         ...entry,
         timestamp: new Date(entry.timestamp),
+    };
+}
+
+export function clonePendingApprovalRecord(entry: AgentPendingApprovalRecord): AgentPendingApprovalRecord {
+    return {
+        ...entry,
+        requestedAt: new Date(entry.requestedAt),
+    };
+}
+
+export function cloneApprovalRecord(entry: AgentApprovalRecord): AgentApprovalRecord {
+    return {
+        ...entry,
+        requestedAt: new Date(entry.requestedAt),
+        resolvedAt: new Date(entry.resolvedAt),
     };
 }
 
