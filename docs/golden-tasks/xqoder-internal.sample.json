@@ -1,0 +1,72 @@
+[
+  {
+    "id": "internal-01",
+    "title": "Repository overview",
+    "prompt": "Read package.json and src/application/chat/run-chat.ts, then explain this repository at a high level.",
+    "cwd": "../..",
+    "expectedAny": ["XQoder", "chat", "agent"]
+  },
+  {
+    "id": "internal-02",
+    "title": "Permissions command discovery",
+    "prompt": "/permissions",
+    "cwd": "../..",
+    "expectedAny": ["approval", "permissions", "sandbox"]
+  },
+  {
+    "id": "internal-03",
+    "title": "Tools surface discovery",
+    "prompt": "/tools",
+    "cwd": "../..",
+    "expectedAny": ["read_file", "write_file", "run_shell"]
+  },
+  {
+    "id": "internal-04",
+    "title": "Memory guidance",
+    "prompt": "Read src/application/system/memory.ts, src/application/system/notepad.ts, and src/application/instructions/instruction-resolver.ts, then explain where this project keeps CLAUDE-style instructions and working memory.",
+    "cwd": "../..",
+    "expectedAny": ["CLAUDE.md", ".claude", "notepad"]
+  },
+  {
+    "id": "internal-05",
+    "title": "HTTP server explanation",
+    "prompt": "Read src/interfaces/http/server.ts, src/interfaces/http/server-session.ts, and src/interfaces/http/server-stream.ts, then explain the HTTP server entrypoints in this project.",
+    "cwd": "../..",
+    "expectedAny": ["server", "session", "stream"]
+  },
+  {
+    "id": "internal-06",
+    "title": "Remote approvals explanation",
+    "prompt": "Read src/interfaces/http/server-stream.ts and src/infrastructure/agent/remote-tui-agent-service.ts, then explain how remote approval resolution works in this project.",
+    "cwd": "../..",
+    "expectedAny": ["approval", "resolve", "stream"]
+  },
+  {
+    "id": "internal-07",
+    "title": "VS Code extension path",
+    "prompt": "Read apps/vscode-extension/src/extension.ts and apps/vscode-extension/src/panel/chat-panel.ts, then explain where the VS Code extension source lives in this repository.",
+    "cwd": "../..",
+    "expectedAny": ["apps/vscode-extension", "extension", "chat panel"]
+  },
+  {
+    "id": "internal-08",
+    "title": "Session persistence explanation",
+    "prompt": "Read src/application/chat/run-chat.ts, src/interfaces/http/server-session.ts, and src/platform/terminal/app/agent-runtime.ts, then explain how sessions are persisted and resumed here.",
+    "cwd": "../..",
+    "expectedAny": ["session", "transcript", "resume"]
+  },
+  {
+    "id": "internal-09",
+    "title": "Claude compatibility explanation",
+    "prompt": "Read src/application/instructions/instruction-sources.ts, src/application/instructions/instruction-resolver.ts, and src/core/agent/markdown-agents.ts, then explain the Claude compatibility paths supported by this repo.",
+    "cwd": "../..",
+    "expectedAny": [".claude/CLAUDE.md", ".claude/skills", ".claude/agents"]
+  },
+  {
+    "id": "internal-10",
+    "title": "Golden task harness explanation",
+    "prompt": "Read package.json and scripts/run-golden-tasks.ts, then explain how bun run eval:golden uses the manifest in docs/golden-tasks/xqoder-internal.sample.json.",
+    "cwd": "../..",
+    "expectedAny": ["eval:golden", "run-golden-tasks", "manifest"]
+  }
+]

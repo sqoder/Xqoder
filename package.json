@@ -19,6 +19,7 @@
         "clean": "rm -rf dist",
         "test": "bun test ./test ./src",
         "test:coverage": "node scripts/check-coverage.mjs",
+        "eval:golden": "bun run scripts/run-golden-tasks.ts --manifest docs/golden-tasks/xqoder-internal.sample.json",
         "lint": "bun x tsc --noEmit",
         "lint:application-chat-strict": "bun x tsc -p tsconfig.application-chat-strict.json --noEmit",
         "lint:platform-terminal-strict": "bun x tsc -p tsconfig.platform-terminal-strict.json --noEmit",
@@ -29,11 +30,12 @@
         "lint:application-system-exact-optional": "bun x tsc -p tsconfig.application-system-exact-optional.json --noEmit",
         "lint:application-permissions-sessions-exact-optional": "bun x tsc -p tsconfig.application-permissions-sessions-exact-optional.json --noEmit",
         "e2e:smoke": "node scripts/cli-smoke.mjs",
+        "mcp:live-smoke": "bun run scripts/mcp-live-smoke.ts",
         "local:repair-runtime-state": "node scripts/repair-local-runtime-state.mjs",
         "security:hygiene": "node scripts/security-tracked-files.mjs",
         "security:tracked": "bun run security:hygiene",
         "size:guardrail": "node scripts/check-file-size-guardrail.mjs",
-        "release:check": "bun run build && bun run lint && bun run lint:application-chat-strict && bun run lint:platform-terminal-strict && bun run lint:core-agent-protocol-strict && bun run lint:interfaces-http-openapi-exact-optional && bun run lint:layers-strict && bun run lint:domain-exact-optional && bun run lint:application-system-exact-optional && bun run lint:application-permissions-sessions-exact-optional && bun run test:coverage && bun run e2e:smoke && bun run security:hygiene && bun run size:guardrail",
+        "release:check": "bun run build && bun run lint && bun run lint:application-chat-strict && bun run lint:platform-terminal-strict && bun run lint:core-agent-protocol-strict && bun run lint:interfaces-http-openapi-exact-optional && bun run lint:layers-strict && bun run lint:domain-exact-optional && bun run lint:application-system-exact-optional && bun run lint:application-permissions-sessions-exact-optional && bun run test:coverage && bun run e2e:smoke && bun run mcp:live-smoke && bun run security:hygiene && bun run size:guardrail",
         "omx:audit-runtime-artifacts": "node scripts/audit-omx-runtime-artifacts.mjs"
     },
     "dependencies": {
