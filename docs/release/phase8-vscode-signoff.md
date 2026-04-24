@@ -19,7 +19,7 @@ Run from the repository root:
 
 ```bash
 bun x tsc -p apps/vscode-extension/tsconfig.json --noEmit
-bun test ./test test/smoke-lane-worker-c.test.ts test/system-ide.test.ts
+bun test ./test
 ```
 
 Required result: both commands pass.
@@ -57,11 +57,26 @@ Required result: both commands pass.
 | Check | Status | Evidence |
 | --- | --- | --- |
 | Extension typecheck | PASS | `bun x tsc -p apps/vscode-extension/tsconfig.json --noEmit` exited 0 |
-| IDE smoke tests | PASS | Covered by `bun test ./test test/features/golden-task-runner.test.ts test/core/mcp-tools.test.ts test/domain-permissions.test.ts`: 404 pass, 0 fail |
-| Extension development host | Blocked | `code` CLI was not found in PATH during preflight |
-| Manual allow/deny and diff preview | Blocked | Requires extension development host |
-| Manual session restore | Blocked | Requires extension development host |
+| Full test suite | PASS | `bun test ./test`: 404 pass, 0 fail |
+| Release check | PASS | `bun run release:check` completed build, typecheck, coverage, CLI smoke, MCP live smoke, security hygiene, and size guardrail |
+| Extension development host | PASS | `code` CLI was not in PATH, so the host was launched through `/Applications/Visual Studio Code.app` with `--extensionDevelopmentPath=apps/vscode-extension` and remote debugging on `127.0.0.1:9333` |
+| Runtime bridge | PASS | `bun dist/index.js serve --dir /Users/wangxinglin/Desktop/xqoder-4.23/Xqoder --port 4096 --hostname 127.0.0.1`; `/provider` reported current provider `gemini` and default model `gemini-2.5-flash` |
+| Approval display | PASS | Protected-path write prompt displayed `APPROVAL REQUESTED`, `write_file · risk=high`, and inline diff in the VS Code webview |
+| Diff preview | PASS | The `Full Diff` action opened the preview for the denied write flow |
+| Deny path | PASS | Clicking `Deny` cleared the pending approval and `.xqoder/vscode-deny-smoke.txt` was not written |
+| Allow path | PASS | Clicking `Allow` resumed the stream and wrote `.xqoder/vscode-allow-smoke.txt` with `ALLOW WRITES THIS FILE`; the smoke file was removed after verification |
+| Session restore | PASS | Closing and reopening the Xqoder panel restored `session_1776999569210_wdc8ea` and preserved the transcript |
+
+## Evidence Artifacts
+
+- `/tmp/xqoder-deny-approval-visible.png`
+- `/tmp/xqoder-deny-full-diff.png`
+- `/tmp/xqoder-deny-resolved.png`
+- `/tmp/xqoder-allow-approval-visible.png`
+- `/tmp/xqoder-allow-resolved.png`
+- `/tmp/xqoder-panel-closed.png`
+- `/tmp/xqoder-panel-reopened.png`
 
 ## Exit Condition
 
-Phase 8 can be marked product-signed only when the automated preflight passes and the manual signoff procedure above records `PASS` for approval display, diff preview, allow/deny, and session restore.
+Phase 8 is product-signed for the current environment. The remaining release blocker is outside Phase 8: live golden with Gemini reached only 2/10 because the provider returned repeated 429 rate/quota errors, below the required 7/10 threshold.
