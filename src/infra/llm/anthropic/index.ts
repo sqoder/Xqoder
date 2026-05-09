@@ -15,6 +15,10 @@ import type {
 } from '@xqoder/shared';
 import { LLMError, resolveLLMProviderCapabilities } from '@xqoder/shared';
 import { BaseLLMProvider, type CompletionRequest, type CompletionResponse } from '@xqoder/llm-api';
+// Clean-room retry wrapper inspired by Claude Code / OpenClaude behavior.
+// Absorbs 429 / 529 / OAuth401 / socket hiccups before they reach the
+// application layer, surfacing only classified LLM errors.
+import { withRetry, isClassifiedLLMError } from '../retry/index.js';
 
 function buildFileAttachmentContext(attachments: MessageAttachment[] | undefined): string {
   const fileAttachments = (attachments ?? []).filter((a) => a.type === 'file');
@@ -98,14 +102,18 @@ export class AnthropicProvider extends BaseLLMProvider {
     try {
       const systemMessage = request.messages.find((m) => m.role === 'system');
       const otherMessages = request.messages.filter((m) => m.role !== 'system');
-      const response = await this.client.messages.create({
-        model: this.model,
-        system: systemMessage?.content,
-        messages: this.formatMessages(otherMessages),
-        tools: request.tools ? (this.formatTools(request.tools) as Anthropic.Tool[]) : undefined,
-        max_tokens: request.maxTokens ?? this.maxTokens,
-        temperature: request.temperature ?? this.temperature,
-      });
+      const response = await withRetry(
+        { providerName: 'anthropic', foreground: true },
+        () =>
+          this.client.messages.create({
+            model: this.model,
+            system: systemMessage?.content,
+            messages: this.formatMessages(otherMessages),
+            tools: request.tools ? (this.formatTools(request.tools) as Anthropic.Tool[]) : undefined,
+            max_tokens: request.maxTokens ?? this.maxTokens,
+            temperature: request.temperature ?? this.temperature,
+          }),
+      );
       const message = this.parseResponse(response);
       return {
         message,
@@ -117,6 +125,9 @@ export class AnthropicProvider extends BaseLLMProvider {
         finishReason: this.mapStopReason(response.stop_reason),
       };
     } catch (err) {
+      if (isClassifiedLLMError(err)) {
+        throw err;
+      }
       throw new LLMError(
         `Anthropic API call failed: ${err instanceof Error ? err.message : String(err)}`,
         'anthropic',
@@ -129,14 +140,21 @@ export class AnthropicProvider extends BaseLLMProvider {
     try {
       const systemMessage = request.messages.find((m) => m.role === 'system');
       const otherMessages = request.messages.filter((m) => m.role !== 'system');
-      const stream = this.client.messages.stream({
-        model: this.model,
-        system: systemMessage?.content,
-        messages: this.formatMessages(otherMessages),
-        tools: request.tools ? (this.formatTools(request.tools) as Anthropic.Tool[]) : undefined,
-        max_tokens: request.maxTokens ?? this.maxTokens,
-        temperature: request.temperature ?? this.temperature,
-      });
+      // withRetry only guards the handshake here. Once the SSE stream opens,
+      // socket errors mid-flight surface directly — there's no idempotent way
+      // to re-splice a partially-consumed stream at this layer.
+      const stream = await withRetry(
+        { providerName: 'anthropic', foreground: true },
+        async () =>
+          this.client.messages.stream({
+            model: this.model,
+            system: systemMessage?.content,
+            messages: this.formatMessages(otherMessages),
+            tools: request.tools ? (this.formatTools(request.tools) as Anthropic.Tool[]) : undefined,
+            max_tokens: request.maxTokens ?? this.maxTokens,
+            temperature: request.temperature ?? this.temperature,
+          }),
+      );
       let content = '';
       const toolCalls: ToolCall[] = [];
       stream.on('text', (text) => {
@@ -172,6 +190,9 @@ export class AnthropicProvider extends BaseLLMProvider {
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       callbacks.onError?.(error);
+      if (isClassifiedLLMError(err)) {
+        throw err;
+      }
       throw new LLMError(`Anthropic streaming call failed: ${error.message}`, 'anthropic');
     }
   }
