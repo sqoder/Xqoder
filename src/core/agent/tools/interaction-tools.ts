@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ToolDefinition, ToolResult } from '@xqoder/shared';
-import type { ITool, QuestionPrompt, ToolContext } from './tool.js';
+import type { ITool, QuestionPrompt, ToolApprovalRequest, ToolContext } from './tool.js';
 import { resolvePathWithinProject } from './sandbox.js';
 import { resolveSkillDocumentPath } from './skill-paths.js';
 
@@ -190,6 +190,76 @@ export class TodoReadTool implements ITool {
                 error: `Failed to read todo: ${err instanceof Error ? err.message : String(err)}`,
             };
         }
+    }
+}
+
+export class ExitPlanModeTool implements ITool {
+    readonly definition: ToolDefinition = {
+        name: 'exit_plan_mode',
+        description: [
+            'Request permission to leave plan mode and begin executing the plan.',
+            'Use this tool once your plan is complete and ready for user review.',
+            'The user will be shown the plan and asked whether to allow execution.',
+            'On approval the next /implement turn on the same goal will run with workspace-write capability.',
+            'On denial, remain in plan mode and refine the plan based on feedback.',
+            'Do not use this tool for read-only research or general information gathering.',
+        ].join('\n'),
+        parameters: [
+            {
+                name: 'plan',
+                type: 'string',
+                description: 'The implementation plan to present to the user. Should be concise markdown summarising what will be done.',
+                required: true,
+            },
+        ],
+    };
+
+    buildApprovalRequest(
+        args: Record<string, unknown>,
+        _context: ToolContext,
+    ): ToolApprovalRequest | undefined {
+        const plan = typeof args['plan'] === 'string' ? args['plan'].trim() : '';
+        const toolCallId = typeof args['toolCallId'] === 'string' ? args['toolCallId'] : undefined;
+        const preview = plan.length > 0 ? plan : '(no plan content provided)';
+        return {
+            ...(toolCallId ? { toolCallId } : {}),
+            toolName: 'exit_plan_mode',
+            summary: 'Exit plan mode and execute the plan?',
+            reason: 'The agent is requesting to leave plan-only mode. Once approved, a subsequent /implement turn on the same goal will run with workspace-write capability.',
+            preview,
+            risk: 'medium',
+            category: 'policy',
+        };
+    }
+
+    async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
+        const toolCallId = (args['toolCallId'] as string) ?? '';
+        const plan = typeof args['plan'] === 'string' ? args['plan'].trim() : '';
+
+        if (!plan) {
+            return {
+                toolCallId,
+                success: false,
+                output: '',
+                error: 'Plan content is required.',
+            };
+        }
+
+        return {
+            toolCallId,
+            success: true,
+            output: [
+                'Plan approved by the user. Stop generating now and wait for the user to trigger execution.',
+                'The user will follow up with /implement (or an equivalent request) on the same goal to run this plan with workspace-write capability.',
+                '',
+                'Approved plan:',
+                plan,
+            ].join('\n'),
+            metadata: {
+                planLength: plan.length,
+                requiresFollowUpImplement: true,
+            },
+        };
     }
 }
 

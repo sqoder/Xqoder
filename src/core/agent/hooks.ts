@@ -18,6 +18,11 @@ export {
     buildPostToolUseFailureHookPayload,
     buildPostToolUseHookPayload,
     buildPreToolUseHookPayload,
+    buildSessionStartHookPayload,
+    buildUserPromptSubmitHookPayload,
+    buildStopHookPayload,
+    buildSubagentStopHookPayload,
+    buildPreCompactHookPayload,
     formatHookFeedbackSection,
 } from './hook-payload-builders.js';
 
@@ -71,10 +76,71 @@ export interface PostToolUseFailureHookPayload {
     is_interrupt?: boolean;
 }
 
+export interface SessionStartHookPayload {
+    hook_event_name: 'SessionStart';
+    session_id?: string;
+    cwd: string;
+    project_root: string;
+    permission_mode: AgentPermissionMode;
+    source: 'startup' | 'resume';
+    message_count: number;
+}
+
+export interface UserPromptSubmitHookPayload {
+    hook_event_name: 'UserPromptSubmit';
+    session_id?: string;
+    cwd: string;
+    project_root: string;
+    permission_mode: AgentPermissionMode;
+    prompt: string;
+    slash_command?: string;
+    attachments_count: number;
+}
+
+export interface StopHookPayload {
+    hook_event_name: 'Stop';
+    session_id?: string;
+    cwd: string;
+    project_root: string;
+    permission_mode: AgentPermissionMode;
+    reason: 'completed' | 'failed' | 'cancelled';
+    stop_reason?: string;
+}
+
+export interface SubagentStopHookPayload {
+    hook_event_name: 'SubagentStop';
+    session_id?: string;
+    cwd: string;
+    project_root: string;
+    permission_mode: AgentPermissionMode;
+    subagent_name: string;
+    subagent_goal: string;
+    success: boolean;
+}
+
+export interface PreCompactHookPayload {
+    hook_event_name: 'PreCompact';
+    session_id?: string;
+    cwd: string;
+    project_root: string;
+    permission_mode: AgentPermissionMode;
+    trigger: 'auto' | 'manual';
+    message_count_before: number;
+}
+
+export type LifecycleHookPayload =
+    | SessionStartHookPayload
+    | UserPromptSubmitHookPayload
+    | StopHookPayload
+    | SubagentStopHookPayload
+    | PreCompactHookPayload;
+
 export type ToolHookPayload =
     | PreToolUseHookPayload
     | PostToolUseHookPayload
     | PostToolUseFailureHookPayload;
+
+export type HookPayload = ToolHookPayload | LifecycleHookPayload;
 
 export interface HookHandlerExecutionResult {
     type: HookHandlerConfig['type'];
@@ -99,7 +165,7 @@ export interface ToolHookExecutionResult {
 
 export async function runToolHooks(
     eventName: ToolHookEventName,
-    payload: ToolHookPayload,
+    payload: HookPayload,
     config: ToolHookRunnerConfig,
 ): Promise<ToolHookExecutionResult> {
     const logger = config.logger ?? defaultLogger.child('HookRunner');
@@ -114,9 +180,10 @@ export async function runToolHooks(
         return result;
     }
 
+    const matcherTarget = resolveHookMatcherTarget(payload);
     const matcherGroups = config.hooks[eventName] ?? [];
     for (const matcherGroup of matcherGroups) {
-        if (!matchesToolHook(matcherGroup, payload.tool_name)) {
+        if (!matchesToolHook(matcherGroup, matcherTarget)) {
             continue;
         }
 
@@ -125,7 +192,7 @@ export async function runToolHooks(
             result.handlers.push(handlerResult);
 
             if (handlerResult.error) {
-                logger.warn(`Hook handler failed for ${eventName}/${payload.tool_name}: ${handlerResult.error}`);
+                logger.warn(`Hook handler failed for ${eventName}/${matcherTarget || '<lifecycle>'}: ${handlerResult.error}`);
                 continue;
             }
 
@@ -170,4 +237,22 @@ export async function runToolHooks(
     result.additionalContexts = Array.from(new Set(result.additionalContexts));
     result.systemMessages = Array.from(new Set(result.systemMessages));
     return result;
+}
+
+function resolveHookMatcherTarget(payload: HookPayload): string {
+    switch (payload.hook_event_name) {
+        case 'PreToolUse':
+        case 'PostToolUse':
+        case 'PostToolUseFailure':
+            return payload.tool_name;
+        case 'UserPromptSubmit':
+            return payload.slash_command ?? '';
+        case 'SubagentStop':
+            return payload.subagent_name;
+        case 'SessionStart':
+        case 'Stop':
+        case 'PreCompact':
+        default:
+            return '';
+    }
 }

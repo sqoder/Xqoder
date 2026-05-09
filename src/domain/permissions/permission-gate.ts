@@ -92,6 +92,13 @@ export function isToolVisibleForExecutionCapability(
     executionCapability: ExecutionCapability,
     securityContext?: ToolSecurityPolicyContext,
 ): boolean {
+    // `exit_plan_mode` is a meta-tool the model uses to request leaving plan
+    // mode. It must only be visible inside plan capability — never exposed in
+    // workspace_write or read_only turns.
+    if (toolName === 'exit_plan_mode') {
+        return executionCapability === 'plan';
+    }
+
     if (executionCapability === 'workspace_write') {
         return true;
     }
@@ -139,6 +146,7 @@ function createPolicyBaseline(
                     websearch: 'ask',
                     task: 'deny',
                     todowrite: 'ask',
+                    exit_plan_mode: 'ask',
                 },
             };
         case 'workspace_auto':
@@ -154,6 +162,7 @@ function createPolicyBaseline(
                     websearch: 'ask',
                     task: 'ask',
                     todowrite: 'allow',
+                    exit_plan_mode: 'ask',
                 },
             };
         case 'balanced':
@@ -170,6 +179,7 @@ function createPolicyBaseline(
                     websearch: 'ask',
                     task: 'ask',
                     todowrite: 'ask',
+                    exit_plan_mode: 'ask',
                 },
             };
     }

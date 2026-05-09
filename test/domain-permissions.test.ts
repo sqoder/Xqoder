@@ -2055,6 +2055,37 @@ describe('domain tool permission policy', () => {
         });
     });
 
+    it('exposes exit_plan_mode only when executionCapability is plan and keeps it in ask across all V1 policies', () => {
+        expect(isToolVisibleForExecutionCapability('exit_plan_mode', 'plan')).toBe(true);
+        expect(isToolVisibleForExecutionCapability('exit_plan_mode', 'workspace_write')).toBe(false);
+        expect(isToolVisibleForExecutionCapability('exit_plan_mode', 'read_only')).toBe(false);
+
+        const strict = createScopedPermissionSettings({
+            executionCapability: 'plan',
+            approvalPolicy: 'strict',
+        });
+        expect(strict.tools?.['exit_plan_mode']).toBe('ask');
+
+        const balanced = createScopedPermissionSettings({
+            executionCapability: 'plan',
+            approvalPolicy: 'balanced',
+        });
+        expect(balanced.tools?.['exit_plan_mode']).toBe('ask');
+
+        const workspaceAuto = createScopedPermissionSettings({
+            executionCapability: 'plan',
+            approvalPolicy: 'workspace_auto',
+        });
+        expect(workspaceAuto.tools?.['exit_plan_mode']).toBe('ask');
+
+        expect(resolveToolPermissionDecision({
+            toolName: 'exit_plan_mode',
+            args: { plan: 'Step 1: read files.' },
+            permissions: balanced,
+            hasPriorRead: false,
+        })).toBe('ask');
+    });
+
     it('merges approval requests and records without materializing empty optional fields', () => {
         expect(mergeToolApprovalRequest(
             'write_file',
