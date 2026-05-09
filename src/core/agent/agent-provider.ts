@@ -367,7 +367,11 @@ export class XQoderAgentProvider implements AgentProvider {
     const runPromise = (async () => {
       let assistantStarted = false;
       let assistantText = '';
-      let completedAssistantMessage: LLMMessage | null = null;
+      // Declared with an explicit widening so the closure assignment below
+      // doesn't leave callers narrowing the type back to `null` and seeing
+      // `completedAssistantMessage?.content` as `never` under strict flow
+      // analysis.
+      let completedAssistantMessage: LLMMessage | null = null as LLMMessage | null;
       let errorEmitted = false;
       let terminalStopReason: ConversationStopReason | undefined;
 

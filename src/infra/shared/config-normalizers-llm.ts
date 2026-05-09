@@ -24,7 +24,7 @@ export function buildLLMConfigInput(
         baseUrl: string | undefined;
         maxTokens: number | undefined;
         temperature: number | undefined;
-        modalities?: LLMInputModalities;
+        modalities: LLMInputModalities | undefined;
     },
 ): Partial<Omit<LLMProviderConfig, 'provider'>> & Pick<LLMProviderConfig, 'provider'> {
     return {

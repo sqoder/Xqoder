@@ -37,7 +37,10 @@ export async function analyzePdf(context: AnalyzerContext): Promise<FileAnalysis
     }
 
     const shouldRenderPages = pageRange !== undefined && (context.input.mode === 'render' || Boolean(context.input.pages?.trim()));
-    const images = shouldRenderPages ? await renderPdfPages(context, pageRange, warnings) : [];
+    const images: FileAnalysisImage[] = [];
+    if (shouldRenderPages && pageRange !== undefined) {
+        images.push(...await renderPdfPages(context, pageRange, warnings));
+    }
 
     if (!await commandExists('pdftotext', context.env)) {
         warnings.push('pdftotext is not available; install Poppler (macOS: brew install poppler) to extract PDF text.');

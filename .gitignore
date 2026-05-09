@@ -12,3 +12,7 @@ coverage/
 .qwen/
 .pnpm-store/
 ~/
+
+# Release-check generated artifacts — CI uploads these as workflow
+# artifacts; committing them causes dirty-worktree noise locally.
+docs/release/latest-*
