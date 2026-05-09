@@ -41,3 +41,30 @@
 - 下一期: **P01.1 — wrapStream + 120s idle 看门狗**
   (验收发现的 G1; 见 docs/release/p01-verification.md)
   P01.1 收官后再进 **P02 — Compaction pipeline**
+
+---
+
+## P01.1 (2026-05-10) — wrapStream + 120s idle 看门狗
+
+- release:check: ✅ (644 pass / 0 fail / 2226 expect() 全绿; coverage 66.35% ≥ 36%)
+- golden task pass: 0/10 → 0/10 (infra 层改动,不触发业务逻辑)
+- /review 警告: 0 条 (P01.1 diff 集中在新增文件 + 两个 provider 局部改线)
+- 本期验收产出:
+  - `src/infra/llm/retry/stream-idle.ts` — `createIdleWatchdog` + `wrapStream`,
+    timer 可注入以支持确定性测试,默认 `DEFAULT_STREAM_IDLE_MS = 120_000`,
+    闭幕时 best-effort 调 `iterator.return()` 关闭底层连接
+  - `src/infra/llm/retry/index.ts` — barrel 导出 watchdog/wrapStream/类型
+  - `src/infra/llm/openai/provider/index.ts` — `stream()` 消费端把
+    `withTimeout(collectStreamingResponse, …)` 换成 `wrapStream(streamRef)`,
+    wall-clock 超时变 idle 超时,慢但活跃的流不再被误杀
+  - `src/infra/llm/anthropic/index.ts` — 事件发射式 `MessageStream` 接
+    `createIdleWatchdog`,`text`/`contentBlock` 事件 `tick()`,
+    `Promise.race(finalMessage(), waitForIdle())`,idle 胜出时显式
+    `stream.abort()` 避免连接泄漏
+  - `test/infrastructure/llm-stream-idle.test.ts` — 8 用例,覆盖 watchdog
+    生命周期 (fire/reset/stop/idempotent) 与 wrapStream 四条路径
+    (pass-through / idle throws / iterator.return() 被调 / 源错误透传)
+- 本期 token 消耗: 未测量
+- ADR: 暂无(未触红线;改动局限在 retry/ 新增模块 + 两个 provider 各 10 行内局部替换)
+- 下一期: **P02 — Compaction pipeline**(P01.1 已解决 p01-verification.md 的 G1,
+  其余 G2-G5 留在登记簿,不 block P02)

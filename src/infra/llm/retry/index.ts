@@ -15,3 +15,11 @@ export {
 } from './errors.js';
 export { classifyLLMError } from './classify.js';
 export { withRetry, type WithRetryDeps } from './with-retry.js';
+export {
+    DEFAULT_STREAM_IDLE_MS,
+    createIdleWatchdog,
+    wrapStream,
+    type IdleWatchdog,
+    type IdleWatchdogOptions,
+    type IdleWatchdogTimer,
+} from './stream-idle.js';

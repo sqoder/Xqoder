@@ -18,7 +18,7 @@ import { BaseLLMProvider, type CompletionRequest, type CompletionResponse } from
 // Clean-room retry wrapper inspired by Claude Code / OpenClaude behavior.
 // Absorbs 429 / 529 / OAuth401 / socket hiccups before they reach the
 // application layer, surfacing only classified LLM errors.
-import { withRetry, isClassifiedLLMError } from '../retry/index.js';
+import { withRetry, createIdleWatchdog, isClassifiedLLMError } from '../retry/index.js';
 
 function buildFileAttachmentContext(attachments: MessageAttachment[] | undefined): string {
   const fileAttachments = (attachments ?? []).filter((a) => a.type === 'file');
@@ -157,11 +157,19 @@ export class AnthropicProvider extends BaseLLMProvider {
       );
       let content = '';
       const toolCalls: ToolCall[] = [];
+      // Anthropic's MessageStream is event-emitter based, not an AsyncIterable,
+      // so wrapStream() (which races iterator.next()) does not apply here.
+      // We attach a watchdog that resets on each text / contentBlock event and
+      // race its waitForIdle() against finalMessage(). On idle, StreamIdleError
+      // beats finalMessage() and we abort the SDK stream in the catch below.
+      const watchdog = createIdleWatchdog({ providerName: 'anthropic' });
       stream.on('text', (text) => {
+        watchdog.tick();
         content += text;
         callbacks.onToken?.(text);
       });
       stream.on('contentBlock', (block) => {
+        watchdog.tick();
         if (block.type === 'tool_use') {
           toolCalls.push({
             id: block.id,
@@ -171,7 +179,26 @@ export class AnthropicProvider extends BaseLLMProvider {
           callbacks.onToolCall?.({ id: block.id, name: block.name, arguments: JSON.stringify(block.input) });
         }
       });
-      const finalMessage = await stream.finalMessage();
+      let finalMessage: Anthropic.Message;
+      try {
+        finalMessage = await Promise.race([
+          stream.finalMessage(),
+          watchdog.waitForIdle(),
+        ]);
+      } catch (raceErr) {
+        // If the watchdog won, abort the still-running SDK stream so we don't
+        // leak the underlying HTTP connection after rethrowing StreamIdleError.
+        if (isClassifiedLLMError(raceErr) && raceErr.kind === 'stream_idle') {
+          try {
+            stream.abort();
+          } catch {
+            /* best-effort; SDK may already be closed */
+          }
+        }
+        throw raceErr;
+      } finally {
+        watchdog.stop();
+      }
       const message: LLMMessage = {
         role: 'assistant',
         content,

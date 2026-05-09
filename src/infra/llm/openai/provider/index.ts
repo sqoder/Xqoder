@@ -19,7 +19,7 @@ import { resolveProxyForProvider, type ProxyResolutionOptions } from '../../../.
 // Clean-room retry wrapper inspired by Claude Code / OpenClaude behavior.
 // Handles 429 / 529 / 401-OAuth / transient socket errors uniformly so the
 // application layer sees only classified LLM errors.
-import { withRetry, isClassifiedLLMError } from '../../retry/index.js';
+import { withRetry, wrapStream, isClassifiedLLMError } from '../../retry/index.js';
 
 const DEFAULT_OPENAI_REQUEST_TIMEOUT_MS = 120_000;
 
@@ -263,10 +263,12 @@ export class OpenAIProvider extends BaseLLMProvider {
       );
     }
     try {
-      return await withTimeout(
-        this.collectStreamingResponse(streamRef, callbacks),
-        this.timeoutMs,
-        `OpenAI stream timed out after ${this.timeoutMs}ms`,
+      // wrapStream gives us idle-based detection (StreamIdleError after
+      // DEFAULT_STREAM_IDLE_MS without a chunk) instead of a wall-clock
+      // timeout that would kill a slow-but-active stream.
+      return await this.collectStreamingResponse(
+        wrapStream(streamRef, { providerName: this.name }),
+        callbacks,
       );
     } catch (err) {
       await closeAsyncIterable(streamRef);
@@ -275,6 +277,9 @@ export class OpenAIProvider extends BaseLLMProvider {
         callbacks.onError?.(error);
       } catch {
         /* noop */
+      }
+      if (isClassifiedLLMError(err)) {
+        throw err;
       }
       throw new LLMError(`${this.name} stream call failed: ${error.message}`, this.name);
     }

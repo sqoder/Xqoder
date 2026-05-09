@@ -222,7 +222,7 @@ catch 块加了 `if (isClassifiedLLMError(err)) throw err;` 分支，让分类�
 
 | # | Gap | 严重度 | 建议处理期 |
 |---|---|---|---|
-| G1 | `wrapStream` / 120s idle 检测未实现；`StreamIdleError` 目前是孤立的类型 | 中 | P02 或 P01.1 补丁 |
+| G1 | `wrapStream` / 120s idle 检测未实现；`StreamIdleError` 目前是孤立的类型 | 中 | **已解决 P01.1 (2026-05-10)** — 见 `src/infra/llm/retry/stream-idle.ts` + 两个 provider 接入；`test/infrastructure/llm-stream-idle.test.ts` 覆盖 8 条路径 |
 | G2 | undici "other side closed" 的 **message 级** 兜底缺失（仅靠 code 匹配） | 低 | 有真实流量日志后再决定 |
 | G3 | 测试路径 `test/infrastructure/` vs DoD 建议 `src/infra/llm/retry/__tests__/` 偏离 | 信息 | 不处理；按项目约定 |
 | G4 | 未跑 `/review` 自动审计 | 低 | 下一期开始恢复每期 `/review` |
