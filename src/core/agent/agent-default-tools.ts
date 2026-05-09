@@ -11,7 +11,7 @@ import { createDefaultLspTools } from './tools/lsp-tools.js';
 import { ApplyPatchTool, RestoreRollbackPointTool } from './tools/patch-tool.js';
 import { SourcegraphTool } from './tools/sourcegraph-tool.js';
 import { RunCommandTool, RunShellTool, InstallPackageTool } from './tools/command-tool.js';
-import { QuestionTool, SkillTool, TodoReadTool, TodoWriteTool } from './tools/interaction-tools.js';
+import { ExitPlanModeTool, QuestionTool, SkillTool, TodoReadTool, TodoWriteTool } from './tools/interaction-tools.js';
 import { DelegateTaskTool } from './tools/agent-tool.js';
 import type { ToolContext, ToolRegistry } from './tools/tool.js';
 
@@ -73,6 +73,7 @@ export function registerDefaultAgentTools(input: DefaultAgentToolRegistrationInp
     input.toolRegistry.register(new TodoWriteTool());
     input.toolRegistry.register(new TodoReadTool());
     input.toolRegistry.register(new QuestionTool());
+    input.toolRegistry.register(new ExitPlanModeTool());
     input.toolRegistry.register(new DiagnosticsTool());
     input.toolRegistry.register(new DiscoverSkillsTool());
     input.toolRegistry.register(new DelegateTaskTool(input.llmConfig, input.toolRegistry));

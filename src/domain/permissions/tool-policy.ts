@@ -44,6 +44,7 @@ export const TOOL_TO_PERMISSION_KEY: Record<string, string> = {
     todowrite: 'todowrite',
     todoread: 'todoread',
     question: 'question',
+    exit_plan_mode: 'exit_plan_mode',
     lsp_rename_symbol: 'edit',
 };
 
