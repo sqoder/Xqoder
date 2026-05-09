@@ -14,6 +14,11 @@ import { isToolVisibleForExecutionCapability } from '../../../domain/permissions
 const READONLY_DELEGATE_TOOLS = ['read_file', 'read_any_file', 'list_files', 'glob_files', 'grep_content', 'search_code', 'sourcegraph', 'lsp_workspace_symbols', 'lsp_file_diagnostics', 'lsp_definition', 'lsp_references', 'lsp_hover', 'todoread', 'skill'];
 const WRITE_OR_SIDE_EFFECT_TOOLS = new Set(['write_file', 'edit_file', 'apply_patch', 'restore_rollback_point', 'run_command', 'run_shell', 'install_package', 'todowrite']);
 type DelegateProviderFactory = (config: LLMProviderConfig) => Promise<ILLMProvider> | ILLMProvider;
+export type SubagentStopCallback = (input: {
+    subagentName: string;
+    subagentGoal: string;
+    success: boolean;
+}) => Promise<void> | void;
 interface DelegateToolRegistry {
     get(name: string): ITool | undefined;
     execute(
@@ -54,6 +59,7 @@ export class DelegateTaskTool implements ITool {
         private llmConfig: LLMProviderConfig,
         private parentToolRegistry?: DelegateToolRegistry,
         private providerFactory: DelegateProviderFactory = createLLMProvider,
+        private onSubagentStop?: SubagentStopCallback,
     ) {}
 
     async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
@@ -166,21 +172,43 @@ export class DelegateTaskTool implements ITool {
                 }
             }
 
+            const finalOutput = [
+                `agent: ${delegateConfig.agentName}`,
+                `iterations: ${Math.min(messages.filter((message) => message.role === 'assistant').length, MAX_ITERATIONS)}`,
+                `toolCalls: ${toolCallsExecuted}`,
+                'final:',
+                result || '(sub-agent returned no output)',
+                ...(evidence.length > 0
+                    ? ['evidence:', ...evidence.slice(-5)]
+                    : []),
+            ].join('\n');
+
+            // Fire SubagentStop lifecycle hook on normal termination.
+            try {
+                await this.onSubagentStop?.({
+                    subagentName: delegateConfig.agentName,
+                    subagentGoal: task,
+                    success: true,
+                });
+            } catch { /* hooks must not break the tool */ }
+
             return {
                 toolCallId,
                 success: true,
-                output: [
-                    `agent: ${delegateConfig.agentName}`,
-                    `iterations: ${Math.min(messages.filter((message) => message.role === 'assistant').length, MAX_ITERATIONS)}`,
-                    `toolCalls: ${toolCallsExecuted}`,
-                    'final:',
-                    result || '(sub-agent returned no output)',
-                    ...(evidence.length > 0
-                        ? ['evidence:', ...evidence.slice(-5)]
-                        : []),
-                ].join('\n'),
+                output: finalOutput,
             };
         } catch (err) {
+            // Fire SubagentStop on failure too, so hooks can observe sub-agent
+            // crashes. Intentionally swallow hook errors to avoid masking the
+            // original failure.
+            try {
+                await this.onSubagentStop?.({
+                    subagentName: String((args['agent'] as string) || 'explore'),
+                    subagentGoal: String(task || ''),
+                    success: false,
+                });
+            } catch { /* noop */ }
+
             return {
                 toolCallId,
                 success: false,

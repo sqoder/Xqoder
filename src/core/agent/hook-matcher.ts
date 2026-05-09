@@ -25,6 +25,13 @@ export function matchesToolHook(matcherGroup: HookMatcherConfig, toolName: strin
         return true;
     }
 
+    // Lifecycle hook payloads without a matcher target (session/stop/pre-compact)
+    // only match an explicit `*`; a named matcher is treated as tool-specific
+    // and therefore cannot match an empty target.
+    if (!toolName) {
+        return false;
+    }
+
     const normalizedMatcher = matcher.toLowerCase();
     const aliases = new Set([
         toolName.toLowerCase(),

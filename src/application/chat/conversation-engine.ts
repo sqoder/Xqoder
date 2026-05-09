@@ -80,6 +80,41 @@ type ConversationEventEmitter = <K extends keyof AgentEvents>(
     streamId?: string,
 ) => void;
 
+export interface ConversationLifecycleHooks {
+    onSessionStart?: (input: {
+        source: 'startup' | 'resume';
+        messageCount: number;
+    }) => Promise<{
+        continue: boolean;
+        stopReason?: string;
+        systemMessages: string[];
+        additionalContexts: string[];
+    }>;
+    onUserPromptSubmit?: (input: {
+        prompt: string;
+        slashCommand?: string;
+        attachmentsCount: number;
+    }) => Promise<{
+        continue: boolean;
+        stopReason?: string;
+        decision?: 'block';
+        reason?: string;
+        systemMessages: string[];
+        additionalContexts: string[];
+    }>;
+    onStop?: (input: {
+        reason: 'completed' | 'failed' | 'cancelled';
+        stopReason?: string;
+    }) => Promise<void>;
+    onPreCompact?: (input: {
+        trigger: 'auto' | 'manual';
+        messageCountBefore: number;
+    }) => Promise<{
+        continue: boolean;
+        systemMessages: string[];
+    }>;
+}
+
 export interface ConversationEngineDependencies {
     provider: ILLMProvider;
     session: AgentSession;
@@ -112,6 +147,7 @@ export interface ConversationEngineDependencies {
     syncMcpTools?: () => Promise<void>;
     createRuntime?: () => ConversationRuntimeLike | undefined;
     now?: () => number;
+    lifecycleHooks?: ConversationLifecycleHooks;
 }
 
 class AsyncEventQueue<T> implements AsyncIterable<T> {
@@ -516,6 +552,65 @@ function createConversationTurnStream(
                     cwd: dependencies.cwd ?? process.cwd(),
                 },
         );
+
+        // Fire SessionStart lifecycle hook after the session event is emitted.
+        // If the hook returns continue:false, abort the turn with the stop reason.
+        if (dependencies.lifecycleHooks?.onSessionStart) {
+            try {
+                const hookOutcome = await dependencies.lifecycleHooks.onSessionStart({
+                    source: dependencies.sessionResumed === true || initialMessageCount > 1
+                        ? 'resume'
+                        : 'startup',
+                    messageCount: initialMessageCount,
+                });
+                if (!hookOutcome.continue) {
+                    throw createStopError(
+                        hookOutcome.stopReason ?? 'SessionStart hook requested abort',
+                        {
+                            stopReason: 'provider_error',
+                            agentEndReason: 'failed',
+                        },
+                        dependencies,
+                    );
+                }
+            } catch (err) {
+                if (err instanceof ConversationEngineStopError) {
+                    throw err;
+                }
+                dependencies.logger.warn(`SessionStart hook threw: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        }
+
+        // Fire UserPromptSubmit lifecycle hook next. A block outcome aborts
+        // the turn; additionalContext messages are appended as system
+        // messages so they reach the model on the next provider call.
+        if (dependencies.lifecycleHooks?.onUserPromptSubmit) {
+            try {
+                const hookOutcome = await dependencies.lifecycleHooks.onUserPromptSubmit({
+                    prompt: dependencies.userMessage,
+                    attachmentsCount: dependencies.attachments?.length ?? 0,
+                });
+                if (hookOutcome.decision === 'block' || !hookOutcome.continue) {
+                    throw createStopError(
+                        hookOutcome.reason ?? hookOutcome.stopReason ?? 'UserPromptSubmit hook blocked the prompt',
+                        {
+                            stopReason: 'provider_error',
+                            agentEndReason: 'failed',
+                        },
+                        dependencies,
+                    );
+                }
+                for (const context of hookOutcome.additionalContexts) {
+                    dependencies.session.addMessage({ role: 'system', content: context });
+                }
+            } catch (err) {
+                if (err instanceof ConversationEngineStopError) {
+                    throw err;
+                }
+                dependencies.logger.warn(`UserPromptSubmit hook threw: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        }
+
         emitRecord('message.started', {
             source: 'agent',
             message: {
@@ -759,6 +854,25 @@ function createConversationTurnStream(
                 status: 'done',
                 stopReason: result.stopReason,
             });
+
+            // Fire Stop lifecycle hook after terminal status is emitted. The
+            // hook is observational — its outcome cannot reopen the turn.
+            if (dependencies.lifecycleHooks?.onStop) {
+                try {
+                    const stopHookReason: 'completed' | 'failed' | 'cancelled' =
+                        result.stopReason === 'completed'
+                            ? 'completed'
+                            : result.stopReason === 'user_cancelled'
+                                ? 'cancelled'
+                                : 'failed';
+                    await dependencies.lifecycleHooks.onStop({
+                        reason: stopHookReason,
+                        stopReason: result.stopReason,
+                    });
+                } catch (err) {
+                    dependencies.logger.warn(`Stop hook threw: ${err instanceof Error ? err.message : String(err)}`);
+                }
+            }
             return {
                 ...result,
                 response: result.response,
@@ -780,6 +894,20 @@ function createConversationTurnStream(
                 stopReason,
                 message: normalizedError.message,
             });
+
+            // Fire Stop hook for failed terminal cases too. user_cancelled is
+            // handled on the success path above since cancellation produces a
+            // normal return rather than throwing.
+            if (dependencies.lifecycleHooks?.onStop) {
+                try {
+                    await dependencies.lifecycleHooks.onStop({
+                        reason: 'failed',
+                        stopReason,
+                    });
+                } catch (err) {
+                    dependencies.logger.warn(`Stop hook threw: ${err instanceof Error ? err.message : String(err)}`);
+                }
+            }
             throw normalizedError;
         } finally {
             eventQueue.close();
@@ -1094,6 +1222,25 @@ async function maybeAutoCompact(
     dependencies.logger.warn(`Context usage at ${Math.round(usage.promptTokens / ctxWindow * 100)}%, triggering auto-compact`);
     try {
         const messages = dependencies.session.getMessages().filter((message) => message.role !== 'system');
+
+        // Fire PreCompact lifecycle hook. If the hook returns continue:false
+        // we skip compaction this turn and let the engine continue — the
+        // model will just have less headroom.
+        if (dependencies.lifecycleHooks?.onPreCompact) {
+            try {
+                const hookOutcome = await dependencies.lifecycleHooks.onPreCompact({
+                    trigger: 'auto',
+                    messageCountBefore: messages.length,
+                });
+                if (!hookOutcome.continue) {
+                    dependencies.logger.warn('PreCompact hook skipped auto-compact for this turn');
+                    return;
+                }
+            } catch (err) {
+                dependencies.logger.warn(`PreCompact hook threw: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        }
+
         const { SummarizerAgent } = await import('@xqoder/agent');
         const summaryAgent = new SummarizerAgent(dependencies.llmConfig);
         const summary = await summaryAgent.summarize(messages);

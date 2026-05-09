@@ -2,6 +2,7 @@
 // ============================================================
 
 import type {
+    AgentPermissionMode,
     ApprovalPolicy,
     ExecutionCapability,
     LLMProviderConfig,
@@ -57,6 +58,14 @@ import {
     runConversationTurn,
     streamConversationTurn,
 } from '../../application/chat/conversation-engine.js';
+import type { ConversationLifecycleHooks } from '../../application/chat/conversation-engine.js';
+import {
+    runSessionStartHook,
+    runUserPromptSubmitHook,
+    runStopHook,
+    runSubagentStopHook,
+    runPreCompactHook,
+} from './agent-hook-feedback.js';
 import type { ConversationStopReason } from '../../domain/conversation/stop-reason.js';
 
 /** Agent Configuration */
@@ -412,6 +421,7 @@ export class XQoderAgent implements AgentProtocol {
                 ),
                 syncMcpTools: this.syncMcpTools.bind(this),
                 createRuntime: () => this.createMvpRuntime(userMessage),
+                ...(this.buildLifecycleHooks() ? { lifecycleHooks: this.buildLifecycleHooks()! } : {}),
             });
             try { callbacks?.onStop?.(result.stopReason); } catch { /* noop */ }
             return result.response;
@@ -487,6 +497,7 @@ export class XQoderAgent implements AgentProtocol {
                         ),
                         syncMcpTools: self.syncMcpTools.bind(self),
                         createRuntime: () => self.createMvpRuntime(userMessage),
+                        ...(self.buildLifecycleHooks() ? { lifecycleHooks: self.buildLifecycleHooks()! } : {}),
                     });
 
                     for await (const event of stream) {
@@ -564,7 +575,47 @@ export class XQoderAgent implements AgentProtocol {
             lspManager: this.lspManager,
             lspServers,
             profile: this.runtimeProfile,
+            onSubagentStop: async (input) => {
+                const runtime = this.buildHookRuntime();
+                if (!runtime) {
+                    return;
+                }
+                await runSubagentStopHook({
+                    ...runtime,
+                    subagentName: input.subagentName,
+                    subagentGoal: input.subagentGoal,
+                    success: input.success,
+                });
+            },
         });
+    }
+
+    private buildHookRuntime(): {
+        disableAllHooks: boolean;
+        hooks?: HooksSettings;
+        llmConfig: LLMProviderConfig;
+        cwd: string;
+        projectRoot: string;
+        sessionId: string;
+        logger: Logger;
+        permissionMode: AgentPermissionMode;
+    } | undefined {
+        if (this.runtimeProfile === 'mvp') {
+            return undefined;
+        }
+        if (this.disableAllHooks || !this.hooks || Object.keys(this.hooks).length === 0) {
+            return undefined;
+        }
+        return {
+            disableAllHooks: this.disableAllHooks,
+            hooks: this.hooks,
+            llmConfig: this.llmConfig,
+            cwd: this.toolContext.cwd,
+            projectRoot: this.toolContext.projectRoot,
+            sessionId: this.session.id,
+            logger: this.logger,
+            permissionMode: (this.permissions?.defaultMode ?? 'ask') as AgentPermissionMode,
+        };
     }
 
     /** Register custom tools */
@@ -628,6 +679,63 @@ export class XQoderAgent implements AgentProtocol {
             systemPrompt
             ?? (this.runtimeProfile === 'mvp' ? DEFAULT_MVP_SYSTEM_PROMPT : DEFAULT_SYSTEM_PROMPT),
         );
+    }
+
+    private buildLifecycleHooks(): ConversationLifecycleHooks | undefined {
+        const runtime = this.buildHookRuntime();
+        if (!runtime) {
+            return undefined;
+        }
+
+        return {
+            onSessionStart: async (input) => {
+                const outcome = await runSessionStartHook({
+                    ...runtime,
+                    source: input.source,
+                    messageCount: input.messageCount,
+                });
+                return {
+                    continue: outcome.continue,
+                    ...(outcome.stopReason ? { stopReason: outcome.stopReason } : {}),
+                    systemMessages: outcome.systemMessages,
+                    additionalContexts: outcome.additionalContexts,
+                };
+            },
+            onUserPromptSubmit: async (input) => {
+                const outcome = await runUserPromptSubmitHook({
+                    ...runtime,
+                    prompt: input.prompt,
+                    ...(input.slashCommand ? { slashCommand: input.slashCommand } : {}),
+                    attachmentsCount: input.attachmentsCount,
+                });
+                return {
+                    continue: outcome.continue,
+                    ...(outcome.stopReason ? { stopReason: outcome.stopReason } : {}),
+                    ...(outcome.decision ? { decision: outcome.decision } : {}),
+                    ...(outcome.reason ? { reason: outcome.reason } : {}),
+                    systemMessages: outcome.systemMessages,
+                    additionalContexts: outcome.additionalContexts,
+                };
+            },
+            onStop: async (input) => {
+                await runStopHook({
+                    ...runtime,
+                    reason: input.reason,
+                    ...(input.stopReason ? { stopReason: input.stopReason } : {}),
+                });
+            },
+            onPreCompact: async (input) => {
+                const outcome = await runPreCompactHook({
+                    ...runtime,
+                    trigger: input.trigger,
+                    messageCountBefore: input.messageCountBefore,
+                });
+                return {
+                    continue: outcome.continue,
+                    systemMessages: outcome.systemMessages,
+                };
+            },
+        };
     }
 
     private createMvpRuntime(userMessage: string) {

@@ -4,7 +4,7 @@ import { createLLMProvider } from './llm/factory.js';
 import type {
     HookHandlerExecutionResult,
     ToolHookEventName,
-    ToolHookPayload,
+    HookPayload,
     ToolHookRunnerConfig,
 } from './hooks.js';
 
@@ -25,7 +25,7 @@ export interface CommandHookShellSpec {
 
 export async function executeHookHandler(
     handler: HookHandlerConfig,
-    payload: ToolHookPayload,
+    payload: HookPayload,
     config: ToolHookRunnerConfig,
     eventName: ToolHookEventName,
     logger: Logger,
@@ -50,7 +50,7 @@ export async function executeHookHandler(
 
 async function executeCommandHook(
     handler: Extract<HookHandlerConfig, { type: 'command' }>,
-    payload: ToolHookPayload,
+    payload: HookPayload,
     config: ToolHookRunnerConfig,
     eventName: ToolHookEventName,
     logger: Logger,
@@ -106,7 +106,7 @@ async function executeCommandHook(
 
 async function runCommandHookProcess(
     shellSpec: CommandHookShellSpec,
-    payload: ToolHookPayload,
+    payload: HookPayload,
     config: ToolHookRunnerConfig,
 ): Promise<string> {
     return await new Promise<string>((resolve, reject) => {
@@ -158,7 +158,7 @@ export function resolveCommandHookShellSpec(input: {
 
 async function executeHttpHook(
     handler: Extract<HookHandlerConfig, { type: 'http' }>,
-    payload: ToolHookPayload,
+    payload: HookPayload,
     logger: Logger,
 ): Promise<HookHandlerExecutionResult> {
     const controller = new AbortController();
@@ -203,7 +203,7 @@ async function executePromptHook(
     prompt: string,
     model: string | undefined,
     agentName: string | undefined,
-    payload: ToolHookPayload,
+    payload: HookPayload,
     config: ToolHookRunnerConfig,
     logger: Logger,
     type: 'prompt' | 'agent',
@@ -260,7 +260,7 @@ async function executePromptHook(
     }
 }
 
-function createHookEnvironment(config: ToolHookRunnerConfig, payload: ToolHookPayload): Record<string, string> {
+function createHookEnvironment(config: ToolHookRunnerConfig, payload: HookPayload): Record<string, string> {
     return {
         ...Object.fromEntries(
             Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
@@ -276,7 +276,7 @@ function createHookEnvironment(config: ToolHookRunnerConfig, payload: ToolHookPa
 
 function spawnHookProcess(
     shellSpec: CommandHookShellSpec,
-    payload: ToolHookPayload,
+    payload: HookPayload,
     config: ToolHookRunnerConfig,
     stdio: ['pipe', 'ignore', 'ignore'] | ['pipe', 'pipe', 'pipe'],
 ) {
