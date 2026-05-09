@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { createNotepadSnapshot } from '../system/notepad.js';
 
@@ -35,6 +36,12 @@ const DEFAULT_PROJECT_RULE_CANDIDATES = [
 ];
 const MAX_RULE_FILE_CHARS = 1_200;
 const MAX_RULE_FILES = 3;
+const MAX_IMPORT_DEPTH = 5;
+// Path-shaped @-tokens that trigger an import expansion. A token is accepted
+// when it starts with a clear path prefix (`./`, `../`, `/`, `~/`), or when
+// it contains a `/` or a file extension in the middle segment. This avoids
+// eating normal @mentions like `@username` or email fragments.
+const IMPORT_TOKEN_PATTERN = /(?:^|(?<=[\s(]))@((?:\.{1,2}\/|\/|~\/)[^\s)"']+|[\w.-]+\/[^\s)"']+|[\w-]+\.[A-Za-z0-9]{1,8})(?=$|[\s).,;:"'])/g;
 
 export function collectInstructionSources(input: InstructionSourceInput): InstructionSource[] {
     const sources: InstructionSource[] = [];
@@ -81,15 +88,10 @@ function readProjectRules(cwd: string, candidates: string[] | undefined): string
             continue;
         }
         seen.add(absolutePath);
-        if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
-            continue;
+        const entry = readRuleFileEntry(absolutePath, cwd);
+        if (entry) {
+            resolvedEntries.push(entry);
         }
-        const content = fs.readFileSync(absolutePath, 'utf-8').trim();
-        if (!content) {
-            continue;
-        }
-        const relativePath = path.relative(cwd, absolutePath) || path.basename(absolutePath);
-        resolvedEntries.push(`${relativePath}:\n${truncate(content, MAX_RULE_FILE_CHARS)}`);
     }
 
     collectRuleDirectoryEntries(cwd, path.resolve(cwd, '.xqoder', 'rules'), '.xqoder/rules', resolvedEntries);
@@ -144,14 +146,157 @@ function collectRuleDirectoryEntries(
             .sort((left, right) => left.localeCompare(right));
         for (const file of files) {
             const absolutePath = path.join(directory, file);
-            const content = fs.readFileSync(absolutePath, 'utf-8').trim();
-            if (!content) {
-                continue;
+            const entry = readRuleFileEntry(absolutePath, cwd, `${renderedPrefix}/${file}`);
+            if (entry) {
+                output.push(entry);
             }
-            const relativePath = path.relative(cwd, absolutePath) || `${renderedPrefix}/${file}`;
-            output.push(`${relativePath}:\n${truncate(content, MAX_RULE_FILE_CHARS)}`);
         }
     } catch {
         // ignore readdir errors
     }
+}
+
+function readRuleFileEntry(
+    absolutePath: string,
+    cwd: string,
+    fallbackRelative?: string,
+): string | undefined {
+    if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
+        return undefined;
+    }
+    const content = fs.readFileSync(absolutePath, 'utf-8').trim();
+    if (!content) {
+        return undefined;
+    }
+
+    const expanded = expandInstructionImports(content, absolutePath, cwd);
+    const relativePath = path.relative(cwd, absolutePath)
+        || fallbackRelative
+        || path.basename(absolutePath);
+    return `${relativePath}:\n${truncate(expanded, MAX_RULE_FILE_CHARS)}`;
+}
+
+/**
+ * Expand @-path imports in an instruction file.
+ *
+ * Rules:
+ * - Paths are resolved relative to the file that contains the token (not cwd).
+ * - `@~/...` expands to the user's home directory.
+ * - `@/abs/...` is absolute.
+ * - Imports inside triple-backtick code fences are left untouched.
+ * - Recursion follows imports up to MAX_IMPORT_DEPTH; cycles are broken via
+ *   the visited-set passed through the chain.
+ * - Missing or unreadable paths are silently left as plain text.
+ * - Each imported file's content is trimmed; nothing is rewritten on disk.
+ */
+export function expandInstructionImports(
+    content: string,
+    sourceFilePath: string,
+    cwd: string,
+): string {
+    return expandImportsRecursive(content, sourceFilePath, cwd, new Set(), 0);
+}
+
+function expandImportsRecursive(
+    content: string,
+    sourceFilePath: string,
+    cwd: string,
+    visited: ReadonlySet<string>,
+    depth: number,
+): string {
+    if (depth >= MAX_IMPORT_DEPTH) {
+        return content;
+    }
+
+    const lines = content.split('\n');
+    const output: string[] = [];
+    let insideFence = false;
+
+    for (const line of lines) {
+        // Toggle fenced code block. We only treat lines whose trimmed start
+        // begins with triple backticks as fence boundaries; this matches the
+        // common markdown convention without being over-clever.
+        if (/^\s*```/.test(line)) {
+            insideFence = !insideFence;
+            output.push(line);
+            continue;
+        }
+
+        if (insideFence) {
+            output.push(line);
+            continue;
+        }
+
+        const expandedLine = expandImportsInLine(line, sourceFilePath, cwd, visited, depth);
+        output.push(expandedLine);
+    }
+
+    return output.join('\n');
+}
+
+function expandImportsInLine(
+    line: string,
+    sourceFilePath: string,
+    cwd: string,
+    visited: ReadonlySet<string>,
+    depth: number,
+): string {
+    // Reset regex state per call since we use the global flag.
+    IMPORT_TOKEN_PATTERN.lastIndex = 0;
+    return line.replace(IMPORT_TOKEN_PATTERN, (match, captured: string) => {
+        const targetPath = resolveImportTarget(captured, sourceFilePath);
+        if (!targetPath) {
+            return match;
+        }
+        if (visited.has(targetPath)) {
+            return `[circular import skipped: ${captured}]`;
+        }
+        if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isFile()) {
+            return match;
+        }
+
+        let importedContent: string;
+        try {
+            importedContent = fs.readFileSync(targetPath, 'utf-8').trim();
+        } catch {
+            return match;
+        }
+        if (!importedContent) {
+            return match;
+        }
+
+        const nextVisited = new Set(visited);
+        nextVisited.add(targetPath);
+        const expandedContent = expandImportsRecursive(
+            importedContent,
+            targetPath,
+            cwd,
+            nextVisited,
+            depth + 1,
+        );
+
+        const relativeHeader = path.relative(cwd, targetPath) || path.basename(targetPath);
+        return `\n<!-- imported from ${relativeHeader} -->\n${expandedContent}\n<!-- end import ${relativeHeader} -->\n`;
+    });
+}
+
+function resolveImportTarget(captured: string, sourceFilePath: string): string | undefined {
+    if (!captured) {
+        return undefined;
+    }
+
+    // Home-directory expansion.
+    if (captured === '~' || captured.startsWith('~/')) {
+        return path.resolve(path.join(os.homedir(), captured.slice(captured === '~' ? 1 : 2)));
+    }
+
+    // Absolute path.
+    if (captured.startsWith('/')) {
+        return path.resolve(captured);
+    }
+
+    // Relative path — resolved against the directory of the file that
+    // contains the import token.
+    const sourceDir = path.dirname(sourceFilePath);
+    return path.resolve(sourceDir, captured);
 }
