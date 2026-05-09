@@ -10,10 +10,12 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-    "onCommand:xqoder.openChatPanel",
-    "onCommand:xqoder.openDiffPreview"
-  ],
+    "activationEvents": [
+        "onCommand:xqoder.openChatPanel",
+        "onCommand:xqoder.openDiffPreview",
+        "onCommand:xqoder.approveActiveDiff",
+        "onCommand:xqoder.rejectActiveDiff"
+    ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -24,6 +26,14 @@
       {
         "command": "xqoder.openDiffPreview",
         "title": "XQoder: Open Diff Preview"
+      },
+      {
+        "command": "xqoder.approveActiveDiff",
+        "title": "XQoder: Apply Approval Diff"
+      },
+      {
+        "command": "xqoder.rejectActiveDiff",
+        "title": "XQoder: Reject Approval Diff"
       }
     ],
     "configuration": {

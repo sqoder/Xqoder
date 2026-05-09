@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { showApprovalDiffPreview } from '../review/diff-view';
+import { showApprovalDiffPreview, showNativeApprovalDiff } from '../review/diff-view';
+import type { ApprovalDiffContentProvider } from '../review/content-provider';
 import {
     getApprovalKey,
     resolveApprovalTarget,
@@ -78,7 +79,10 @@ export class XQoderChatPanel {
     private readonly pendingApprovals = new Map<string, PendingApproval>();
     private readonly pendingQuestions = new Map<string, PendingQuestion>();
 
-    constructor(private readonly context: vscode.ExtensionContext) {
+    constructor(
+        private readonly context: vscode.ExtensionContext,
+        private readonly contentProvider?: ApprovalDiffContentProvider,
+    ) {
         this.sessionId = context.workspaceState.get<string>('xqoder.sessionId');
         this.restorePersistedState();
     }
@@ -313,9 +317,10 @@ export class XQoderChatPanel {
 
                 if (event.type === 'approval.requested') {
                     const approval = toPendingApproval(event.payload, record.streamId);
-                    this.pendingApprovals.set(getApprovalKey(approval), approval);
-                    if (approval.preview && (approval.toolName === 'write_file' || approval.toolName === 'edit_file')) {
-                        void showApprovalDiffPreview(approval.summary, approval.preview);
+                    const approvalKey = getApprovalKey(approval);
+                    this.pendingApprovals.set(approvalKey, approval);
+                    if (approval.preview && (approval.toolName === 'write_file' || approval.toolName === 'edit_file' || approval.toolName === 'apply_patch')) {
+                        void this.renderApprovalDiff(approvalKey, approval);
                     }
                     this.postState();
                     continue;
@@ -505,6 +510,67 @@ export class XQoderChatPanel {
     private appendTranscript(role: PanelTranscriptMessage['role'], content: string): number {
         this.transcript.push({ role, content });
         return this.transcript.length - 1;
+    }
+
+    /**
+     * Public entry called by the `xqoder.approveActiveDiff` /
+     * `xqoder.rejectActiveDiff` commands. Lets the user resolve an approval
+     * from a toolbar button, editor toolbar action, or the diff editor
+     * toolbar without having to switch back to the webview.
+     */
+    public async resolveApprovalFromCommand(
+        approvalKey: string,
+        decision: 'allow' | 'deny',
+    ): Promise<void> {
+        if (!this.pendingApprovals.has(approvalKey)) {
+            void vscode.window.showWarningMessage('That XQoder approval has already been resolved.');
+            return;
+        }
+        await this.resolveApproval(approvalKey, decision);
+    }
+
+    private async renderApprovalDiff(approvalKey: string, approval: PendingApproval): Promise<void> {
+        if (!approval.preview) {
+            return;
+        }
+
+        const workspaceRoot = this.tryGetWorkspaceRoot();
+        const nativeOpened = this.contentProvider
+            ? await showNativeApprovalDiff({
+                approvalKey,
+                toolName: approval.toolName,
+                summary: approval.summary,
+                preview: approval.preview,
+                ...(workspaceRoot ? { workspaceRoot } : {}),
+                contentProvider: this.contentProvider,
+            })
+            : false;
+
+        if (!nativeOpened) {
+            await showApprovalDiffPreview(approval.summary, approval.preview);
+            return;
+        }
+
+        // Offer Apply / Reject as an info toast so the user can resolve the
+        // approval without switching back to the chat panel.
+        const choice = await vscode.window.showInformationMessage(
+            approval.summary,
+            'Apply',
+            'Reject',
+        );
+        if (choice === 'Apply') {
+            await this.resolveApprovalFromCommand(approvalKey, 'allow');
+        } else if (choice === 'Reject') {
+            await this.resolveApprovalFromCommand(approvalKey, 'deny');
+        }
+    }
+
+    private tryGetWorkspaceRoot(): string | undefined {
+        try {
+            return this.getWorkspaceRoot();
+        } catch {
+            return undefined;
+        }
     }
 
     private postState(): void {

@@ -1,6 +1,7 @@
 declare module 'vscode' {
     export const ViewColumn: {
         Beside: number;
+        Active: number;
     };
 
     export interface Disposable {
@@ -15,6 +16,39 @@ declare module 'vscode' {
         };
     }
 
+    export interface Uri {
+        readonly scheme: string;
+        readonly path: string;
+        readonly fsPath: string;
+        readonly query: string;
+        toString(skipEncoding?: boolean): string;
+        with(change: { scheme?: string; path?: string; query?: string }): Uri;
+    }
+
+    export const Uri: {
+        parse(value: string): Uri;
+        file(path: string): Uri;
+        from(components: { scheme: string; path?: string; query?: string }): Uri;
+    };
+
+    export interface CancellationToken {
+        readonly isCancellationRequested: boolean;
+    }
+
+    export type Event<T> = (listener: (event: T) => unknown) => Disposable;
+
+    export class EventEmitter<T> implements Disposable {
+        constructor();
+        readonly event: Event<T>;
+        fire(data: T): void;
+        dispose(): void;
+    }
+
+    export interface TextDocumentContentProvider {
+        readonly onDidChange?: Event<Uri>;
+        provideTextDocumentContent(uri: Uri, token?: CancellationToken): string | Thenable<string>;
+    }
+
     export interface Selection {
         readonly isEmpty: boolean;
         readonly start: { line: number };
@@ -22,7 +56,7 @@ declare module 'vscode' {
     }
 
     export interface TextDocument {
-        readonly uri: { fsPath: string };
+        readonly uri: Uri | { fsPath: string };
         getText(selection?: Selection): string;
     }
 
@@ -55,6 +89,7 @@ declare module 'vscode' {
 
     export const commands: {
         registerCommand(command: string, callback: (...args: unknown[]) => unknown): Disposable;
+        executeCommand<T = unknown>(command: string, ...rest: unknown[]): Thenable<T>;
     };
 
     export const workspace: {
@@ -63,7 +98,11 @@ declare module 'vscode' {
             get<T>(key: string): T | undefined;
         };
         asRelativePath(path: string): string;
-        openTextDocument(options: { language: string; content: string }): Thenable<TextDocument>;
+        openTextDocument(options: { language: string; content: string } | Uri): Thenable<TextDocument>;
+        registerTextDocumentContentProvider(
+            scheme: string,
+            provider: TextDocumentContentProvider,
+        ): Disposable;
     };
 
     export const window: {
@@ -78,8 +117,8 @@ declare module 'vscode' {
             },
         ): WebviewPanel;
         showTextDocument(document: TextDocument, options?: TextDocumentShowOptions): Thenable<void>;
-        showInformationMessage(message: string): Thenable<void>;
-        showWarningMessage(message: string): Thenable<void>;
-        showErrorMessage(message: string): Thenable<void>;
+        showInformationMessage(message: string, ...items: string[]): Thenable<string | undefined>;
+        showWarningMessage(message: string, ...items: string[]): Thenable<string | undefined>;
+        showErrorMessage(message: string, ...items: string[]): Thenable<string | undefined>;
     };
 }
