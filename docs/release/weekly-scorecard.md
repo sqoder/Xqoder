@@ -25,7 +25,7 @@
 - release:check: ✅
 - golden task pass: 0/10 → 0/10 (P01 未触发业务逻辑,dry-run 基线不变)
 - /review 警告: 0 条 (本期 diff 全为新增隔离模块,未跑 /review)
-- 本期关键产出:
+- 本期验收产出:
   - `src/infra/llm/retry/{errors,classify,with-retry,index}.ts` — 错误分类
     + withRetry 包装器,clean-room 实现,未复制 OpenClaude 源码
   - `test/infrastructure/llm-retry.test.ts` — 26 用例,覆盖 DoD 全部 6 类
@@ -35,6 +35,7 @@
     complete() 外层套 withRetry,外部签名不变
   - `scripts/check-coverage.mjs` — 限定 coverage 到 `./test ./src`,避开
     openclaude/ 参考克隆(scaffolding commit 已落)
-- 本期 token 消耗: 约 5 万 (不含前序会话)
+  - `docs/release/p01-verification.md` — DoD 逐条证据 + 已识别 gap 登记
+- 本期 token 消耗: 未测量
 - ADR: 暂无(本期不触红线)
 - 下一期: **P02 — Compaction pipeline**
