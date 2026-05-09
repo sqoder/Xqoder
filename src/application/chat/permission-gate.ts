@@ -55,6 +55,7 @@ export function resolveTaskModeFromTurn(
         case 'capability':
             return 'casual_chat';
         case 'project_explanation':
+        case 'file_analysis':
         case 'config_or_runtime':
             return 'project_question';
         case 'engineering_task':
@@ -72,10 +73,10 @@ export function resolveExecutionCapability(
     switch (taskMode) {
         case 'plan_only':
             return 'plan';
-        case 'casual_chat':
-        case 'project_question':
         case 'code_review':
             return 'read_only';
+        case 'casual_chat':
+        case 'project_question':
         case 'engineering_edit':
         case 'debug_fix':
         default:

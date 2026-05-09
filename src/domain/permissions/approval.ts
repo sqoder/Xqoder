@@ -1,6 +1,18 @@
 export type ToolApprovalRisk = 'low' | 'medium' | 'high';
 export type ToolApprovalDecision = 'allow' | 'ask' | 'deny';
 
+export type ToolApprovalCategory =
+    | 'outside-workspace-read'
+    | 'sensitive-read'
+    | 'protected-path'
+    | 'high-risk-write'
+    | 'dangerous-command'
+    | 'network'
+    | 'external-tool'
+    | 'suspicious-path'
+    | 'internal-runtime'
+    | 'policy';
+
 export interface ToolApprovalRequest {
     toolCallId?: string;
     toolName: string;
@@ -8,6 +20,8 @@ export interface ToolApprovalRequest {
     reason?: string;
     preview?: string;
     risk?: ToolApprovalRisk;
+    category?: ToolApprovalCategory;
+    suggestion?: string;
 }
 
 export interface ToolApprovalPatch extends Partial<ToolApprovalRequest> {
@@ -64,6 +78,8 @@ export function mergeToolApprovalRequest(
 
     const reason = mergeText(base.reason, patch.reason);
     const preview = mergeText(base.preview, patch.preview);
+    const category = patch.category ?? base.category;
+    const suggestion = patch.suggestion ?? base.suggestion;
 
     return {
         ...base,
@@ -71,6 +87,8 @@ export function mergeToolApprovalRequest(
         ...(reason ? { reason } : {}),
         ...(preview ? { preview } : {}),
         ...toOptionalRisk(patch.risk ?? base.risk),
+        ...(category ? { category } : {}),
+        ...(suggestion ? { suggestion } : {}),
     };
 }
 
@@ -89,6 +107,8 @@ export function mergeToolApprovalPatches(
     const reason = mergeText(base.reason, extra.reason);
     const preview = mergeText(base.preview, extra.preview);
     const risk = extra.risk ?? base.risk;
+    const category = extra.category ?? base.category;
+    const suggestion = extra.suggestion ?? base.suggestion;
 
     return {
         ...(force ? { force } : {}),
@@ -96,6 +116,8 @@ export function mergeToolApprovalPatches(
         ...(reason ? { reason } : {}),
         ...(preview ? { preview } : {}),
         ...(risk ? { risk } : {}),
+        ...(category ? { category } : {}),
+        ...(suggestion ? { suggestion } : {}),
     };
 }
 

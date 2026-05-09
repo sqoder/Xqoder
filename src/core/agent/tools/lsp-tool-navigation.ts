@@ -2,12 +2,14 @@ import type { ToolDefinition, ToolResult } from '@xqoder/shared';
 import { ExternalLanguageServerManager } from '../lsp-manager.js';
 import type { ITool, ToolContext } from './tool.js';
 import { truncatePreview } from './diff.js';
-import { resolvePathWithinProject } from './sandbox.js';
+import { resolvePathForRead } from './sandbox.js';
 import { clampResultLimit, getOrCreateTsContext } from './lsp-tool-typescript-context.js';
 import { formatLocationMatch } from './lsp-tool-formatters.js';
 
 export class LspDefinitionTool implements ITool {
     constructor(private readonly externalManager?: ExternalLanguageServerManager) {}
+
+    readonly persistLargeResult = false;
 
     readonly definition: ToolDefinition = {
         name: 'lsp_definition',
@@ -19,11 +21,19 @@ export class LspDefinitionTool implements ITool {
         ],
     };
 
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return true;
+    }
+
     async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
         const toolCallId = (args['toolCallId'] as string) ?? '';
 
         try {
-            const filePath = resolvePathWithinProject(args['path'] as string, context);
+            const filePath = resolvePathForRead(args['path'] as string, context);
             const matches = await this.findDefinitions(
                 filePath,
                 Number(args['line']),
@@ -69,6 +79,8 @@ export class LspDefinitionTool implements ITool {
 export class LspReferencesTool implements ITool {
     constructor(private readonly externalManager?: ExternalLanguageServerManager) {}
 
+    readonly persistLargeResult = false;
+
     readonly definition: ToolDefinition = {
         name: 'lsp_references',
         description: 'Find symbol references based on file position, supports built-in TypeScript/JavaScript and configured external LSP servers.',
@@ -80,11 +92,19 @@ export class LspReferencesTool implements ITool {
         ],
     };
 
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return true;
+    }
+
     async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
         const toolCallId = (args['toolCallId'] as string) ?? '';
 
         try {
-            const filePath = resolvePathWithinProject(args['path'] as string, context);
+            const filePath = resolvePathForRead(args['path'] as string, context);
             const matches = await this.findReferences(
                 filePath,
                 Number(args['line']),

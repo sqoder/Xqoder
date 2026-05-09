@@ -8,6 +8,8 @@ import type {
     ToolCall,
     ToolResult,
 } from '@xqoder/shared';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { createToolApprovalHandler } from '../../application/permissions/index.js';
 import type { ToolCallPreparation } from '../../domain/conversation/tool-execution-port.js';
 import {
@@ -21,11 +23,22 @@ import { buildPreToolUseHookPayload, runToolHooks, type ToolHookExecutionResult 
 import type { AgentEvents } from './protocol.js';
 import type { AgentSession } from './session/session.js';
 import type { AgentCallbacks } from './agent.js';
-import type { ITool, QuestionPrompt, ToolContext, ToolRegistry } from './tools/tool.js';
+import {
+    getToolResultSizeLimit,
+    isToolInvocationConcurrencySafe,
+    isToolInvocationReadOnly,
+    shouldPersistLargeToolResult,
+    validateExistingFileWasFullyRead,
+    type ITool,
+    type QuestionPrompt,
+    type ToolContext,
+    type ToolRegistry,
+} from './tools/tool.js';
 import {
     createToolPolicyApprovalPatch,
     isToolVisibleForExecutionCapability,
     isReadLikeTool,
+    isWriteLikeTool,
     mergeToolApprovalPatches,
     resolveToolPermissionDecision,
 } from '../../domain/permissions/index.js';
@@ -77,20 +90,41 @@ const EMPTY_PRE_TOOL_HOOK_RESULT: ToolHookExecutionResult = {
     handlers: [],
 };
 
+const DEFAULT_TOOL_RESULT_SIZE_LIMIT_CHARS = 50_000;
+const LARGE_TOOL_RESULT_PREVIEW_CHARS = 4_000;
+
 export async function executeAgentToolCalls(
     dependencies: AgentToolExecutionDependencies,
     toolCalls: ToolCall[],
     callbacks?: AgentCallbacks,
     streamId: string = 'global',
 ): Promise<ToolResult[]> {
-    const results: ToolResult[] = [];
+    const preparations: ToolCallPreparation<AgentCallbacks, PreparedAgentToolCallState>[] = [];
+    for (const toolCall of toolCalls) {
+        preparations.push(await prepareAgentToolCall(dependencies, toolCall, callbacks, streamId));
+    }
 
-    for (const tc of toolCalls) {
-        const preparation = await prepareAgentToolCall(dependencies, tc, callbacks, streamId);
+    const results: ToolResult[] = [];
+    for (let index = 0; index < preparations.length;) {
+        const preparation = preparations[index]!;
+        if (preparation.canRunInParallel) {
+            const batch: ToolCallPreparation<AgentCallbacks, PreparedAgentToolCallState>[] = [];
+            while (index < preparations.length && preparations[index]?.canRunInParallel) {
+                batch.push(preparations[index]!);
+                index += 1;
+            }
+            const rawResults = await Promise.all(batch.map((item) => invokePreparedAgentToolCall(item)));
+            for (let batchIndex = 0; batchIndex < batch.length; batchIndex += 1) {
+                results.push(await finalizePreparedAgentToolCall(batch[batchIndex]!, rawResults[batchIndex]));
+            }
+            continue;
+        }
+
         const rawResult = preparation.state.blockedResult
             ? undefined
             : await invokePreparedAgentToolCall(preparation);
         results.push(await finalizePreparedAgentToolCall(preparation, rawResult));
+        index += 1;
     }
 
     return results;
@@ -144,13 +178,16 @@ export async function prepareAgentToolCall(
         };
     }
 
-    const hasPriorRead = dependencies.session.getToolHistory().some((entry) => isReadLikeTool(entry.name));
+    const hasPriorRead = hasRequiredFileReadStateForTool(toolCall.name, args, dependencies.toolContext);
     const permissionMode = resolveToolPermissionDecision({
         toolName: toolCall.name,
         args,
         permissions: dependencies.permissions,
         hasPriorRead,
+        cwd: dependencies.toolContext.cwd,
         projectRoot: dependencies.toolContext.projectRoot,
+        allowedPaths: dependencies.toolContext.allowedPaths,
+        approvedReadPaths: dependencies.toolContext.approvedReadPaths,
         securityContext,
     });
     const policyApprovalPatch = createToolPolicyApprovalPatch({
@@ -158,7 +195,10 @@ export async function prepareAgentToolCall(
         args,
         permissions: dependencies.permissions,
         hasPriorRead,
+        cwd: dependencies.toolContext.cwd,
         projectRoot: dependencies.toolContext.projectRoot,
+        allowedPaths: dependencies.toolContext.allowedPaths,
+        approvedReadPaths: dependencies.toolContext.approvedReadPaths,
         securityContext,
         permissionMode,
         hasNativeApprovalRequest: Boolean(registeredTool?.buildApprovalRequest),
@@ -210,6 +250,15 @@ export async function prepareAgentToolCall(
             selected: [],
         })
         : undefined;
+    const canRunInParallel = !blocked
+        && permissionMode === 'allow'
+        && isPreparedToolCallParallelSafe({
+            toolName: toolCall.name,
+            args,
+            context: dependencies.toolContext,
+            registeredTool,
+            securityContext,
+        });
 
     return {
         toolCall,
@@ -218,6 +267,7 @@ export async function prepareAgentToolCall(
         streamId,
         permissionMode,
         blocked,
+        canRunInParallel,
         preToolUseDetail: blocked
             ? `PreToolUse hook chain blocked the tool call${preHookResult.permissionDecision ? ` (decision=${preHookResult.permissionDecision})` : ''}.`
             : `PreToolUse hook chain completed with permission mode ${permissionMode}.`,
@@ -251,6 +301,7 @@ export async function invokePreparedAgentToolCall(
 
     try { state.callbacks?.onToolStart?.(state.toolCall.name, state.args); } catch { /* noop */ }
     state.startedAt = new Date();
+    state.dependencies.toolContext.approvedReadPaths ??= [];
     return await state.dependencies.toolRegistry.execute(
         state.toolCall.name,
         state.args,
@@ -290,38 +341,39 @@ export async function finalizePreparedAgentToolCall(
     const finalizedResult = state.blockedResult
         ? rawResult
         : await applyPostToolFinalization(state, rawResult);
+    const projectedResult = projectLargeToolResultIfNeeded(state, finalizedResult);
     const startedAt = state.startedAt ?? new Date();
     const completedAt = new Date();
-    const errorMessage = finalizedResult.error ?? 'Unknown tool failure';
+    const errorMessage = projectedResult.error ?? 'Unknown tool failure';
+    const resultContent = projectedResult.success
+        ? projectedResult.output
+        : `Error: ${errorMessage}`;
 
     if (state.blockedResult) {
         try { state.callbacks?.onToolStart?.(state.toolCall.name, state.args); } catch { /* noop */ }
     }
-    try { state.callbacks?.onToolEnd?.(state.toolCall.name, finalizedResult.output, finalizedResult.success); } catch { /* noop */ }
+    try { state.callbacks?.onToolEnd?.(state.toolCall.name, resultContent, projectedResult.success); } catch { /* noop */ }
 
     state.dependencies.session.recordToolExecution({
         id: state.toolCall.id,
         name: state.toolCall.name,
         args: state.args,
-        success: finalizedResult.success,
-        output: finalizedResult.output,
-        error: finalizedResult.success ? undefined : errorMessage,
+        success: projectedResult.success,
+        output: projectedResult.output,
+        error: projectedResult.success ? undefined : errorMessage,
         startedAt,
         completedAt,
-        metadata: finalizedResult.metadata,
+        metadata: projectedResult.metadata,
     });
 
-    const resultContent = finalizedResult.success
-        ? finalizedResult.output
-        : `Error: ${errorMessage}`;
-    state.dependencies.session.addToolResult(state.toolCall.id, resultContent);
+    state.dependencies.session.addToolResult(state.toolCall.id, resultContent, projectedResult.attachments);
     state.dependencies.emit('tool_response', {
         requestId: state.toolCall.id,
         name: state.toolCall.name,
         output: resultContent,
-        success: finalizedResult.success,
+        success: projectedResult.success,
     }, state.streamId);
-    return finalizedResult;
+    return projectedResult;
 }
 
 async function applyPostToolFinalization(
@@ -343,6 +395,163 @@ async function applyPostToolFinalization(
         logger: state.dependencies.logger,
     });
     return finalizedResult;
+}
+
+function hasRequiredFileReadStateForTool(
+    toolName: string,
+    args: Record<string, unknown>,
+    context: ToolContext,
+): boolean {
+    if (!isWriteLikeTool(toolName)) {
+        return true;
+    }
+
+    const targetPaths = resolveWriteTargetPaths(toolName, args, context);
+    if (targetPaths.length === 0) {
+        return false;
+    }
+
+    return targetPaths.every((filePath) => validateExistingFileWasFullyRead(filePath, context) === undefined);
+}
+
+function resolveWriteTargetPaths(
+    toolName: string,
+    args: Record<string, unknown>,
+    context: ToolContext,
+): string[] {
+    if (toolName === 'apply_patch') {
+        return resolvePatchTargetPaths(String(args['patch'] ?? ''), context);
+    }
+
+    const candidate = args['path'] ?? args['file_path'];
+    if (typeof candidate !== 'string' || candidate.trim().length === 0) {
+        return [];
+    }
+    return [resolveToolInputPath(candidate, context)];
+}
+
+function resolvePatchTargetPaths(patch: string, context: ToolContext): string[] {
+    const filePaths = new Set<string>();
+    for (const line of patch.split('\n')) {
+        if (line.startsWith('+++ ') || line.startsWith('--- ')) {
+            const rawPath = line.slice(4).trim();
+            if (rawPath !== '/dev/null') {
+                filePaths.add(resolveToolInputPath(stripPatchPrefix(rawPath), context));
+            }
+            continue;
+        }
+
+        if (line.startsWith('diff --git ')) {
+            const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+            const candidate = match?.[2] ?? match?.[1];
+            if (candidate) {
+                filePaths.add(resolveToolInputPath(candidate, context));
+            }
+        }
+    }
+
+    return Array.from(filePaths);
+}
+
+function stripPatchPrefix(value: string): string {
+    return value.startsWith('a/') || value.startsWith('b/')
+        ? value.slice(2)
+        : value;
+}
+
+function resolveToolInputPath(value: string, context: ToolContext): string {
+    return path.resolve(path.isAbsolute(value) ? value : path.join(context.projectRoot, value));
+}
+
+function isPreparedToolCallParallelSafe(input: {
+    toolName: string;
+    args: Record<string, unknown>;
+    context: ToolContext;
+    registeredTool?: ITool;
+    securityContext?: ReturnType<NonNullable<ITool['getSecurityPolicyContext']>>;
+}): boolean {
+    const readOnly = isToolInvocationReadOnly(input.registeredTool, input.args, input.context)
+        || isReadLikeTool(input.toolName, input.securityContext);
+    const concurrencySafe = isToolInvocationConcurrencySafe(input.registeredTool, input.args, input.context);
+
+    return readOnly && concurrencySafe;
+}
+
+function projectLargeToolResultIfNeeded(
+    state: PreparedAgentToolCallState,
+    result: ToolResult,
+): ToolResult {
+    if (!result.success || !shouldPersistLargeToolResult(state.registeredTool)) {
+        return result;
+    }
+
+    const output = result.output ?? '';
+    const limit = getToolResultSizeLimit(state.registeredTool, DEFAULT_TOOL_RESULT_SIZE_LIMIT_CHARS);
+    if (output.length <= limit) {
+        return result;
+    }
+
+    const persistedOutputPath = persistToolOutput({
+        projectRoot: state.dependencies.toolContext.projectRoot,
+        sessionId: state.dependencies.session.id,
+        toolCallId: state.toolCall.id,
+        output,
+    });
+    const preview = output.slice(0, Math.min(LARGE_TOOL_RESULT_PREVIEW_CHARS, limit));
+    const renderedPath = renderPersistedOutputPath(persistedOutputPath, state.dependencies.toolContext.projectRoot);
+    const projectedOutput = [
+        `<persisted-output path="${escapeAttribute(renderedPath)}" original_chars="${output.length}" preview_chars="${preview.length}">`,
+        preview,
+        '</persisted-output>',
+    ].join('\n');
+
+    return {
+        ...result,
+        output: projectedOutput,
+        metadata: {
+            ...result.metadata,
+            persistedOutputPath,
+            originalOutputChars: output.length,
+            previewedOutputChars: preview.length,
+        },
+    };
+}
+
+function persistToolOutput(input: {
+    projectRoot: string;
+    sessionId: string;
+    toolCallId: string;
+    output: string;
+}): string {
+    const outputDir = path.join(
+        input.projectRoot,
+        '.xqoder',
+        'tool-results',
+        sanitizePathSegment(input.sessionId),
+    );
+    fs.mkdirSync(outputDir, { recursive: true });
+    const outputPath = path.join(outputDir, `${sanitizePathSegment(input.toolCallId)}.txt`);
+    fs.writeFileSync(outputPath, input.output, 'utf-8');
+    return outputPath;
+}
+
+function renderPersistedOutputPath(outputPath: string, projectRoot: string): string {
+    const relative = path.relative(projectRoot, outputPath);
+    return relative && !relative.startsWith('..') && !path.isAbsolute(relative)
+        ? relative
+        : outputPath;
+}
+
+function sanitizePathSegment(value: string): string {
+    return value.replace(/[^A-Za-z0-9_.-]/g, '_') || 'unknown';
+}
+
+function escapeAttribute(value: string): string {
+    return value
+        .replaceAll('&', '&amp;')
+        .replaceAll('"', '&quot;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;');
 }
 
 function parseToolCallArguments(

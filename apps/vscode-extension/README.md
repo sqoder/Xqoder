@@ -10,6 +10,12 @@ Current capabilities:
 - opens diff-style preview documents for file-write approvals
 - can attach the active editor selection to prompts
 
+See also:
+
+- repository quick start: `../../README.md`
+- fresh UI signoff evidence: `../../docs/release/phase8-vscode-signoff.md`
+- acceptance traceability: `../../docs/release/word-doc-100-traceability.md`
+
 Local development:
 
 ```bash

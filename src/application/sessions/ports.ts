@@ -69,6 +69,25 @@ export interface SessionCheckpointHistoryEntry {
     rollbackPointId?: string;
 }
 
+export interface SessionPendingApprovalEntry {
+    requestId: string;
+    toolCallId?: string;
+    toolName?: string;
+    kind: string;
+    summary: string;
+    reason?: string;
+    preview?: string;
+    risk?: 'low' | 'medium' | 'high';
+    requestedAt: Date;
+    source?: string;
+    streamId?: string;
+}
+
+export interface SessionApprovalHistoryEntry extends SessionPendingApprovalEntry {
+    decision: 'allow' | 'ask' | 'deny';
+    resolvedAt: Date;
+}
+
 export interface SessionDetail {
     id: string;
     getMessages(): SessionMessageView[];
@@ -77,6 +96,8 @@ export interface SessionDetail {
     getToolHistory(): SessionToolHistoryEntry[];
     getVerificationHistory?(): SessionVerificationHistoryEntry[];
     getCheckpointHistory?(): SessionCheckpointHistoryEntry[];
+    getPendingApprovals?(): SessionPendingApprovalEntry[];
+    getApprovalHistory?(): SessionApprovalHistoryEntry[];
     getConversationEvents?(): unknown[];
     getConversationEventEnvelopes?(): unknown[];
     getCompactSummary(): string | undefined;

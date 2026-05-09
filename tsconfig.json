@@ -19,6 +19,7 @@
     "sourceMap": true,
     "jsx": "react-jsx",
     "types": ["node", "react", "bun-types"],
+    "ignoreDeprecations": "5.0",
     "baseUrl": ".",
     "paths": {
       "@xqoder/bootstrap/*": ["./src/bootstrap/*"],

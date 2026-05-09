@@ -4,6 +4,13 @@ import type {
 } from '@xqoder/foundation-shared/types/permissions.js';
 import { mergeToolApprovalPatches, type ToolApprovalPatch } from './approval.js';
 import {
+    classifyReadPathScope,
+    classifyWritePathScope,
+    resolvePermissionCheckPaths,
+    type ReadPathScope,
+} from './filesystem-scope.js';
+import {
+    describeSuspiciousPath,
     isDangerousCommand,
     isPathOutsideProject,
     isProtectedPath,
@@ -13,7 +20,9 @@ import {
 
 export const TOOL_TO_PERMISSION_KEY: Record<string, string> = {
     read_file: 'read',
+    read_any_file: 'read',
     write_file: 'edit',
+    edit_file: 'edit',
     preview_diff: 'edit',
     apply_patch: 'edit',
     restore_rollback_point: 'edit',
@@ -25,6 +34,7 @@ export const TOOL_TO_PERMISSION_KEY: Record<string, string> = {
     glob_files: 'glob',
     list_files: 'list',
     fetch_url: 'webfetch',
+    inspect_github_repo: 'webfetch',
     websearch: 'websearch',
     delegate_task: 'task',
     diagnostics: 'read',
@@ -49,6 +59,7 @@ const VALID_PERMISSION_MODES: AgentPermissionMode[] = [
 ];
 const READLIKE_TOOLS = new Set([
     'read_file',
+    'read_any_file',
     'search_code',
     'grep_content',
     'glob_files',
@@ -58,12 +69,14 @@ const READLIKE_TOOLS = new Set([
 ]);
 const WRITELIKE_TOOLS = new Set([
     'write_file',
+    'edit_file',
     'apply_patch',
     'restore_rollback_point',
     'lsp_rename_symbol',
 ]);
 const NETWORK_TOOLS = new Set([
     'fetch_url',
+    'inspect_github_repo',
     'websearch',
 ]);
 const MCP_READONLY_OPERATIONS = new Set<McpToolOperation>([
@@ -135,6 +148,9 @@ export interface ToolPolicyDecisionInput {
     permissions: PermissionSettings | undefined;
     hasPriorRead: boolean;
     projectRoot?: string;
+    cwd?: string;
+    allowedPaths?: string[];
+    approvedReadPaths?: string[];
     securityContext?: ToolSecurityPolicyContext;
 }
 
@@ -152,26 +168,39 @@ export function resolveToolPermissionDecision(
         return 'deny';
     }
 
+    const structuredDecision = resolveStructuredPermissionDecision(input);
+    if (structuredDecision === 'deny') {
+        return 'deny';
+    }
+
     const requiresHardApproval = shouldForceExplicitApproval(input);
     const requiresReadBeforeWriteApproval = shouldRequireReadBeforeWrite(toolName, input.hasPriorRead);
     const explicitlyAllowed = permissions?.allowedTools?.includes(toolName)
         || permissions?.allowedTools?.includes(key);
 
     if (explicitlyAllowed) {
-        return requiresHardApproval || requiresReadBeforeWriteApproval ? 'ask' : 'allow';
+        return requiresHardApproval || requiresReadBeforeWriteApproval || structuredDecision === 'ask'
+            ? 'ask'
+            : structuredDecision ?? 'allow';
     }
 
     let mode = resolveToolPermissionMode(toolName, permissions, input.securityContext);
 
     if (mode === 'bypassPermissions') {
-        return requiresHardApproval || requiresReadBeforeWriteApproval ? 'ask' : 'allow';
+        return requiresHardApproval || requiresReadBeforeWriteApproval || structuredDecision === 'ask'
+            ? 'ask'
+            : structuredDecision ?? 'allow';
     }
 
     if (mode === 'deny') {
-        return 'deny';
+        return structuredDecision === 'ask' ? 'ask' : 'deny';
     }
 
-    if (requiresHardApproval || requiresReadBeforeWriteApproval) {
+    if (structuredDecision === 'allow') {
+        return 'allow';
+    }
+
+    if (requiresHardApproval || requiresReadBeforeWriteApproval || structuredDecision === 'ask') {
         return 'ask';
     }
 
@@ -180,7 +209,15 @@ export function resolveToolPermissionDecision(
     }
 
     if (mode === 'plan') {
-        return isReadLikeTool(toolName, input.securityContext) ? 'allow' : 'ask';
+        if (isMcpReadOnlyOperation(input.securityContext, toolName)) {
+            return evaluateToolRisk(toolName, input.args, input.securityContext) === 'low'
+                ? 'allow'
+                : 'ask';
+        }
+
+        return isReadLikeTool(toolName, input.securityContext) && isReadPathAllowedByDefault(input)
+            ? 'allow'
+            : 'ask';
     }
 
     if (mode === 'default') {
@@ -195,8 +232,16 @@ function resolveAutoModeDecision(input: ToolPolicyDecisionInput): AgentPermissio
     const { toolName, args, securityContext } = input;
 
     // Deterministic rules
+    if (isMcpReadOnlyOperation(securityContext, toolName)) {
+        return evaluateToolRisk(toolName, args, securityContext) === 'low' ? 'allow' : 'ask';
+    }
+
     if (isReadLikeTool(toolName, securityContext)) {
-        return 'allow';
+        return isReadPathAllowedByDefault(input) ? 'allow' : 'ask';
+    }
+
+    if (isWriteLikeTool(toolName)) {
+        return isWritePathAllowedByDefault(input) ? 'allow' : 'ask';
     }
 
     // Basic Risk Classifier
@@ -206,6 +251,204 @@ function resolveAutoModeDecision(input: ToolPolicyDecisionInput): AgentPermissio
     }
 
     return 'ask';
+}
+
+function isWritePathAllowedByDefault(input: ToolPolicyDecisionInput): boolean {
+    if (!input.projectRoot || !input.cwd) {
+        return false;
+    }
+
+    const targetPaths = resolvePolicyTargetPaths(input.toolName, input.args);
+    if (targetPaths.length === 0) {
+        return false;
+    }
+
+    const permissions = input.permissions;
+    const approvalPolicy = permissions?.approvalPolicy;
+    if (approvalPolicy !== 'workspace_auto') {
+        return false;
+    }
+
+    return targetPaths.every((targetPath) => {
+        const suspiciousPathReason = describeSuspiciousPath(targetPath);
+        if (suspiciousPathReason) {
+            return false;
+        }
+
+        const writeScope = classifyWritePathScope(targetPath, {
+            cwd: input.cwd!,
+            projectRoot: input.projectRoot!,
+            allowedPaths: input.allowedPaths,
+        });
+
+        if (writeScope === 'internal') {
+            return true;
+        }
+
+        if (writeScope !== 'workspace') {
+            return false;
+        }
+
+        return !isProtectedPath(targetPath) && !isSensitiveConfigPath(targetPath);
+    });
+}
+
+function hasSuspiciousTargetPath(input: ToolPolicyDecisionInput): boolean {
+    return resolvePolicyTargetPaths(input.toolName, input.args)
+        .some((targetPath) => Boolean(describeSuspiciousPath(targetPath)));
+}
+
+function allowsReadFromEditPermission(input: ToolPolicyDecisionInput): boolean {
+    if (!isReadLikeTool(input.toolName, input.securityContext)) {
+        return false;
+    }
+
+    const permissions = input.permissions;
+    if (!permissions) {
+        return false;
+    }
+
+    if (permissions.allowedTools?.includes('write_file') || permissions.allowedTools?.includes('edit') || permissions.allowedTools?.includes('edit_file')) {
+        return true;
+    }
+
+    const editMode = permissions.tools?.['edit'];
+    return editMode === 'allow' || editMode === 'bypassPermissions';
+}
+
+function isReadAskConfigured(input: ToolPolicyDecisionInput): boolean {
+    if (!isReadLikeTool(input.toolName, input.securityContext)) {
+        return false;
+    }
+
+    const key = getPermissionKeyForTool(input.toolName, input.securityContext);
+    return input.permissions?.tools?.[key] === 'ask';
+}
+
+function isReadDenyConfigured(input: ToolPolicyDecisionInput): boolean {
+    if (!isReadLikeTool(input.toolName, input.securityContext)) {
+        return false;
+    }
+
+    const key = getPermissionKeyForTool(input.toolName, input.securityContext);
+    return input.permissions?.tools?.[key] === 'deny';
+}
+
+function isWriteAskConfigured(input: ToolPolicyDecisionInput): boolean {
+    if (!isWriteLikeTool(input.toolName)) {
+        return false;
+    }
+
+    const key = getPermissionKeyForTool(input.toolName, input.securityContext);
+    return input.permissions?.tools?.[key] === 'ask';
+}
+
+function isWriteDenyConfigured(input: ToolPolicyDecisionInput): boolean {
+    if (!isWriteLikeTool(input.toolName)) {
+        return false;
+    }
+
+    const key = getPermissionKeyForTool(input.toolName, input.securityContext);
+    return input.permissions?.tools?.[key] === 'deny';
+}
+
+function hasInternalWritableTarget(input: ToolPolicyDecisionInput): boolean {
+    if (!input.projectRoot || !input.cwd || !isWriteLikeTool(input.toolName)) {
+        return false;
+    }
+
+    const targetPaths = resolvePolicyTargetPaths(input.toolName, input.args);
+    return targetPaths.length > 0 && targetPaths.every((targetPath) => classifyWritePathScope(targetPath, {
+        cwd: input.cwd!,
+        projectRoot: input.projectRoot!,
+        allowedPaths: input.allowedPaths,
+    }) === 'internal');
+}
+
+function hasHighRiskWriteTarget(input: ToolPolicyDecisionInput): boolean {
+    if (!isWriteLikeTool(input.toolName)) {
+        return false;
+    }
+
+    return resolvePolicyTargetPaths(input.toolName, input.args)
+        .some((targetPath) => Boolean(describeSuspiciousPath(targetPath)) || isProtectedPath(targetPath) || isSensitiveConfigPath(targetPath));
+}
+
+function isOutsideWriteTarget(input: ToolPolicyDecisionInput): boolean {
+    if (!input.projectRoot || !input.cwd || !isWriteLikeTool(input.toolName)) {
+        return false;
+    }
+
+    const targetPaths = resolvePolicyTargetPaths(input.toolName, input.args);
+    return targetPaths.some((targetPath) => classifyWritePathScope(targetPath, {
+        cwd: input.cwd!,
+        projectRoot: input.projectRoot!,
+        allowedPaths: input.allowedPaths,
+    }) === 'outside');
+}
+
+function resolveReadPermissionDecision(input: ToolPolicyDecisionInput): AgentPermissionMode | undefined {
+    if (!isReadLikeTool(input.toolName, input.securityContext)) {
+        return undefined;
+    }
+
+    if (hasSuspiciousTargetPath(input)) {
+        return 'ask';
+    }
+
+    if (isReadDenyConfigured(input)) {
+        return 'deny';
+    }
+
+    if (isReadAskConfigured(input)) {
+        return 'ask';
+    }
+
+    if (allowsReadFromEditPermission(input)) {
+        return 'allow';
+    }
+
+    if (isReadPathAllowedByDefault(input)) {
+        return 'allow';
+    }
+
+    return undefined;
+}
+
+function resolveWritePermissionDecision(input: ToolPolicyDecisionInput): AgentPermissionMode | undefined {
+    if (!isWriteLikeTool(input.toolName)) {
+        return undefined;
+    }
+
+    if (isWriteDenyConfigured(input)) {
+        return 'deny';
+    }
+
+    if (hasInternalWritableTarget(input)) {
+        return 'allow';
+    }
+
+    if (hasHighRiskWriteTarget(input)) {
+        return 'ask';
+    }
+
+    if (isWriteAskConfigured(input)) {
+        return 'ask';
+    }
+
+    if (isWritePathAllowedByDefault(input)) {
+        return 'allow';
+    }
+
+    if (isOutsideWriteTarget(input)) {
+        return 'ask';
+    }
+
+    return undefined;
+}
+
+function resolveStructuredPermissionDecision(input: ToolPolicyDecisionInput): AgentPermissionMode | undefined {
+    return resolveReadPermissionDecision(input) ?? resolveWritePermissionDecision(input);
 }
 
 type ToolRisk = 'low' | 'medium' | 'high';
@@ -284,37 +527,90 @@ export function createToolPolicyApprovalPatch(
 ): ToolApprovalPatch | undefined {
     const targetPaths = resolvePolicyTargetPaths(input.toolName, input.args);
     const targetPath = targetPaths[0];
-    let approvalPatch: ToolApprovalPatch | undefined;
-    const outsideProjectTargetPath = targetPaths.find((candidate) => isPathOutsideProject(candidate, input.projectRoot));
-    const protectedTargetPath = targetPaths.find((candidate) => isProtectedPath(candidate));
+    const builtInReadAccess = isBuiltInReadAccessTool(input.toolName, input.securityContext);
+    const outsideWorkspaceReadTargetPath = builtInReadAccess
+        ? resolveOutsideWorkspaceReadTargetPath(input)
+        : undefined;
+    const protectedReadTargetPath = builtInReadAccess
+        ? resolveProtectedReadTargetPath(input)
+        : undefined;
+    const sensitiveReadTargetPath = builtInReadAccess
+        ? resolveSensitiveReadTargetPath(input)
+        : undefined;
+    const outsideProjectWriteTargetPath = builtInReadAccess
+        ? undefined
+        : targetPaths.find((candidate) => isPathOutsideProject(candidate, input.projectRoot));
+    const protectedWriteTargetPath = builtInReadAccess
+        ? undefined
+        : targetPaths.find((candidate) => isProtectedPath(candidate));
+    const suspiciousTargetPath = targetPaths.find((candidate) => Boolean(describeSuspiciousPath(candidate)));
     const highRiskConfigTargetPath = isWriteLikeTool(input.toolName)
         ? targetPaths.find((candidate) => isSensitiveConfigPath(candidate))
         : undefined;
+    const nonBuiltInSensitiveRead = !builtInReadAccess && requiresSensitiveReadApproval(input.toolName, input.args);
+    let approvalPatch: ToolApprovalPatch | undefined;
 
-    if (outsideProjectTargetPath) {
+    if (protectedReadTargetPath) {
         approvalPatch = mergeToolApprovalPatches(approvalPatch, {
             force: true,
-            summary: `Request access to path outside project: ${outsideProjectTargetPath}`,
-            reason: 'This operation targets a path outside the current project root and requires explicit approval.',
-            preview: [
-                `projectRoot: ${input.projectRoot ?? '(unknown)'}`,
-                `targetPath: ${outsideProjectTargetPath}`,
-            ].join('\n'),
+            category: 'protected-path',
+            summary: `Request access to protected path: ${protectedReadTargetPath}`,
+            reason: 'This read targets shell startup files, version-control metadata, local credentials, or agent configuration and requires explicit approval.',
+            preview: buildReadScopePreview(input, protectedReadTargetPath),
             risk: 'high',
         });
     }
 
-    if (protectedTargetPath) {
+    if (sensitiveReadTargetPath) {
         approvalPatch = mergeToolApprovalPatches(approvalPatch, {
             force: true,
+            category: 'sensitive-read',
+            summary: `Request read of sensitive file: ${sensitiveReadTargetPath}`,
+            reason: 'This read may expose local credentials, shell config, agent settings, or machine identity material and requires explicit approval.',
+            preview: buildReadScopePreview(input, sensitiveReadTargetPath),
+            risk: 'high',
+        });
+    }
+
+    if (outsideWorkspaceReadTargetPath) {
+        approvalPatch = mergeToolApprovalPatches(approvalPatch, {
+            force: true,
+            category: 'outside-workspace-read',
+            summary: `Request read outside workspace: ${outsideWorkspaceReadTargetPath}`,
+            reason: 'This read targets a path outside the current workspace and requires explicit approval.',
+            preview: buildReadScopePreview(input, outsideWorkspaceReadTargetPath),
+            risk: 'medium',
+            suggestion: 'If this path should be readable without repeated prompts, add its directory to allowed read paths.',
+        });
+    }
+
+    if (outsideProjectWriteTargetPath) {
+        approvalPatch = mergeToolApprovalPatches(approvalPatch, {
+            force: true,
+            category: 'high-risk-write',
+            summary: `Request access to path outside project: ${outsideProjectWriteTargetPath}`,
+            reason: 'This operation targets a path outside the current project root and requires explicit approval.',
+            preview: [
+                `projectRoot: ${input.projectRoot ?? '(unknown)'}`,
+                `targetPath: ${outsideProjectWriteTargetPath}`,
+            ].join('\n'),
+            risk: 'high',
+            suggestion: 'If this directory should be writable, add it explicitly or use a mode that permits the edit scope you intend.',
+        });
+    }
+
+    if (protectedWriteTargetPath) {
+        approvalPatch = mergeToolApprovalPatches(approvalPatch, {
+            force: true,
+            category: 'protected-path',
             summary: isWriteLikeTool(input.toolName)
-                ? `Request write to protected path: ${protectedTargetPath}`
-                : `Request access to protected path: ${protectedTargetPath}`,
+                ? `Request write to protected path: ${protectedWriteTargetPath}`
+                : `Request access to protected path: ${protectedWriteTargetPath}`,
             reason: 'Writes or direct access to version-control metadata, local credentials, shell startup files, or agent configuration require explicit approval.',
             preview: [
                 `tool: ${input.toolName}`,
                 `projectRoot: ${input.projectRoot ?? '(unknown)'}`,
-                `targetPath: ${protectedTargetPath}`,
+                `targetPath: ${protectedWriteTargetPath}`,
             ].join('\n'),
             risk: 'high',
         });
@@ -323,6 +619,7 @@ export function createToolPolicyApprovalPatch(
     if (highRiskConfigTargetPath) {
         approvalPatch = mergeToolApprovalPatches(approvalPatch, {
             force: true,
+            category: 'high-risk-write',
             summary: `Request write to high-risk config path: ${highRiskConfigTargetPath}`,
             reason: 'This operation modifies project configuration or environment files and requires explicit approval.',
             preview: [
@@ -334,9 +631,10 @@ export function createToolPolicyApprovalPatch(
         });
     }
 
-    if (requiresSensitiveReadApproval(input.toolName, input.args)) {
+    if (nonBuiltInSensitiveRead) {
         approvalPatch = mergeToolApprovalPatches(approvalPatch, {
             force: true,
+            category: 'sensitive-read',
             summary: targetPath
                 ? `Request access to sensitive file: ${targetPath}`
                 : `Request access to sensitive data via ${input.toolName}`,
@@ -360,6 +658,21 @@ export function createToolPolicyApprovalPatch(
         approvalPatch = mergeToolApprovalPatches(approvalPatch, readBeforeWritePatch);
     }
 
+    if (suspiciousTargetPath) {
+        return mergeToolApprovalPatches(undefined, {
+            force: true,
+            category: 'suspicious-path',
+            summary: `Request access to suspicious path: ${suspiciousTargetPath}`,
+            reason: `This operation targets a suspicious path pattern (${describeSuspiciousPath(suspiciousTargetPath)}) and requires explicit approval.`,
+            preview: [
+                `tool: ${input.toolName}`,
+                `projectRoot: ${input.projectRoot ?? '(unknown)'}`,
+                `targetPath: ${suspiciousTargetPath}`,
+            ].join('\n'),
+            risk: 'high',
+        });
+    }
+
     if (approvalPatch) {
         return approvalPatch;
     }
@@ -378,6 +691,13 @@ export function createToolPolicyApprovalPatch(
 }
 
 function shouldForceExplicitApproval(input: ToolPolicyDecisionInput): boolean {
+    const builtInReadAccess = isBuiltInReadAccessTool(input.toolName, input.securityContext);
+    if (builtInReadAccess) {
+        return resolveProtectedReadTargetPath(input) !== undefined
+            || resolveSensitiveReadTargetPath(input) !== undefined
+            || resolveOutsideWorkspaceReadTargetPath(input) !== undefined;
+    }
+
     return requiresOutsideProjectApproval(input)
         || requiresProtectedPathApproval(input)
         || requiresExternalToolApproval(input)
@@ -385,6 +705,155 @@ function shouldForceExplicitApproval(input: ToolPolicyDecisionInput): boolean {
         || requiresSensitiveReadApproval(input.toolName, input.args)
         || requiresDangerousCommandApproval(input.toolName, input.args)
         || requiresHighRiskConfigWriteApproval(input.toolName, input.args);
+}
+
+function resolveReadTargetPath(input: ToolPolicyDecisionInput): string | undefined {
+    if (!isReadLikeTool(input.toolName, input.securityContext)) {
+        return undefined;
+    }
+
+    return resolvePolicyTargetPath(input.toolName, input.args);
+}
+
+function resolveReadTargetScope(input: ToolPolicyDecisionInput): ReadPathScope | undefined {
+    const targetPath = resolveReadTargetPath(input);
+    if (!targetPath || !input.projectRoot || !input.cwd) {
+        return undefined;
+    }
+
+    return classifyReadPathScope(targetPath, {
+        cwd: input.cwd,
+        projectRoot: input.projectRoot,
+        allowedPaths: input.allowedPaths,
+    });
+}
+
+function resolveOutsideWorkspaceReadTargetPath(input: ToolPolicyDecisionInput): string | undefined {
+    const targetPath = resolveReadTargetPath(input);
+    const scope = resolveReadTargetScope(input);
+    return targetPath && scope === 'outside' && !isReadTargetSessionApproved(input)
+        ? targetPath
+        : undefined;
+}
+
+function resolveSensitiveReadTargetPath(input: ToolPolicyDecisionInput): string | undefined {
+    if (isMcpReadOnlyOperation(input.securityContext, input.toolName)) {
+        return undefined;
+    }
+
+    const targetPath = resolveReadTargetPath(input);
+    if (!targetPath) {
+        return undefined;
+    }
+
+    return isSensitiveReadPath(targetPath) ? targetPath : undefined;
+}
+
+function resolveProtectedReadTargetPath(input: ToolPolicyDecisionInput): string | undefined {
+    if (isMcpReadOnlyOperation(input.securityContext, input.toolName)) {
+        return undefined;
+    }
+
+    const targetPath = resolveReadTargetPath(input);
+    if (!targetPath) {
+        return undefined;
+    }
+
+    return isProtectedPath(targetPath) ? targetPath : undefined;
+}
+
+function isReadPathAllowedByDefault(input: ToolPolicyDecisionInput): boolean {
+    if (!input.projectRoot || !input.cwd) {
+        return false;
+    }
+
+    const targetPath = resolveReadTargetPath(input);
+    if (!targetPath) {
+        return true;
+    }
+
+    const scope = resolveReadTargetScope(input);
+    if (!scope) {
+        return false;
+    }
+
+    if (resolveProtectedReadTargetPath(input) || resolveSensitiveReadTargetPath(input)) {
+        return false;
+    }
+
+    return scope === 'outside' ? isReadTargetSessionApproved(input) : true;
+}
+
+function isReadTargetSessionApproved(input: ToolPolicyDecisionInput): boolean {
+    const targetPath = resolveReadTargetPath(input);
+    if (!targetPath || !input.cwd || !input.approvedReadPaths?.length) {
+        return false;
+    }
+
+    const targetCandidates = new Set(resolvePermissionCheckPaths(targetPath, { cwd: input.cwd }));
+    return input.approvedReadPaths.some((approvedPath) => {
+        for (const candidate of resolvePermissionCheckPaths(approvedPath, { cwd: input.cwd! })) {
+            if (targetCandidates.has(candidate)) {
+                return true;
+            }
+        }
+        return false;
+    });
+}
+
+function describeReadPathScope(scope: ReadPathScope): string {
+    switch (scope) {
+        case 'workspace':
+            return 'workspace';
+        case 'allowed':
+            return 'allowed path';
+        case 'internal':
+            return 'internal runtime path';
+        case 'outside':
+        default:
+            return 'outside workspace';
+    }
+}
+
+function buildReadScopePreview(
+    input: ToolPolicyDecisionInput,
+    targetPath: string,
+): string {
+    const scope = resolveReadTargetScope(input);
+    return [
+        `projectRoot: ${input.projectRoot ?? '(unknown)'}`,
+        `cwd: ${input.cwd ?? '(unknown)'}`,
+        `targetPath: ${targetPath}`,
+        `scope: ${scope ? describeReadPathScope(scope) : '(unknown)'}`,
+    ].join('\n');
+}
+
+function buildSensitiveReadPreview(input: ToolPolicyDecisionInput, targetPath: string | undefined): string {
+    if (targetPath) {
+        return isReadLikeTool(input.toolName, input.securityContext)
+            ? buildReadScopePreview(input, targetPath)
+            : [
+                `tool: ${input.toolName}`,
+                `targetPath: ${targetPath}`,
+            ].join('\n');
+    }
+
+    const command = typeof input.args?.['command'] === 'string' ? input.args['command'] : undefined;
+    return command
+        ? [
+            `tool: ${input.toolName}`,
+            `command: ${command}`,
+        ].join('\n')
+        : `tool: ${input.toolName}`;
+}
+
+function isBuiltInReadAccessTool(
+    toolName: string,
+    securityContext?: ToolSecurityPolicyContext,
+): boolean {
+    return !toolName.startsWith('mcp.')
+        && securityContext?.source !== 'mcp'
+        && isReadLikeTool(toolName, securityContext);
 }
 
 function requiresNetworkApproval(toolName: string): boolean {
@@ -433,26 +902,6 @@ function looksLikeSensitivePathCandidate(candidate: string): boolean {
         || /\.(?:env|pem|key|p12|pfx|crt)$/i.test(candidate);
 }
 
-function buildSensitiveReadPreview(
-    input: ToolPolicyDecisionInput,
-    targetPath: string | undefined,
-): string {
-    if (targetPath) {
-        return [
-            `tool: ${input.toolName}`,
-            `targetPath: ${targetPath}`,
-        ].join('\n');
-    }
-
-    const command = typeof input.args?.['command'] === 'string' ? input.args['command'] : undefined;
-    return command
-        ? [
-            `tool: ${input.toolName}`,
-            `command: ${command}`,
-        ].join('\n')
-        : `tool: ${input.toolName}`;
-}
-
 function buildGenericApprovalPreview(
     input: ToolPolicyDecisionInput,
     targetPath: string | undefined,
@@ -484,6 +933,7 @@ function createReadBeforeWriteApprovalPatch(
 
     return {
         force: true,
+        category: 'high-risk-write',
         ...(!input.hasNativeApprovalRequest && !hasExistingPatch
             ? {
                 summary: targetPath
@@ -533,6 +983,7 @@ function createExternalToolApprovalPatch(
 
     return {
         force: true,
+        category: 'external-tool',
         ...(summary ? { summary } : {}),
         reason: buildExternalToolReason(securityContext),
         preview: buildExternalToolPreview(input, securityContext),
@@ -616,7 +1067,7 @@ function requiresHighRiskConfigWriteApproval(
     toolName: string,
     args: Record<string, unknown> | undefined,
 ): boolean {
-    if (toolName !== 'write_file' && toolName !== 'apply_patch') {
+    if (toolName !== 'write_file' && toolName !== 'edit_file' && toolName !== 'apply_patch') {
         return false;
     }
 

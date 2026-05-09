@@ -60,6 +60,98 @@ describe('XQoderAgent conversation-engine compatibility', () => {
         expect(plannerPrompt).toContain('- Preferred next action: answer');
     });
 
+    it('exposes directory discovery tools in mvp mode before answering project-inspection requests', async () => {
+        const cwd = createTempDir();
+        const projectDir = path.join(cwd, 'personal-blog');
+        fs.mkdirSync(projectDir, { recursive: true });
+        fs.writeFileSync(path.join(projectDir, 'package.json'), '{"name":"personal-blog"}\n', 'utf-8');
+        const requests: CompletionRequest[] = [];
+        const agent = createAgent({
+            cwd,
+            runtimeProfile: 'mvp',
+            providerFactory: async () => ({
+                name: 'directory-provider',
+                model: 'directory-model',
+                async complete() {
+                    throw new Error('complete() should not be used');
+                },
+                async stream(request) {
+                    requests.push(request);
+                    if (requests.length === 1) {
+                        return {
+                            finishReason: 'tool_calls',
+                            message: {
+                                role: 'assistant',
+                                content: '',
+                                toolCalls: [{
+                                    id: 'list-project-dir',
+                                    name: 'list_files',
+                                    arguments: JSON.stringify({
+                                        path: projectDir,
+                                        maxDepth: 2,
+                                    }),
+                                }],
+                            },
+                            usage: {
+                                promptTokens: 16,
+                                completionTokens: 4,
+                                totalTokens: 20,
+                            },
+                        };
+                    }
+
+                    if (requests.length === 2) {
+                        return {
+                            finishReason: 'tool_calls',
+                            message: {
+                                role: 'assistant',
+                                content: '',
+                                toolCalls: [{
+                                    id: 'read-project-package',
+                                    name: 'read_file',
+                                    arguments: JSON.stringify({
+                                        path: path.join(projectDir, 'package.json'),
+                                    }),
+                                }],
+                            },
+                            usage: {
+                                promptTokens: 20,
+                                completionTokens: 5,
+                                totalTokens: 25,
+                            },
+                        };
+                    }
+
+                    return {
+                        finishReason: 'stop',
+                        message: {
+                            role: 'assistant',
+                            content: '这是一个项目目录，我会先看目录结构。',
+                        },
+                        usage: {
+                            promptTokens: 16,
+                            completionTokens: 7,
+                            totalTokens: 23,
+                        },
+                    };
+                },
+            }),
+        });
+
+        await agent.run(`${projectDir}看一下这个项目呢`);
+
+        expect(requests).toHaveLength(3);
+        const visibleTools = requests[0]!.tools?.map((tool) => tool.name) ?? [];
+        const plannerPrompt = findLatestSystemMessage(requests[0]!.messages);
+        expect(plannerPrompt).toContain(`${projectDir} (directory)`);
+        expect(plannerPrompt).toContain('- Preferred next action: list_files');
+        expect(visibleTools).toContain('read_file');
+        expect(visibleTools).toContain('search_code');
+        expect(visibleTools).toContain('list_files');
+        expect(visibleTools).toContain('glob_files');
+        expect(visibleTools).toContain('grep_content');
+    });
+
     it('supports plan_only turns through the conversation engine in hybrid mode', async () => {
         const cwd = createTempDir();
         const requests: CompletionRequest[] = [];

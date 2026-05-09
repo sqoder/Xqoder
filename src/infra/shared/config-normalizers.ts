@@ -129,6 +129,7 @@ export function normalizeXQoderConfig(input: Partial<XQoderConfig>): XQoderConfi
             baseUrl: input.llm?.baseUrl,
             maxTokens: input.llm?.maxTokens,
             temperature: input.llm?.temperature,
+            modalities: input.llm?.modalities,
         },
     ));
     const providers = normalizeProviderSettingsMap(input.providers, legacyLlm);

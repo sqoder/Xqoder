@@ -32,6 +32,9 @@ describe('session output usage visibility', () => {
         expect(output).toContain('Conversation Signals:');
         expect(output).toContain('[tool:write_file] applied usage summary patch');
         expect(output).toContain('[verification:ok] Verification passed: usage is visible in session detail');
+        expect(output).toContain('Approval History:');
+        expect(output).toContain('pending write_file Overwrite file src/demo.ts');
+        expect(output).toContain('allow edit_file Edit file src/demo.ts');
         expect(output).toContain('Checkpoint History:');
         expect(output).toContain('write_file status=captured rollback=rollback_usage_visible');
     });
@@ -139,6 +142,26 @@ function createDetail(): SessionDetail {
             required: true,
             status: 'captured',
             rollbackPointId: 'rollback_usage_visible',
+        }],
+        getPendingApprovals: () => [{
+            requestId: 'approval-pending-1',
+            toolCallId: 'approval-pending-1',
+            toolName: 'write_file',
+            kind: 'tool',
+            summary: 'Overwrite file src/demo.ts',
+            requestedAt: new Date('2026-04-20T08:02:00.000Z'),
+            source: 'agent',
+        }],
+        getApprovalHistory: () => [{
+            requestId: 'approval-history-1',
+            toolCallId: 'approval-history-1',
+            toolName: 'edit_file',
+            kind: 'tool',
+            summary: 'Edit file src/demo.ts',
+            decision: 'allow',
+            requestedAt: new Date('2026-04-20T08:01:00.000Z'),
+            resolvedAt: new Date('2026-04-20T08:01:20.000Z'),
+            source: 'agent',
         }],
         getCompactSummary: () => 'usage propagated into persisted surfaces',
     };

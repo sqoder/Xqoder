@@ -4,14 +4,25 @@
 // ============================================================
 
 import type { ToolDefinition, ToolResult, LLMProviderConfig, LLMMessage } from '@xqoder/shared';
+import type { ILLMProvider } from '../../../shared/llm-api/base.js';
 import type { ITool, ToolContext } from './tool.js';
 import { createLLMProvider } from '@xqoder/agent';
+import { getBuiltInAgentDefinition } from '../agents.js';
+import { getMarkdownAgentDefinition } from '../markdown-agents.js';
+import { isToolVisibleForExecutionCapability } from '../../../domain/permissions/index.js';
 
-const TASK_AGENT_SYSTEM_PROMPT = `You are a research/exploration sub-agent. You have access to read-only tools for exploring the codebase. Your job is to thoroughly investigate the user's question and return a comprehensive answer.
-
-Be thorough and specific. Include file paths, line numbers, and code snippets where relevant.`;
-
-const TASK_TOOLS = ['read_file', 'list_files', 'glob_files', 'grep_content', 'search_code', 'sourcegraph', 'lsp_workspace_symbols', 'lsp_file_diagnostics', 'lsp_definition', 'lsp_references', 'lsp_hover'];
+const READONLY_DELEGATE_TOOLS = ['read_file', 'read_any_file', 'list_files', 'glob_files', 'grep_content', 'search_code', 'sourcegraph', 'lsp_workspace_symbols', 'lsp_file_diagnostics', 'lsp_definition', 'lsp_references', 'lsp_hover', 'todoread', 'skill'];
+const WRITE_OR_SIDE_EFFECT_TOOLS = new Set(['write_file', 'edit_file', 'apply_patch', 'restore_rollback_point', 'run_command', 'run_shell', 'install_package', 'todowrite']);
+type DelegateProviderFactory = (config: LLMProviderConfig) => Promise<ILLMProvider> | ILLMProvider;
+interface DelegateToolRegistry {
+    get(name: string): ITool | undefined;
+    execute(
+        name: string,
+        args: Record<string, unknown>,
+        context: ToolContext,
+        toolCallId: string,
+    ): Promise<ToolResult>;
+}
 
 export class DelegateTaskTool implements ITool {
     readonly definition: ToolDefinition = {
@@ -24,12 +35,25 @@ export class DelegateTaskTool implements ITool {
                 description: 'A clear, specific description of the research/exploration task to delegate. Be as specific as possible about what information you need.',
                 required: true,
             },
+            {
+                name: 'agent',
+                type: 'string',
+                description: 'Optional subagent name. Defaults to explore; built-in and .claude/agents markdown subagents are supported.',
+                required: false,
+            },
+            {
+                name: 'mode',
+                type: 'string',
+                description: 'Optional routing hint: explore, plan, or custom.',
+                required: false,
+            },
         ],
     };
 
     constructor(
         private llmConfig: LLMProviderConfig,
-        private parentToolRegistry?: { get(name: string): ITool | undefined },
+        private parentToolRegistry?: DelegateToolRegistry,
+        private providerFactory: DelegateProviderFactory = createLLMProvider,
     ) {}
 
     async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
@@ -46,25 +70,21 @@ export class DelegateTaskTool implements ITool {
         }
 
         try {
-            const provider = await createLLMProvider(this.llmConfig);
+            const delegateConfig = resolveDelegateConfig(args, context.cwd);
+            const provider = await this.providerFactory(this.llmConfig);
 
             const messages: LLMMessage[] = [
-                { role: 'system', content: TASK_AGENT_SYSTEM_PROMPT },
-                { role: 'user', content: task },
+                { role: 'system', content: delegateConfig.systemPrompt },
+                { role: 'user', content: buildDelegatePrompt(task, delegateConfig.agentName) },
             ];
 
-            const availableTools: ToolDefinition[] = [];
-            if (this.parentToolRegistry) {
-                for (const toolName of TASK_TOOLS) {
-                    const tool = this.parentToolRegistry.get(toolName);
-                    if (tool) {
-                        availableTools.push(tool.definition);
-                    }
-                }
-            }
+            const allowedToolNames = resolveDelegateToolNames(delegateConfig.requestedTools);
+            const availableTools = this.getAvailableToolDefinitions(allowedToolNames);
 
             let result = '';
             const MAX_ITERATIONS = 8;
+            let toolCallsExecuted = 0;
+            const evidence: string[] = [];
 
             for (let i = 0; i < MAX_ITERATIONS; i++) {
                 const response = await provider.complete({
@@ -87,8 +107,9 @@ export class DelegateTaskTool implements ITool {
                 });
 
                 for (const tc of toolCalls) {
-                    const tool = this.parentToolRegistry?.get(tc.name);
-                    if (!tool) {
+                    const registry = this.parentToolRegistry;
+                    const tool = registry?.get(tc.name);
+                    if (!registry || !tool) {
                         messages.push({
                             role: 'tool',
                             content: `Error: tool "${tc.name}" not available to sub-agent`,
@@ -97,10 +118,10 @@ export class DelegateTaskTool implements ITool {
                         continue;
                     }
 
-                    if (!TASK_TOOLS.includes(tc.name)) {
+                    if (!this.isDelegateToolAllowed(tc.name, tool) || !allowedToolNames.includes(tc.name)) {
                         messages.push({
                             role: 'tool',
-                            content: `Error: tool "${tc.name}" is not allowed for sub-agent (read-only access only)`,
+                            content: `Error: tool "${tc.name}" is not allowed for sub-agent "${delegateConfig.agentName}"`,
                             toolCallId: tc.id,
                         });
                         continue;
@@ -113,9 +134,11 @@ export class DelegateTaskTool implements ITool {
                             : tc.arguments as unknown as Record<string, unknown>;
                     } catch { /* use empty args */ }
 
-                    const toolResult = await tool.execute(
-                        { ...parsedArgs, toolCallId: tc.id },
+                    const toolResult = await registry.execute(
+                        tc.name,
+                        parsedArgs,
                         context,
+                        tc.id,
                     );
 
                     const output = toolResult.success
@@ -125,6 +148,8 @@ export class DelegateTaskTool implements ITool {
                     const truncated = output.length > 8000
                         ? output.slice(0, 8000) + '\n... [truncated]'
                         : output;
+                    toolCallsExecuted += 1;
+                    evidence.push(`${tc.name}: ${truncated.slice(0, 500)}`);
 
                     messages.push({
                         role: 'tool',
@@ -144,7 +169,16 @@ export class DelegateTaskTool implements ITool {
             return {
                 toolCallId,
                 success: true,
-                output: result || '(sub-agent returned no output)',
+                output: [
+                    `agent: ${delegateConfig.agentName}`,
+                    `iterations: ${Math.min(messages.filter((message) => message.role === 'assistant').length, MAX_ITERATIONS)}`,
+                    `toolCalls: ${toolCallsExecuted}`,
+                    'final:',
+                    result || '(sub-agent returned no output)',
+                    ...(evidence.length > 0
+                        ? ['evidence:', ...evidence.slice(-5)]
+                        : []),
+                ].join('\n'),
             };
         } catch (err) {
             return {
@@ -155,4 +189,70 @@ export class DelegateTaskTool implements ITool {
             };
         }
     }
+
+    private getAvailableToolDefinitions(allowedToolNames: string[]): ToolDefinition[] {
+        const availableTools: ToolDefinition[] = [];
+        if (!this.parentToolRegistry) {
+            return availableTools;
+        }
+
+        for (const toolName of allowedToolNames) {
+            const tool = this.parentToolRegistry.get(toolName);
+            if (tool && this.isDelegateToolAllowed(toolName, tool)) {
+                availableTools.push(tool.definition);
+            }
+        }
+
+        return availableTools;
+    }
+
+    private isDelegateToolAllowed(toolName: string, tool: ITool): boolean {
+        return isDelegateToolAllowed(toolName, tool);
+    }
+}
+
+interface DelegateConfig {
+    agentName: string;
+    systemPrompt: string;
+    requestedTools?: string[];
+}
+
+function resolveDelegateConfig(args: Record<string, unknown>, cwd: string): DelegateConfig {
+    const mode = String(args.mode ?? '').trim().toLowerCase();
+    const rawAgent = String(args.agent ?? '').trim();
+    const agentName = rawAgent || (mode === 'plan' ? 'plan' : 'explore');
+    const markdownAgent = getMarkdownAgentDefinition(agentName, cwd);
+    const builtInAgent = getBuiltInAgentDefinition(agentName);
+
+    return {
+        agentName,
+        systemPrompt: markdownAgent?.prompt
+            ?? builtInAgent?.systemPrompt
+            ?? `You are a ${agentName} sub-agent. Complete the delegated task using only the provided safe tools and return a concise, evidence-backed answer.`,
+        requestedTools: markdownAgent?.tools,
+    };
+}
+
+function buildDelegatePrompt(task: string, agentName: string): string {
+    return `Subagent: ${agentName}
+
+Task:
+${task}
+
+Return only the delegated result. Include concrete file paths, symbols, or reasoning steps when they are necessary for the primary agent to act.`;
+}
+
+function resolveDelegateToolNames(requestedTools: string[] | undefined): string[] {
+    const base = requestedTools && requestedTools.length > 0
+        ? requestedTools
+        : READONLY_DELEGATE_TOOLS;
+    return Array.from(new Set(base.filter((toolName) => !WRITE_OR_SIDE_EFFECT_TOOLS.has(toolName))));
+}
+
+function isDelegateToolAllowed(toolName: string, tool: ITool): boolean {
+    return isToolVisibleForExecutionCapability(
+        toolName,
+        'read_only',
+        tool.getSecurityPolicyContext?.(),
+    );
 }

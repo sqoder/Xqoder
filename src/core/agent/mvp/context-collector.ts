@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { AgentSession } from '../session/session.js';
-import { classifyMvpTask, extractCandidatePaths } from './task-classifier.js';
+import { classifyMvpTask, extractCandidatePaths, extractTargetUrls } from './task-classifier.js';
 import type { MvpCollectedContext, MvpProjectRule } from './types.js';
 
 const DEFAULT_RULE_PATHS = [
@@ -21,11 +21,15 @@ export function collectMvpContext(input: {
 }): MvpCollectedContext {
     const taskType = classifyMvpTask(input.userGoal);
     const targetPaths = extractCandidatePaths(input.userGoal);
+    const targetUrls = extractTargetUrls(input.userGoal);
+    const targetPathKinds = classifyTargetPaths(input.projectRoot, targetPaths);
 
     return {
         userGoal: input.userGoal,
         taskType,
         targetPaths,
+        targetUrls,
+        targetPathKinds,
         relatedPaths: readRelatedPaths(input.projectRoot, targetPaths),
         projectRules: loadProjectRules(input.projectRoot, input.contextPaths),
         gitStatus: readGitStatus(input.projectRoot),
@@ -44,6 +48,31 @@ export function collectMvpContext(input: {
             .slice(-6)
             .map((message) => `${message.role}: ${truncate(message.content, 220)}`),
     };
+}
+
+function classifyTargetPaths(
+    projectRoot: string,
+    targetPaths: string[],
+): Record<string, 'file' | 'directory' | 'unknown'> {
+    const result: Record<string, 'file' | 'directory' | 'unknown'> = {};
+
+    for (const targetPath of targetPaths) {
+        const resolvedPath = path.isAbsolute(targetPath)
+            ? targetPath
+            : path.resolve(projectRoot, targetPath);
+        try {
+            const stat = fs.statSync(resolvedPath);
+            result[targetPath] = stat.isDirectory()
+                ? 'directory'
+                : stat.isFile()
+                    ? 'file'
+                    : 'unknown';
+        } catch {
+            result[targetPath] = 'unknown';
+        }
+    }
+
+    return result;
 }
 
 function loadProjectRules(projectRoot: string, configuredPaths: string[] | undefined): MvpProjectRule[] {

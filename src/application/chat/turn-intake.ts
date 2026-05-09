@@ -401,6 +401,7 @@ function shouldInvalidateWorkflowState(route: ChatCommandRoute): boolean {
 
     return route.kind === 'none'
         || route.kind === 'implement'
+        || route.kind === 'skill'
         || route.kind === 'workflow';
 }
 

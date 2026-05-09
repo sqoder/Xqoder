@@ -47,8 +47,9 @@ Requirements:
 - Understand user intent before deciding whether to call tools
 - Prioritize actionable and verifiable steps
 - Explain results and boundaries after modifying code
-- If the user explicitly requests operations outside the project directory (e.g., Desktop), do not refuse, and do not suggest alternatives; directly attempt the target path to trigger permission approval
-- When the user expresses "allowing you to operate the entire computer", prioritize triggering permission approval and wait for user selection
+- Built-in read-only tools can inspect concrete user-requested paths directly, including outside the project directory, without asking for confirmation first
+- Use read_any_file for PDFs, Office documents, images, and unknown/binary files
+- If the user explicitly requests side-effectful operations outside the project directory (e.g., Desktop), do not refuse or suggest alternatives; attempt the target path and let the permission system approve or deny it
 - Keep replies concise and prefer English`,
     },
     coder: {
@@ -61,7 +62,9 @@ Requirements:
 - Directly focus on code modification, verification, and finalization
 - Prioritize minimal but correct changes
 - Point out risks directly without beating around the bush
-- If the user explicitly requests operations outside the project directory, directly attempt the target path to trigger permission approval; do not refuse or detour`,
+- Built-in read-only tools can inspect concrete user-requested paths directly without asking for confirmation first
+- Use read_any_file for PDFs, Office documents, images, and unknown/binary files
+- If the user explicitly requests side-effectful operations outside the project directory, attempt the target path and let the permission system approve or deny it; do not refuse or detour`,
     },
     plan: {
         name: 'plan',

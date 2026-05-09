@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'bun:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { logger as defaultLogger } from '@xqoder/shared';
 import { AgentSession } from '../../../src/core/agent/session/session.js';
 import {
@@ -10,6 +13,7 @@ import {
 } from '../../../src/application/chat/conversation-engine.js';
 import type { ConversationTurnInput } from '../../../src/application/chat/turn-intake.js';
 import type { ConversationEventEnvelope } from '@xqoder/protocol';
+import { createMvpConversationRuntime } from '../../../src/core/agent/mvp/conversation-runtime.js';
 
 describe('conversation engine', () => {
     it('exposes the documented public runTurn protocol shape', () => {
@@ -291,6 +295,733 @@ describe('conversation engine', () => {
         expect(result).toBe('FINAL:verified');
         expect(providerCalls).toBe(2);
         expect(session.getMessages().some((message) => message.role === 'system' && message.content.includes('verification still pending'))).toBe(true);
+    });
+
+    it('does not stream or store assistant drafts when runtime requires tool evidence first', async () => {
+        const session = new AgentSession({ id: 'conversation-engine-defer-tool-evidence', systemPrompt: 'system' });
+        const streamedEvents: ConversationEventEnvelope[] = [];
+        const toolExecutions: string[] = [];
+        let providerCalls = 0;
+
+        for await (const event of streamConversationTurn({
+            provider: {
+                name: 'fake-provider',
+                model: 'fake-model',
+                async complete() {
+                    throw new Error('complete() should not be used');
+                },
+                async stream(request, callbacks) {
+                    providerCalls += 1;
+                    if (providerCalls === 1) {
+                        callbacks.onToken?.('fake read_file claim');
+                        return {
+                            finishReason: 'stop',
+                            message: {
+                                role: 'assistant',
+                                content: 'fake read_file claim',
+                            },
+                            usage: {
+                                promptTokens: 10,
+                                completionTokens: 4,
+                                totalTokens: 14,
+                            },
+                        };
+                    }
+
+                    if (providerCalls === 2) {
+                        return {
+                            finishReason: 'tool_calls',
+                            message: {
+                                role: 'assistant',
+                                content: '',
+                                toolCalls: [{
+                                    id: 'tool-call-read-html',
+                                    name: 'read_file',
+                                    arguments: '{"path":"/Users/wangxinglin/Downloads/code.html"}',
+                                }],
+                            },
+                            usage: {
+                                promptTokens: 12,
+                                completionTokens: 2,
+                                totalTokens: 14,
+                            },
+                        };
+                    }
+
+                    callbacks.onToken?.('real analysis');
+                    return {
+                        finishReason: 'stop',
+                        message: {
+                            role: 'assistant',
+                            content: 'real analysis',
+                        },
+                        usage: {
+                            promptTokens: 15,
+                            completionTokens: 3,
+                            totalTokens: 18,
+                        },
+                    };
+                },
+            },
+            session,
+            userMessage: '/Users/wangxinglin/Downloads/code.html 帮我分析一下这个项目',
+            attachments: [],
+            streamId: 'stream-defer-tool-evidence',
+            abortSignal: new AbortController().signal,
+            logger: defaultLogger.child('conversation-engine-test'),
+            llmConfig: {
+                provider: 'openai',
+                model: 'gpt-4.1',
+                apiKey: 'test-key',
+            },
+            runtimeProfile: 'hybrid',
+            maxIterations: 5,
+            emit: (() => {}) as any,
+            getToolDefinitions: () => [{
+                name: 'read_file',
+                description: 'Read a file',
+                parameters: [],
+            }],
+            executeToolCalls: async (toolCalls) => {
+                const toolCall = toolCalls[0]!;
+                toolExecutions.push(toolCall.name);
+                session.recordToolExecution({
+                    id: toolCall.id,
+                    name: toolCall.name,
+                    args: { path: '/Users/wangxinglin/Downloads/code.html' },
+                    success: true,
+                    output: '<title>Next 3 — 每天三步</title>',
+                    startedAt: new Date(),
+                    completedAt: new Date(),
+                });
+                session.addToolResult(toolCall.id, '<title>Next 3 — 每天三步</title>');
+            },
+            createRuntime: () => ({
+                prepareMessages: () => session.getMessages(),
+                async runPostToolVerification() {},
+                getForcedStopMessage: () => undefined,
+                getCompletionBlocker: () => undefined,
+                getNoToolCompletionBlocker: (toolUsed) => toolUsed ? undefined : 'The user named a concrete path.',
+                shouldDeferAssistantOutput: (toolUsed) => !toolUsed,
+                finalizeAssistantResponse: (content) => content,
+            }),
+        })) {
+            streamedEvents.push(event);
+        }
+
+        const assistantDeltaText = streamedEvents
+            .filter((event) => event.type === 'message.delta')
+            .map((event) => event.payload.text)
+            .join('');
+        const assistantCompleted = streamedEvents.find((event) => (
+            event.type === 'message.completed'
+            && event.payload.message.role === 'assistant'
+        ));
+
+        expect(providerCalls).toBe(3);
+        expect(toolExecutions).toEqual(['read_file']);
+        expect(assistantDeltaText).not.toContain('fake read_file claim');
+        expect(assistantDeltaText).toContain('real analysis');
+        expect(assistantCompleted).toMatchObject({
+            payload: {
+                message: {
+                    content: 'real analysis',
+                },
+            },
+        });
+        expect(session.getMessages().some((message) => (
+            message.role === 'assistant'
+            && String(message.content).includes('fake read_file claim')
+        ))).toBe(false);
+    });
+
+    it('auto-runs read-only key-file follow-ups after list_files evidence instead of looping to max_loops', async () => {
+        const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-directory-analysis-'));
+        fs.writeFileSync(path.join(projectRoot, 'Package.swift'), '// swift package manifest');
+        const rootViewPath = path.join(projectRoot, 'Today3', 'App', 'RootView.swift');
+        const plannerPath = path.join(projectRoot, 'Sources', 'Today3Core', 'Services', 'PlannerEngine.swift');
+        const docsPath = path.join(projectRoot, 'Docs', 'AppStoreMetadata.md');
+        fs.mkdirSync(path.dirname(rootViewPath), { recursive: true });
+        fs.mkdirSync(path.dirname(plannerPath), { recursive: true });
+        fs.mkdirSync(path.dirname(docsPath), { recursive: true });
+        fs.writeFileSync(rootViewPath, 'struct RootView: View {}');
+        fs.writeFileSync(plannerPath, 'public struct PlannerEngine {}');
+        fs.writeFileSync(docsPath, '# App Store Metadata');
+        const session = new AgentSession({ id: 'conversation-engine-directory-analysis', systemPrompt: 'system' });
+        const userMessage = `${projectRoot} 分析一下这个项目是干嘛的`;
+        const toolExecutions: string[] = [];
+        let providerCalls = 0;
+
+        try {
+            const result = await runConversationEngine({
+                provider: {
+                    name: 'fake-provider',
+                    model: 'fake-model',
+                    async complete() {
+                        throw new Error('complete() should not be used');
+                    },
+                    async stream() {
+                        providerCalls += 1;
+                        if (providerCalls === 1) {
+                            return {
+                                finishReason: 'tool_calls',
+                                message: {
+                                    role: 'assistant',
+                                    content: '',
+                                    toolCalls: [{
+                                        id: 'list-directory-project',
+                                        name: 'list_files',
+                                        arguments: JSON.stringify({ path: projectRoot }),
+                                    }],
+                                },
+                                usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
+                            };
+                        }
+
+                        if (providerCalls === 2) {
+                            return {
+                                finishReason: 'stop',
+                                message: {
+                                    role: 'assistant',
+                                    content: '只根据目录列表的提前回答',
+                                },
+                                usage: { promptTokens: 12, completionTokens: 4, totalTokens: 16 },
+                            };
+                        }
+
+                        if (providerCalls === 3) {
+                            return {
+                                finishReason: 'stop',
+                                message: {
+                                    role: 'assistant',
+                                    content: '只根据 Package.swift 的提前回答',
+                                },
+                                usage: { promptTokens: 16, completionTokens: 4, totalTokens: 20 },
+                            };
+                        }
+
+                        if (providerCalls === 4) {
+                            return {
+                                finishReason: 'stop',
+                                message: {
+                                    role: 'assistant',
+                                    content: '只根据 RootView.swift 的提前回答',
+                                },
+                                usage: { promptTokens: 18, completionTokens: 4, totalTokens: 22 },
+                            };
+                        }
+
+                        if (providerCalls === 5) {
+                            return {
+                                finishReason: 'stop',
+                                message: {
+                                    role: 'assistant',
+                                    content: '只根据源代码的提前回答',
+                                },
+                                usage: { promptTokens: 20, completionTokens: 4, totalTokens: 24 },
+                            };
+                        }
+
+                        return {
+                            finishReason: 'stop',
+                            message: {
+                                role: 'assistant',
+                                content: '这是一个 Swift/iOS 相关项目，包含 Package.swift、RootView、PlannerEngine 核心规划逻辑和 App Store 文档。',
+                            },
+                            usage: { promptTokens: 12, completionTokens: 6, totalTokens: 18 },
+                        };
+                    },
+                },
+                session,
+                userMessage,
+                attachments: [],
+                streamId: 'stream-directory-analysis',
+                abortSignal: new AbortController().signal,
+                logger: defaultLogger.child('conversation-engine-test'),
+                llmConfig: {
+                    provider: 'openai',
+                    model: 'gpt-4.1',
+                    apiKey: 'test-key',
+                },
+                runtimeProfile: 'hybrid',
+                maxIterations: 8,
+                emit: (() => {}) as any,
+                getToolDefinitions: () => [
+                    {
+                        name: 'list_files',
+                        description: 'List files',
+                        parameters: [],
+                    },
+                    {
+                        name: 'read_file',
+                        description: 'Read file',
+                        parameters: [],
+                    },
+                ],
+                executeToolCalls: async (toolCalls) => {
+                    const toolCall = toolCalls[0]!;
+                    toolExecutions.push(toolCall.name);
+                    const args = JSON.parse(toolCall.arguments);
+                    const output = toolCall.name === 'read_file' && args.path === rootViewPath
+                        ? 'struct RootView: View {}'
+                        : toolCall.name === 'read_file' && args.path === plannerPath
+                        ? 'public struct PlannerEngine {}'
+                        : toolCall.name === 'read_file' && args.path === docsPath
+                        ? '# App Store Metadata'
+                        : toolCall.name === 'read_file'
+                        ? '// swift package manifest'
+                        : [
+                            '- Package.swift',
+                            '- Today3/App/RootView.swift',
+                            '- Sources/Today3Core/Services/PlannerEngine.swift',
+                            '- Docs/AppStoreMetadata.md',
+                        ].join('\n');
+                    session.recordToolExecution({
+                        id: toolCall.id,
+                        name: toolCall.name,
+                        args,
+                        success: true,
+                        output,
+                        startedAt: new Date(),
+                        completedAt: new Date(),
+                    });
+                    session.addToolResult(toolCall.id, output);
+                },
+                createRuntime: () => createMvpConversationRuntime({
+                    userGoal: userMessage,
+                    projectRoot,
+                    session,
+                    runtimeProfile: 'hybrid',
+                    runtimeConfig: {
+                        baselineCheck: false,
+                        distillVerifier: false,
+                        stopConditions: {
+                            hard: [],
+                            soft: [],
+                            maxLoops: 8,
+                        },
+                    },
+                }),
+            });
+
+            expect(result).toContain('Swift/iOS');
+            expect(providerCalls).toBe(6);
+            expect(toolExecutions).toEqual(['list_files', 'read_file', 'read_file', 'read_file', 'read_file']);
+            expect(session.getMessages().some((message) => (
+                message.role === 'system'
+                && String(message.content).includes('Directory project analysis key-file follow-up required')
+                && String(message.content).includes(`read_file {"path":"${path.join(projectRoot, 'Package.swift')}"}`)
+            ))).toBe(true);
+            expect(session.getMessages().some((message) => (
+                message.role === 'system'
+                && String(message.content).includes('source entry or core module')
+                && String(message.content).includes(`read_file {"path":"${rootViewPath}"}`)
+            ))).toBe(true);
+            expect(session.getMessages().some((message) => (
+                message.role === 'system'
+                && String(message.content).includes('Only one source file has been read')
+                && String(message.content).includes(`read_file {"path":"${plannerPath}"}`)
+            ))).toBe(true);
+            expect(session.getMessages().some((message) => (
+                message.role === 'system'
+                && String(message.content).includes('Docs file or project configuration file')
+                && String(message.content).includes(`read_file {"path":"${docsPath}"}`)
+            ))).toBe(true);
+            expect(session.getMessages().some((message) => (
+                message.role === 'assistant'
+                && String(message.content).includes('只根据目录列表的提前回答')
+            ))).toBe(false);
+            expect(session.getMessages().some((message) => (
+                message.role === 'assistant'
+                && String(message.content).includes('只根据 Package.swift 的提前回答')
+            ))).toBe(false);
+            expect(session.getMessages().some((message) => (
+                message.role === 'assistant'
+                && String(message.content).includes('只根据 RootView.swift 的提前回答')
+            ))).toBe(false);
+            expect(session.getMessages().some((message) => (
+                message.role === 'assistant'
+                && String(message.content).includes('只根据源代码的提前回答')
+            ))).toBe(false);
+        } finally {
+            fs.rmSync(projectRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('auto-runs GitHub repository inspection evidence instead of looping to max_loops', async () => {
+        const session = new AgentSession({ id: 'conversation-engine-url-analysis', systemPrompt: 'system' });
+        const targetUrl = 'https://github.com/paoloanzn/free-code.git';
+        const userMessage = `${targetUrl}那帮我看下这个仓库呢`;
+        const toolExecutions: string[] = [];
+        let providerCalls = 0;
+
+        const result = await runConversationEngine({
+            provider: {
+                name: 'fake-provider',
+                model: 'fake-model',
+                async complete() {
+                    throw new Error('complete() should not be used');
+                },
+                async stream() {
+                    providerCalls += 1;
+                    if (providerCalls === 1) {
+                        return {
+                            finishReason: 'stop',
+                            message: {
+                                role: 'assistant',
+                                content: '提前回答：这是一个 GitHub 仓库。',
+                            },
+                            usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
+                        };
+                    }
+
+                    return {
+                        finishReason: 'stop',
+                        message: {
+                            role: 'assistant',
+                            content: '根据 README、package.json 和 src/entrypoints/cli.tsx 证据，这是 free-code 仓库。',
+                        },
+                        usage: { promptTokens: 12, completionTokens: 4, totalTokens: 16 },
+                    };
+                },
+            },
+            session,
+            userMessage,
+            attachments: [],
+            streamId: 'stream-url-analysis',
+            abortSignal: new AbortController().signal,
+            logger: defaultLogger.child('conversation-engine-test'),
+            llmConfig: {
+                provider: 'openai',
+                model: 'gpt-4.1',
+                apiKey: 'test-key',
+            },
+            runtimeProfile: 'mvp',
+            maxIterations: 6,
+            emit: (() => {}) as any,
+            getToolDefinitions: () => [
+                {
+                    name: 'inspect_github_repo',
+                    description: 'Inspect GitHub repo',
+                    parameters: [],
+                },
+                {
+                    name: 'fetch_url',
+                    description: 'Fetch URL',
+                    parameters: [],
+                },
+            ],
+            executeToolCalls: async (toolCalls) => {
+                const toolCall = toolCalls[0]!;
+                const args = JSON.parse(toolCall.arguments);
+                toolExecutions.push(`${toolCall.name}:${args.url}`);
+                const output = [
+                    '# GitHub Repository Inspection',
+                    '',
+                    'Repository: paoloanzn/free-code',
+                    '## Evidence completeness',
+                    '- structure: yes (120 files discovered)',
+                    '- overview: yes (README.md)',
+                    '- source/config: yes (package.json)',
+                    '## Key evidence files',
+                    '### README.md (overview)',
+                    '### package.json (config)',
+                    '### src/entrypoints/cli.tsx (source)',
+                ].join('\n');
+                session.recordToolExecution({
+                    id: toolCall.id,
+                    name: toolCall.name,
+                    args,
+                    success: true,
+                    output,
+                    startedAt: new Date(),
+                    completedAt: new Date(),
+                });
+                session.addToolResult(toolCall.id, output);
+            },
+            createRuntime: () => createMvpConversationRuntime({
+                userGoal: userMessage,
+                projectRoot: process.cwd(),
+                session,
+                runtimeProfile: 'mvp',
+                runtimeConfig: {
+                    baselineCheck: false,
+                    distillVerifier: false,
+                    stopConditions: {
+                        hard: [],
+                        soft: [],
+                        maxLoops: 6,
+                    },
+                },
+            }),
+        });
+
+        expect(result).toContain('package.json');
+        expect(result).toContain('src/entrypoints/cli.tsx');
+        expect(providerCalls).toBe(2);
+        expect(toolExecutions).toEqual([`inspect_github_repo:${targetUrl}`]);
+        expect(session.getMessages().some((message) => (
+            message.role === 'system'
+            && String(message.content).includes('concrete URL')
+            && String(message.content).includes(`inspect_github_repo {"url":"${targetUrl}","maxFiles":80}`)
+        ))).toBe(true);
+        expect(session.getMessages().some((message) => (
+            message.role === 'assistant'
+            && String(message.content).includes('提前回答')
+        ))).toBe(false);
+    });
+
+    it('keeps large-file analysis drafts silent until post-failure evidence is sufficient', async () => {
+        const targetPath = '/Users/wangxinglin/Downloads/code.html';
+        const userMessage = `${targetPath} 帮我分析一下这个项目`;
+        const session = new AgentSession({ id: 'conversation-engine-large-file-analysis', systemPrompt: 'system' });
+        const streamedEvents: ConversationEventEnvelope[] = [];
+        const toolExecutions: string[] = [];
+        let providerCalls = 0;
+
+        for await (const event of streamConversationTurn({
+            provider: {
+                name: 'fake-provider',
+                model: 'fake-model',
+                async complete() {
+                    throw new Error('complete() should not be used');
+                },
+                async stream(_request, callbacks) {
+                    providerCalls += 1;
+
+                    if (providerCalls === 1) {
+                        return {
+                            finishReason: 'tool_calls',
+                            message: {
+                                role: 'assistant',
+                                content: '',
+                                toolCalls: [{
+                                    id: 'read-large-full',
+                                    name: 'read_file',
+                                    arguments: JSON.stringify({ path: targetPath }),
+                                }],
+                            },
+                            usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
+                        };
+                    }
+
+                    if (providerCalls === 2) {
+                        return {
+                            finishReason: 'tool_calls',
+                            message: {
+                                role: 'assistant',
+                                content: '',
+                                toolCalls: [{
+                                    id: 'read-large-first-range',
+                                    name: 'read_file',
+                                    arguments: JSON.stringify({ path: targetPath, startLine: 1, endLine: 220 }),
+                                }],
+                            },
+                            usage: { promptTokens: 12, completionTokens: 2, totalTokens: 14 },
+                        };
+                    }
+
+                    if (providerCalls === 3) {
+                        callbacks.onToken?.('premature generic summary');
+                        return {
+                            finishReason: 'stop',
+                            message: {
+                                role: 'assistant',
+                                content: 'premature generic summary',
+                            },
+                            usage: { promptTokens: 14, completionTokens: 4, totalTokens: 18 },
+                        };
+                    }
+
+                    if (providerCalls === 4) {
+                        return {
+                            finishReason: 'tool_calls',
+                            message: {
+                                role: 'assistant',
+                                content: '',
+                                toolCalls: [{
+                                    id: 'search-large-title',
+                                    name: 'search_code',
+                                    arguments: JSON.stringify({ path: targetPath, pattern: '<title>' }),
+                                }],
+                            },
+                            usage: { promptTokens: 16, completionTokens: 2, totalTokens: 18 },
+                        };
+                    }
+
+                    if (providerCalls === 5) {
+                        callbacks.onToken?.('只有标题的浅层分析');
+                        return {
+                            finishReason: 'stop',
+                            message: {
+                                role: 'assistant',
+                                content: '只有标题的浅层分析',
+                            },
+                            usage: { promptTokens: 18, completionTokens: 4, totalTokens: 22 },
+                        };
+                    }
+
+                    if (providerCalls === 6) {
+                        return {
+                            finishReason: 'tool_calls',
+                            message: {
+                                role: 'assistant',
+                                content: '',
+                                toolCalls: [{
+                                    id: 'search-large-body',
+                                    name: 'search_code',
+                                    arguments: JSON.stringify({ path: targetPath, pattern: '<body' }),
+                                }],
+                            },
+                            usage: { promptTokens: 20, completionTokens: 2, totalTokens: 22 },
+                        };
+                    }
+
+                    if (providerCalls === 7) {
+                        callbacks.onToken?.('只有 body 标签的浅层分析');
+                        return {
+                            finishReason: 'stop',
+                            message: {
+                                role: 'assistant',
+                                content: '只有 body 标签的浅层分析',
+                            },
+                            usage: { promptTokens: 22, completionTokens: 4, totalTokens: 26 },
+                        };
+                    }
+
+                    if (providerCalls === 8) {
+                        return {
+                            finishReason: 'tool_calls',
+                            message: {
+                                role: 'assistant',
+                                content: '',
+                                toolCalls: [{
+                                    id: 'search-large-structure',
+                                    name: 'search_code',
+                                    arguments: JSON.stringify({ path: targetPath, pattern: '<body|<script|function|id=' }),
+                                }],
+                            },
+                            usage: { promptTokens: 24, completionTokens: 2, totalTokens: 26 },
+                        };
+                    }
+
+                    callbacks.onToken?.('简洁分析：这是 Next 3 的移动端原型。');
+                    return {
+                        finishReason: 'stop',
+                        message: {
+                            role: 'assistant',
+                            content: '简洁分析：这是 Next 3 的移动端原型。',
+                        },
+                        usage: { promptTokens: 20, completionTokens: 8, totalTokens: 28 },
+                    };
+                },
+            },
+            session,
+            userMessage,
+            attachments: [],
+            streamId: 'stream-large-file-analysis',
+            abortSignal: new AbortController().signal,
+            logger: defaultLogger.child('conversation-engine-test'),
+            llmConfig: {
+                provider: 'openai',
+                model: 'gpt-4.1',
+                apiKey: 'test-key',
+            },
+            runtimeProfile: 'mvp',
+            maxIterations: 12,
+            emit: (() => {}) as any,
+            getToolDefinitions: () => [
+                { name: 'read_file', description: 'Read a file', parameters: [] },
+                { name: 'search_code', description: 'Search code', parameters: [] },
+            ],
+            executeToolCalls: async (toolCalls) => {
+                const toolCall = toolCalls[0]!;
+                const args = JSON.parse(toolCall.arguments);
+                toolExecutions.push(`${toolCall.name}:${toolCall.id}`);
+
+                if (toolCall.id === 'read-large-full') {
+                    const error = 'File is too large to read fully (89756 bytes > 65536 bytes). Use startLine/endLine first.';
+                    session.recordToolExecution({
+                        id: toolCall.id,
+                        name: toolCall.name,
+                        args,
+                        success: false,
+                        output: `Error: ${error}`,
+                        error,
+                    });
+                    session.addToolResult(toolCall.id, `Error: ${error}`);
+                    return;
+                }
+
+                const output = toolCall.id === 'read-large-first-range'
+                    ? '<!DOCTYPE html>\n<title>Next 3 — 每天三步</title>\n<style>.phone { width: 393px; }</style>'
+                    : toolCall.id === 'search-large-title'
+                        ? '6:<title>Next 3 — 每天三步</title>'
+                    : toolCall.id === 'search-large-body'
+                        ? '1657:<body>'
+                    : '1432:<body>\n1988:<script>\n1991:function navigateTo(screenId) {';
+                session.recordToolExecution({
+                    id: toolCall.id,
+                    name: toolCall.name,
+                    args,
+                    success: true,
+                    output,
+                });
+                session.addToolResult(toolCall.id, output);
+            },
+            createRuntime: () => createMvpConversationRuntime({
+                userGoal: userMessage,
+                projectRoot: process.cwd(),
+                session,
+                runtimeProfile: 'mvp',
+                runtimeConfig: {
+                    baselineCheck: false,
+                    distillVerifier: false,
+                    stopConditions: {
+                        hard: [],
+                        soft: [],
+                        maxLoops: 8,
+                    },
+                },
+            }),
+        })) {
+            streamedEvents.push(event);
+        }
+
+        const assistantDeltaText = streamedEvents
+            .filter((event) => event.type === 'message.delta')
+            .map((event) => event.payload.text)
+            .join('');
+        const assistantCompletedText = streamedEvents
+            .filter((event) => event.type === 'message.completed' && event.payload.message.role === 'assistant')
+            .map((event) => event.payload.message.content)
+            .join('');
+
+        expect(providerCalls).toBe(9);
+        expect(toolExecutions).toEqual([
+            'read_file:read-large-full',
+            'read_file:read-large-first-range',
+            'search_code:search-large-title',
+            'search_code:search-large-body',
+            'search_code:search-large-structure',
+        ]);
+        expect(assistantDeltaText).not.toContain('premature generic summary');
+        expect(assistantDeltaText).not.toContain('只有标题的浅层分析');
+        expect(assistantDeltaText).not.toContain('只有 body 标签的浅层分析');
+        expect(assistantDeltaText).not.toContain('简洁分析');
+        expect(assistantCompletedText).toContain('简洁分析');
+        expect(session.getMessages().some((message) => (
+            message.role === 'assistant'
+            && String(message.content).includes('premature generic summary')
+        ))).toBe(false);
+        expect(session.getMessages().some((message) => (
+            message.role === 'assistant'
+            && String(message.content).includes('只有标题的浅层分析')
+        ))).toBe(false);
+        expect(session.getMessages().some((message) => (
+            message.role === 'assistant'
+            && String(message.content).includes('只有 body 标签的浅层分析')
+        ))).toBe(false);
     });
 
     it('runs the tool follow-up verification bridge before the next provider turn', async () => {

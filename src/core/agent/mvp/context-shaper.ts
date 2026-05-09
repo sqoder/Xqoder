@@ -49,7 +49,8 @@ function buildSections(
         });
     }
 
-    pushSection(sections, 'Target paths', context.targetPaths, 'Active', 0.92, nowMs);
+    pushSection(sections, 'Target paths', renderTargetPaths(context), 'Active', 0.92, nowMs);
+    pushSection(sections, 'Target URLs', context.targetUrls, 'Active', 0.92, nowMs);
     pushSection(sections, 'Related paths', context.relatedPaths, 'Active', 0.75, nowMs);
     pushSection(sections, 'Project rules', renderRules(context), 'Active', 0.88, nowMs);
     pushSection(sections, 'Recent file changes', context.recentFileChanges, 'History', 0.72, nowMs);
@@ -59,6 +60,13 @@ function buildSections(
     pushSection(sections, 'Git status', context.gitStatus, 'Background', 0.4, nowMs);
 
     return sections;
+}
+
+function renderTargetPaths(context: MvpCollectedContext): string[] {
+    return context.targetPaths.map((targetPath) => {
+        const kind = context.targetPathKinds[targetPath] ?? 'unknown';
+        return `${targetPath} (${kind})`;
+    });
 }
 
 function pushSection(

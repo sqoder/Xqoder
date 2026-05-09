@@ -108,6 +108,8 @@ function toAgentSession(record: SessionRecord): AgentSession {
       toolHistory: [],
       verificationHistory: [],
       checkpointHistory: [],
+      approvalHistory: [],
+      pendingApprovals: [],
       commandHistory: [],
       fileChanges: [],
       toolResultRendererEvents: [],

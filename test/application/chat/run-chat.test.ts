@@ -592,6 +592,62 @@ describe('chat runtime helpers', () => {
         });
     });
 
+    it('uses the cleaned final agent response instead of raw accumulated streamed text', async () => {
+        const cwd = createTempDir();
+        const events: ConversationEventEnvelope[] = [];
+        const repeated = [
+            '`free-code` 是一个基于 Anthropic 官方 Claude Code CLI 源码快照构建的去监控、去安全护栏、全功能解锁的开源终端 AI 编程助手。',
+            '',
+            '核心特点如下：',
+            '',
+            '```bash',
+            'free-code',
+            '/login',
+            '```',
+            '',
+            '欢迎继续提问 👇`free-code` 是一个基于 Anthropic 官方 Claude Code CLI 源码快照构建的去监控、去安全护栏、全功能解锁的开源终端 AI 编程助手。',
+            '',
+            '核心特点如下：',
+            '- 第二遍重复内容。',
+        ].join('\n');
+
+        const result = await runChatMessageStream({
+            prompt: 'https://github.com/paoloanzn/free-code.git 帮我看下这个仓库',
+            cwd,
+            startNewSession: true,
+            onEvent: (event) => {
+                events.push(event);
+            },
+        }, {
+            configManager: { load: () => createLoadedConfig('test-key') },
+            sessionStore: {
+                findLatestSession: () => null,
+                getSession: () => null,
+                saveSession: () => ({ id: 'stream-cleanup' }),
+            },
+            agentFactory: () => createFakeAgent({
+                onRun: (_prompt, callbacks) => {
+                    callbacks?.onToken?.(repeated);
+                },
+                response: repeated,
+            }),
+        });
+
+        const completed = events.findLast((event) => (
+            event.type === 'message.completed'
+            && event.payload.message.role === 'assistant'
+        ));
+        if (completed?.type !== 'message.completed') {
+            throw new Error('Expected completed assistant event');
+        }
+
+        expect(result.response.match(/`free-code` 是一个基于 Anthropic 官方/g)).toHaveLength(1);
+        expect(result.response).toContain('```bash');
+        expect(result.response).not.toContain('第二遍重复内容');
+        expect(result.response).not.toContain('欢迎继续提问');
+        expect(completed.payload.message.content).toBe(result.response);
+    });
+
     it('bridges fallback agent callback events through the interactive envelope stream', async () => {
         const cwd = createTempDir();
         const observed: string[] = [];

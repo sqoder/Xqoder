@@ -6,6 +6,7 @@ import {
     evaluateGoldenTaskResponse,
     runGoldenTaskBatch,
     type GoldenTaskDefinition,
+    type GoldenTaskMetrics,
 } from '../src/features/eval/golden-task-runner.js';
 
 interface CliOptions {
@@ -40,9 +41,13 @@ const LIVE_PROVIDER_CANDIDATES: LiveProviderCandidate[] = [
 async function main(): Promise<void> {
     const options = parseArgs(process.argv.slice(2));
     const tasks = loadManifest(options.manifestPath);
-    const liveProvider = options.live ? resolveLiveProvider(options) : undefined;
+    const liveProvider = options.live
+        ? options.dryRun
+            ? resolveLiveProviderIfAvailable(options)
+            : resolveLiveProvider(options)
+        : undefined;
     if (options.dryRun) {
-        process.stdout.write(`${JSON.stringify({
+        const payload = {
             mode: options.live ? 'live' : 'repo-evidence',
             fallbackEnabled: !options.live,
             ...(liveProvider ? { provider: publicLiveProvider(liveProvider) } : {}),
@@ -52,8 +57,31 @@ async function main(): Promise<void> {
                 dryRun: true,
                 ...(options.live ? { requiredPassRate: LIVE_PASS_RATE_MINIMUM } : {}),
             },
+            acceptanceMetrics: {
+                success_rate: 0,
+                avg_steps: 0,
+                tool_failure_rate: 0,
+                approval_interruption_rate: 0,
+                rollback_rate: 0,
+            },
             taskIds: tasks.map((task) => task.id),
-        }, null, 2)}\n`);
+            results: tasks.map((task) => ({
+                id: task.id,
+                title: task.title,
+                cwd: task.cwd,
+                ok: false,
+                durationMs: 0,
+                steps: 0,
+                toolFailures: 0,
+                approvals: 0,
+                approvalInterruptions: 0,
+                rollbacks: 0,
+                humanTakeover: false,
+                error: 'dry-run placeholder',
+            })),
+        };
+        maybeWriteAcceptanceMetricsArtifact(payload);
+        process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
         return;
     }
     const sessionStore = createDefaultChatSessionStore();
@@ -68,12 +96,16 @@ async function main(): Promise<void> {
                 if (!options.live && !options.model && !options.agent && deterministicBaseline && evaluateGoldenTaskResponse(task, deterministicBaseline).ok) {
                     return {
                         response: deterministicBaseline,
+                        metrics: defaultGoldenMetrics(),
                     };
                 }
 
                 let responseText = '';
+                let lastSessionId: string | undefined;
+                let attemptsUsed = 0;
 
                 for (let attempt = 0; attempt < 2; attempt += 1) {
+                    attemptsUsed = attempt + 1;
                     const response = await runChatHeadless(buildGoldenTaskPrompt(task, attempt), {
                         dir: task.cwd,
                         newSession: true,
@@ -84,6 +116,7 @@ async function main(): Promise<void> {
                         sessionStore,
                     });
                     responseText = response.response;
+                    lastSessionId = response.sessionId;
                     const evaluation = evaluateGoldenTaskResponse(task, responseText);
                     if (evaluation.ok) {
                         break;
@@ -99,6 +132,9 @@ async function main(): Promise<void> {
 
                 return {
                     response: responseText,
+                    metrics: lastSessionId
+                        ? summarizeGoldenSessionMetrics(sessionStore.getSession(lastSessionId), attemptsUsed)
+                        : defaultGoldenMetrics(attemptsUsed),
                 };
             },
         });
@@ -108,7 +144,7 @@ async function main(): Promise<void> {
             : result.summary.total;
         const accepted = result.summary.passed >= requiredPassed;
 
-        process.stdout.write(`${JSON.stringify({
+        const payload = {
             mode: options.live ? 'live' : 'repo-evidence',
             fallbackEnabled: !options.live,
             ...(liveProvider ? { provider: publicLiveProvider(liveProvider) } : {}),
@@ -117,8 +153,17 @@ async function main(): Promise<void> {
                 requiredPassed,
                 accepted,
             },
+            acceptanceMetrics: {
+                success_rate: result.summary.successRate,
+                avg_steps: result.summary.avgSteps,
+                tool_failure_rate: result.summary.toolFailureRate,
+                approval_interruption_rate: result.summary.approvalInterruptionRate,
+                rollback_rate: result.summary.rollbackRate,
+            },
             results: result.results,
-        }, null, 2)}\n`);
+        };
+        maybeWriteAcceptanceMetricsArtifact(payload);
+        process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
         process.exitCode = accepted ? 0 : 1;
     } finally {
         if ('close' in sessionStore && typeof sessionStore.close === 'function') {
@@ -168,6 +213,14 @@ function parseArgs(args: string[]): CliOptions {
         dryRun,
         live,
     };
+}
+
+function resolveLiveProviderIfAvailable(options: CliOptions): LiveProviderSelection | undefined {
+    try {
+        return resolveLiveProvider(options);
+    } catch {
+        return undefined;
+    }
 }
 
 function resolveLiveProvider(options: CliOptions): LiveProviderSelection {
@@ -327,7 +380,154 @@ function extractPromptPaths(prompt: string): string[] {
     ));
 }
 
-void main().catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = 1;
-});
+function defaultGoldenMetrics(steps: number = 1): GoldenTaskMetrics {
+    return {
+        steps,
+        toolFailures: 0,
+        approvals: 0,
+        approvalInterruptions: 0,
+        rollbacks: 0,
+        humanTakeover: false,
+    };
+}
+
+export function summarizeGoldenSessionMetrics(
+    session: { getToolHistory(): Array<{ success: boolean }>; getApprovalHistory?(): Array<{ decision: string }>; getFileChanges?(): Array<{ changeType: string; rollbackPointId?: string }>; } | null,
+    steps: number,
+): GoldenTaskMetrics {
+    if (!session) {
+        return defaultGoldenMetrics(steps);
+    }
+
+    const toolHistory = session.getToolHistory();
+    const approvalHistory = session.getApprovalHistory ? session.getApprovalHistory() : [];
+    const fileChanges = session.getFileChanges ? session.getFileChanges() : [];
+
+    return {
+        steps,
+        toolFailures: toolHistory.filter((entry) => !entry.success).length,
+        approvals: approvalHistory.length,
+        approvalInterruptions: approvalHistory.filter((entry) => entry.decision === 'deny').length,
+        rollbacks: fileChanges.filter((entry) => entry.changeType === 'restore').length,
+        humanTakeover: approvalHistory.some((entry) => entry.decision === 'deny'),
+    };
+}
+
+function maybeWriteAcceptanceMetricsArtifact(payload: unknown): void {
+    const artifactPath = path.resolve('docs/release/latest-acceptance-metrics.json');
+    fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+    fs.writeFileSync(artifactPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf-8');
+
+    const parsed = payload as {
+        mode?: string;
+        summary?: { dryRun?: boolean };
+        results?: unknown[];
+    };
+    const isLive = parsed.mode === 'live' && parsed.summary?.dryRun !== true;
+    if (isLive) {
+        const liveMetricsPath = path.resolve('docs/release/latest-live-acceptance-metrics.json');
+        fs.writeFileSync(liveMetricsPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf-8');
+    }
+
+    const reportPayload = buildGoldenTaskReportPayload(payload);
+    if (reportPayload) {
+        const jsonPath = path.resolve('docs/release/latest-golden-task-report.json');
+        const mdPath = path.resolve('docs/release/latest-golden-task-report.md');
+        fs.writeFileSync(jsonPath, `${JSON.stringify(reportPayload, null, 2)}\n`, 'utf-8');
+        fs.writeFileSync(mdPath, `${renderGoldenTaskReport(reportPayload)}\n`, 'utf-8');
+    }
+}
+
+function buildGoldenTaskReportPayload(payload: unknown): {
+    generatedAt: string;
+    mode: string;
+    dryRun: boolean;
+    summary: Record<string, unknown> | null;
+    results: Array<Record<string, unknown>>;
+} | null {
+    if (!payload || typeof payload !== 'object') {
+        return null;
+    }
+
+    const parsed = payload as {
+        mode?: string;
+        summary?: Record<string, unknown> & { dryRun?: boolean };
+        results?: Array<Record<string, unknown>>;
+    };
+    if (!Array.isArray(parsed.results)) {
+        return null;
+    }
+
+    const dryRun = parsed.summary?.dryRun === true;
+    const mode = typeof parsed.mode === 'string'
+        ? dryRun && parsed.mode === 'live'
+            ? 'live-dry-run'
+            : parsed.mode
+        : 'unknown';
+
+    return {
+        generatedAt: new Date().toISOString(),
+        mode,
+        dryRun,
+        summary: parsed.summary ?? null,
+        results: parsed.results,
+    };
+}
+
+function renderGoldenTaskReport(report: {
+    generatedAt: string;
+    mode: string;
+    dryRun: boolean;
+    summary: Record<string, unknown> | null;
+    results: Array<Record<string, unknown>>;
+}): string {
+    const rows = report.results.map((result) => {
+        const response = typeof result.response === 'string' ? result.response.replace(/\s+/g, ' ').slice(0, 120) : '';
+        const error = typeof result.error === 'string' ? result.error.replace(/\s+/g, ' ').slice(0, 120) : '';
+        return `| ${stringCell(result.id)} | ${booleanCell(result.ok)} | ${numberCell(result.durationMs)} | ${numberCell(result.steps)} | ${numberCell(result.toolFailures)} | ${numberCell(result.approvals)} | ${numberCell(result.approvalInterruptions)} | ${numberCell(result.rollbacks)} | ${booleanCell(result.humanTakeover)} | ${stringCell(error || response)} |`;
+    }).join('\n');
+
+    return [
+        '# Golden Task Report',
+        '',
+        `Generated at: ${report.generatedAt}`,
+        `Mode: ${report.mode}`,
+        `Dry run: ${report.dryRun ? 'Yes' : 'No'}`,
+        '',
+        '## Summary',
+        '',
+        `- total: ${numberCell(report.summary?.total)}`,
+        `- passed: ${numberCell(report.summary?.passed)}`,
+        `- failed: ${numberCell(report.summary?.failed)}`,
+        `- passRate: ${numberCell(report.summary?.passRate)}`,
+        `- avgSteps: ${numberCell(report.summary?.avgSteps)}`,
+        `- toolFailureRate: ${numberCell(report.summary?.toolFailureRate)}`,
+        `- approvalInterruptionRate: ${numberCell(report.summary?.approvalInterruptionRate)}`,
+        `- rollbackRate: ${numberCell(report.summary?.rollbackRate)}`,
+        '',
+        '## Tasks',
+        '',
+        '| Task | OK | Duration ms | Steps | Tool failures | Approvals | Approval interruptions | Rollbacks | Human takeover | Error / response excerpt |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+        rows || '| n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |',
+    ].join('\n');
+}
+
+function stringCell(value: unknown): string {
+    return typeof value === 'string' && value.length > 0 ? value.replace(/\|/g, '\\|') : 'n/a';
+}
+
+function numberCell(value: unknown): string {
+    return typeof value === 'number' ? String(value) : 'n/a';
+}
+
+function booleanCell(value: unknown): string {
+    return typeof value === 'boolean' ? (value ? 'yes' : 'no') : 'n/a';
+}
+
+if (import.meta.main) {
+    void main().catch((error) => {
+        process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+        process.exitCode = 1;
+    });
+}

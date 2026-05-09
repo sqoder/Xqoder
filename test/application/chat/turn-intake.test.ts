@@ -117,6 +117,22 @@ describe('chat turn intake', () => {
         expect(turnInput.preparedPrompt).toContain('demo-project');
     });
 
+    it('routes explicit local file path analysis without project-context injection or engineering report templates', () => {
+        const cwd = createProjectDir();
+        const externalHtml = path.join(os.tmpdir(), 'code.html');
+
+        const turnInput = buildConversationTurnInput({
+            prompt: `${externalHtml} 帮我分析一下这个项目`,
+            cwd,
+            entrypoint: 'tui',
+        });
+
+        expect(turnInput.runtime.interaction.kind).toBe('file_analysis');
+        expect(turnInput.runtime.interaction.usesStructuredResponse).toBe(false);
+        expect(turnInput.runtime.runtimeDecision.shouldAugmentProjectContext).toBe(false);
+        expect(turnInput.preparedPrompt).not.toContain('[AutoProjectContext]');
+    });
+
     it('captures resume-latest and stream-json output without forcing persistence', () => {
         const cwd = createTempDir();
 
@@ -154,6 +170,54 @@ describe('chat turn intake', () => {
         expect(turnInput.preparedPrompt).toContain('User request: stabilize the command router');
     });
 
+    it('routes /skill through a slash command prompt that loads the named skill tool', () => {
+        const cwd = createTempDir();
+
+        const turnInput = buildConversationTurnInput({
+            prompt: '/skill code-review inspect src/router.ts',
+            cwd,
+            entrypoint: 'cli',
+        });
+
+        expect(turnInput.runtime.commandRoute).toEqual({
+            kind: 'skill',
+            name: 'code-review',
+            input: 'inspect src/router.ts',
+        });
+        expect(turnInput.slashCommand).toMatchObject({
+            raw: '/skill',
+            route: {
+                kind: 'skill',
+                name: 'code-review',
+            },
+        });
+        expect(turnInput.runtime.interaction.kind).toBe('engineering_task');
+        expect(turnInput.normalizedText).toBe('inspect src/router.ts');
+        expect(turnInput.preparedPrompt).toContain('Load the "code-review" skill with the skill tool');
+        expect(turnInput.preparedPrompt).toContain('Goal: inspect src/router.ts');
+        expect(turnInput.shouldPersistSession).toBe(true);
+    });
+
+    it('keeps slash skill commands in command routing instead of treating them as plain user text', () => {
+        const cwd = createTempDir();
+
+        const turnInput = buildConversationTurnInput({
+            prompt: '/skill verification-loop check release readiness',
+            cwd,
+            entrypoint: 'http',
+        });
+
+        expect(turnInput.rawText).toBe('/skill verification-loop check release readiness');
+        expect(turnInput.runtime.commandRoute).toEqual({
+            kind: 'skill',
+            name: 'verification-loop',
+            input: 'check release readiness',
+        });
+        expect(turnInput.normalizedText).toBe('check release readiness');
+        expect(turnInput.preparedPrompt).not.toBe('/skill verification-loop check release readiness');
+        expect(turnInput.preparedPrompt).toContain('Load the "verification-loop" skill with the skill tool');
+    });
+
     it('derives task mode, execution capability, and scoped approval policy from the turn route', () => {
         const cwd = createProjectDir();
 
@@ -170,6 +234,16 @@ describe('chat turn intake', () => {
         const questionExecution = prepareChatExecution(
             buildConversationTurnInput({
                 prompt: '请解释这个项目',
+                cwd,
+                entrypoint: 'cli',
+            }),
+            {
+                configManager: { load: () => createLoadedConfig('test-key') },
+            },
+        );
+        const reviewExecution = prepareChatExecution(
+            buildConversationTurnInput({
+                prompt: '/review inspect src/router.ts',
                 cwd,
                 entrypoint: 'cli',
             }),
@@ -226,8 +300,20 @@ describe('chat turn intake', () => {
         });
         expect(questionExecution.agentConfig).toMatchObject({
             taskMode: 'project_question',
+            executionCapability: 'workspace_write',
+            approvalPolicy: 'strict',
+        });
+        expect(reviewExecution.agentConfig).toMatchObject({
+            taskMode: 'code_review',
             executionCapability: 'read_only',
             approvalPolicy: 'strict',
+            permissions: {
+                approvalPolicy: 'strict',
+                tools: {
+                    edit: 'deny',
+                    bash: 'deny',
+                },
+            },
         });
         expect(debugFixExecution.agentConfig).toMatchObject({
             taskMode: 'debug_fix',
@@ -250,6 +336,28 @@ describe('chat turn intake', () => {
                     edit: 'allow',
                 },
             },
+        });
+    });
+
+    it('keeps natural-language file generation turns write-capable even without engineering regex hits', () => {
+        const cwd = createProjectDir();
+
+        const execution = prepareChatExecution(
+            buildConversationTurnInput({
+                prompt: '在我的桌面上写一篇作文 100字的 格式为md',
+                cwd,
+                entrypoint: 'tui',
+            }),
+            {
+                configManager: { load: () => createLoadedConfig('test-key') },
+            },
+        );
+
+        expect(execution.turnInput.runtime.interaction.kind).toBe('casual');
+        expect(execution.agentConfig).toMatchObject({
+            taskMode: 'casual_chat',
+            executionCapability: 'workspace_write',
+            approvalPolicy: 'strict',
         });
     });
 

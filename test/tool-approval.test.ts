@@ -7,8 +7,127 @@ import { SandboxAccessError } from '../src/core/agent/tools/sandbox.js';
 import { RunShellTool } from '../src/core/agent/tools/command-tool.js';
 import { WriteFileTool } from '../src/core/agent/tools/file-tools.js';
 import { ToolRegistry, type ITool, type ToolContext, type ToolApprovalRequest } from '../src/core/agent/tools/tool.js';
+import { describeApprovalRequest } from '../src/ux/tool-approval.js';
+
+function approvalRequest(overrides: Partial<ToolApprovalRequest>): ToolApprovalRequest {
+    return {
+        toolCallId: 'call-approval',
+        toolName: 'test_tool',
+        summary: 'Manual approval required',
+        risk: 'medium',
+        ...overrides,
+    };
+}
+
+function approvalTitle(overrides: Partial<ToolApprovalRequest>): string {
+    return describeApprovalRequest(approvalRequest(overrides)).title;
+}
+
+function approvalRiskLabel(overrides: Partial<ToolApprovalRequest>): string | undefined {
+    return describeApprovalRequest(approvalRequest(overrides)).riskLabel;
+}
+
 
 describe('tool approval flow', () => {
+    it('renders CLI approval titles for outside-workspace and sensitive reads', () => {
+        expect(approvalTitle({
+            toolName: 'read_file',
+            summary: 'Request read outside workspace: ../Desktop/notes.txt',
+            risk: 'medium',
+        })).toBe('Read outside workspace');
+
+        expect(approvalTitle({
+            toolName: 'read_file',
+            summary: 'Request read of sensitive file: .env.local',
+            risk: 'high',
+        })).toBe('Sensitive read');
+    });
+
+    it('renders CLI approval titles for protected paths and high-risk writes', () => {
+        expect(approvalTitle({
+            toolName: 'write_file',
+            summary: 'Request write to protected path: .git/config',
+            risk: 'high',
+        })).toBe('Protected path access');
+
+        expect(approvalTitle({
+            toolName: 'write_file',
+            summary: 'Create new file',
+            reason: 'This is a high-risk config path and requires approval.',
+            risk: 'high',
+        })).toBe('High-risk write');
+    });
+
+    it('renders CLI approval titles for shell, network, and MCP requests', () => {
+        expect(approvalTitle({
+            toolName: 'run_shell',
+            summary: 'Execute command: rm -rf ./tmp-cache',
+            risk: 'high',
+        })).toBe('Shell command approval');
+
+        expect(approvalTitle({
+            toolName: 'fetch_url',
+            summary: 'Fetch https://example.com',
+            risk: 'medium',
+        })).toBe('Network access');
+
+        expect(approvalTitle({
+            toolName: 'mcp.remote-docs.resources.read',
+            summary: 'Read MCP resource @ remote-docs',
+            reason: 'This operation comes from an untrusted MCP server.',
+            risk: 'high',
+        })).toBe('External tool access');
+    });
+
+    it('prefers structured approval categories and suggestions when present', () => {
+        const details = describeApprovalRequest(approvalRequest({
+            toolName: 'read_file',
+            category: 'suspicious-path',
+            summary: 'Request access to suspicious path: ~/.ssh/config',
+            suggestion: 'Add the containing directory to allowed read paths if this access should be routine.',
+            risk: 'high',
+        }));
+
+        expect(details.title).toBe('Suspicious path access');
+        expect(details.riskLabel).toBe('high');
+        expect(details.explanation).toContain('suspicious pattern');
+        expect(details.suggestion).toContain('allowed read paths');
+    });
+
+    it('renders a stable explanation for outside-workspace reads', () => {
+        const details = describeApprovalRequest(approvalRequest({
+            toolName: 'read_file',
+            category: 'outside-workspace-read',
+            summary: 'Request read outside workspace: ../Desktop/notes.txt',
+            risk: 'medium',
+        }));
+
+        expect(details.title).toBe('Read outside workspace');
+        expect(details.explanation).toContain('beyond the current workspace');
+    });
+
+    it('keeps legacy text classification as a fallback when category is absent', () => {
+        expect(approvalTitle({
+            toolName: 'read_file',
+            summary: 'Request access to suspicious path: ~/.ssh/config',
+            risk: 'high',
+        })).toBe('Suspicious path access');
+    });
+
+    it('renders CLI approval risk labels directly from request risk', () => {
+        expect(approvalRiskLabel({ risk: 'high' })).toBe('high');
+        expect(approvalRiskLabel({ risk: 'medium' })).toBe('medium');
+        expect(approvalRiskLabel({ risk: 'low' })).toBe('low');
+    });
+
+    it('falls back to the manual approval title for uncategorized requests', () => {
+        expect(approvalTitle({
+            toolName: 'delegate_task',
+            summary: 'Permission policy requires approval before running delegate_task',
+            risk: 'medium',
+        })).toBe('Manual approval required');
+    });
+
     it('forces approval when a hook patch marks the request as required', async () => {
         const registry = new ToolRegistry();
         let approvalRequest: ToolApprovalRequest | undefined;

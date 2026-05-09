@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import type { ToolDefinition, ToolResult } from '@xqoder/shared';
 import type { ITool, ToolContext } from './tool.js';
 import { truncatePreview } from './diff.js';
-import { isSandboxAccessError, resolvePathWithinProject } from './sandbox.js';
+import { isSandboxAccessError, resolvePathForRead } from './sandbox.js';
 import { discoverSkillDocuments } from './skill-paths.js';
 
 const MAX_DISCOVERY_ITEMS = 200;
@@ -20,11 +20,21 @@ export class ListFilesTool implements ITool {
         ],
     };
 
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return true;
+    }
+
+    persistLargeResult = false;
+
     async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
         const toolCallId = (args['toolCallId'] as string) ?? '';
 
         try {
-            const rootPath = resolvePathWithinProject((args['path'] as string) ?? '.', context);
+            const rootPath = resolvePathForRead((args['path'] as string) ?? '.', context);
             const maxDepth = Math.max(0, Math.min(8, Number(args['maxDepth'] ?? 3)));
             const includeHidden = Boolean(args['includeHidden']);
             const lines: string[] = [];
@@ -60,12 +70,22 @@ export class GlobFilesTool implements ITool {
         ],
     };
 
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return true;
+    }
+
+    persistLargeResult = false;
+
     async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
         const toolCallId = (args['toolCallId'] as string) ?? '';
 
         try {
             const pattern = args['pattern'] as string;
-            const searchRoot = resolvePathWithinProject((args['path'] as string) ?? '.', context);
+            const searchRoot = resolvePathForRead((args['path'] as string) ?? '.', context);
             const relativeRoot = path.relative(context.projectRoot, searchRoot);
             const result = spawnSync('rg', [
                 '--files',
@@ -149,12 +169,22 @@ export class GrepContentTool implements ITool {
         ],
     };
 
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return true;
+    }
+
+    persistLargeResult = false;
+
     async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
         const toolCallId = (args['toolCallId'] as string) ?? '';
 
         try {
             const pattern = args['pattern'] as string;
-            const searchRoot = resolvePathWithinProject((args['path'] as string) ?? '.', context);
+            const searchRoot = resolvePathForRead((args['path'] as string) ?? '.', context);
             const include = args['include'] as string | undefined;
             const rgArgs = [
                 '--line-number',
@@ -261,6 +291,16 @@ export class DiscoverSkillsTool implements ITool {
         description: 'Discover reusable agent skills in the project or global store by searching for skill markdown files.',
         parameters: [],
     };
+
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return true;
+    }
+
+    persistLargeResult = false;
 
     async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
         const toolCallId = (args['toolCallId'] as string) ?? '';

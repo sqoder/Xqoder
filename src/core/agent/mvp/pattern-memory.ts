@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import Database from 'better-sqlite3';
+import { createSqliteDatabase, type SqliteDatabase } from '../session/sqlite-runtime.js';
 import type {
     MvpFailureClassification,
     MvpFailurePattern,
@@ -23,7 +23,7 @@ interface PersistedPatternRow {
 }
 
 export class MvpFailurePatternMemory {
-    private db?: Database.Database;
+    private db?: SqliteDatabase;
     private readonly fallback = new Map<string, MvpFailurePattern>();
 
     constructor(
@@ -37,7 +37,7 @@ export class MvpFailurePatternMemory {
                 .slice(0, 12);
             const rootDir = path.join(os.homedir(), '.xqoder', projectHash);
             fs.mkdirSync(rootDir, { recursive: true });
-            this.db = new Database(path.join(rootDir, 'failures.db'));
+            this.db = createSqliteDatabase(path.join(rootDir, 'failures.db'));
             this.initSchema();
         } catch (error) {
             this.warn(

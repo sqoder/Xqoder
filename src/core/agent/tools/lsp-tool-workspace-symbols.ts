@@ -8,6 +8,8 @@ import { formatSymbolMatch } from './lsp-tool-formatters.js';
 export class LspWorkspaceSymbolsTool implements ITool {
     constructor(private readonly externalManager?: ExternalLanguageServerManager) {}
 
+    readonly persistLargeResult = false;
+
     readonly definition: ToolDefinition = {
         name: 'lsp_workspace_symbols',
         description: 'Search for definitions in the current project by symbol name, supports built-in TypeScript/JavaScript and configured external LSP servers.',
@@ -16,6 +18,14 @@ export class LspWorkspaceSymbolsTool implements ITool {
             { name: 'limit', type: 'number', description: 'Maximum number of results to return (default 20)', required: false },
         ],
     };
+
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return true;
+    }
 
     async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
         const toolCallId = (args['toolCallId'] as string) ?? '';

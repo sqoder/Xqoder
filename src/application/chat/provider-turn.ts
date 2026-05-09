@@ -25,6 +25,7 @@ export interface ProviderTurnDependencies {
     agentName?: string;
     streamId: string;
     callbacks?: StreamCallbacks;
+    suppressAssistantMessages?: boolean;
     emit: <K extends keyof AgentEvents>(
         type: K,
         data: AgentEvents[K],
@@ -78,6 +79,9 @@ function applyProviderEvent(
 ): void {
     switch (event.type) {
         case 'message':
+            if (dependencies.suppressAssistantMessages === true) {
+                return;
+            }
             dependencies.emit('message', { role: 'assistant', content: event.text }, dependencies.streamId);
             try { dependencies.callbacks?.onToken?.(event.text); } catch { /* noop */ }
             return;
@@ -95,6 +99,9 @@ function applyProviderEvent(
         case 'stop':
             state.message = event.message;
             state.finishReason = event.finishReason;
+            if (dependencies.suppressAssistantMessages === true) {
+                return;
+            }
             try { dependencies.callbacks?.onComplete?.(event.message); } catch { /* noop */ }
             return;
         case 'error':

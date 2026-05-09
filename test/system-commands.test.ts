@@ -31,6 +31,9 @@ import {
 } from '../src/application/system/notepad.js';
 import {
     createPermissionsSnapshot,
+    describeSupportedApprovalPolicies,
+    describeSupportedPermissionModes,
+    formatPermissionsSnapshot,
     runSetApprovalPolicyCommand,
     runSetPermissionsDefaultCommand,
     runPermissionsPathCommand,
@@ -110,7 +113,11 @@ describe('chat prompt helpers', () => {
 
         expect(prompt).toContain('The current project directory is: /tmp/demo-project.');
         expect(prompt).toContain('If the user asks about "this project", "this repo", "the current codebase"');
-        expect(prompt).toContain('prefer read-only inspection first: use search_code and read_file before considering run_shell');
+        expect(prompt).toContain('inspect without modifying files unless the user explicitly asks for changes');
+        expect(prompt).toContain('prefer search_code and read_file before considering run_shell');
+        expect(prompt).toContain('If read_file reports that the file is too large');
+        expect(prompt).toContain('Do not repeatedly search generic phrases');
+        expect(prompt).toContain('For single-file analysis, distinguish evidence from inference');
         expect(prompt).toContain('Only ask the user to provide files or paths after you have already tried inspecting the current project');
         expect(prompt).toContain("prefer the user's language");
     });
@@ -126,6 +133,7 @@ describe('chat prompt helpers', () => {
         expect(shouldUseStructuredEngineeringResponse('你可以干嘛')).toBe(false);
         expect(shouldUseStructuredEngineeringResponse('请用中文重新回答我一遍')).toBe(false);
         expect(shouldUseStructuredEngineeringResponse('解释这个项目')).toBe(false);
+        expect(shouldUseStructuredEngineeringResponse('/Users/wangxinglin/Downloads/code.html 帮我分析一下这个项目')).toBe(false);
         expect(shouldUseStructuredEngineeringResponse('为什么 doctor 说 API key 缺失')).toBe(false);
         expect(shouldUseStructuredEngineeringResponse('按文档的需求继续推进')).toBe(true);
         expect(shouldUseStructuredEngineeringResponse('你好，帮我修 src/utils.ts 的 bug')).toBe(true);
@@ -385,6 +393,40 @@ describe('permissions snapshot helpers', () => {
         expect('defaultMode' in source).toBe(false);
         expect('approvalPolicy' in source).toBe(false);
         expect('sandboxMode' in source).toBe(false);
+    });
+
+    it('formats a baseline summary that explains effective permission behavior', () => {
+        const snapshot = {
+            cwd: '/tmp/project',
+            sandboxMode: 'project',
+            permissions: {
+                defaultMode: 'auto',
+                tools: { edit: 'allow' },
+                allowedTools: [],
+                disallowedTools: [],
+                approvalPolicy: 'workspace_auto',
+            },
+            sources: [],
+            rules: [],
+        } as const;
+
+        const output = formatPermissionsSnapshot(snapshot);
+        expect(output).toContain('summary:');
+        expect(output).toContain('Reads inside the workspace are treated as routine');
+        expect(output).toContain('Sensitive local files and protected config paths still require approval');
+        expect(output).toContain('baseline:');
+        expect(output).toContain('workspace reads: auto-allow');
+        expect(output).toContain('outside-workspace reads: ask');
+        expect(output).toContain('workspace writes: allow after read when target is ordinary');
+        expect(output).toContain('internal runtime paths: allow by scope');
+        expect(output).toContain('notes:');
+        expect(output).toContain('workspace_auto relaxes ordinary in-workspace writes');
+        expect(output).toContain('prefer an explicit rule or allowed path entry');
+    });
+
+    it('exposes all supported permission modes and approval policies for CLI help', () => {
+        expect(describeSupportedPermissionModes()).toBe('allow | ask | deny | auto | plan | default | bypassPermissions');
+        expect(describeSupportedApprovalPolicies()).toBe('strict | balanced | workspace_auto');
     });
 });
 

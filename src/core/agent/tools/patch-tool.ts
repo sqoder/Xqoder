@@ -3,7 +3,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { ToolDefinition, ToolResult } from '@xqoder/shared';
-import type { ITool, ToolApprovalRequest, ToolContext } from './tool.js';
+import {
+    recordToolFileReadState,
+    validateExistingFileWasFullyRead,
+    type ITool,
+    type ToolApprovalRequest,
+    type ToolContext,
+} from './tool.js';
 import { truncatePreview } from './diff.js';
 import { resolvePathWithinProject } from './sandbox.js';
 
@@ -15,6 +21,14 @@ export class ApplyPatchTool implements ITool {
             { name: 'patch', type: 'string', description: 'Unified diff patch content', required: true },
         ],
     };
+
+    isReadOnly(): boolean {
+        return false;
+    }
+
+    isConcurrencySafe(): boolean {
+        return false;
+    }
 
     buildApprovalRequest(args: Record<string, unknown>, context: ToolContext): ToolApprovalRequest {
         const patch = args['patch'] as string;
@@ -36,6 +50,22 @@ export class ApplyPatchTool implements ITool {
 
         try {
             const filePaths = resolvePatchFilePaths(patch, context);
+            const readGuard = filePaths
+                .map((filePath) => validateExistingFileWasFullyRead(filePath, context))
+                .find((message): message is string => Boolean(message));
+            if (readGuard) {
+                return {
+                    toolCallId,
+                    success: false,
+                    output: '',
+                    error: readGuard,
+                    metadata: {
+                        filePaths,
+                        changeType: 'patch',
+                        stopReason: 'permission_denied',
+                    },
+                };
+            }
             const rollbackPoint = context.rollbackStore?.createPoint({
                 sessionId: context.sessionId,
                 projectRoot: context.projectRoot,
@@ -62,6 +92,9 @@ export class ApplyPatchTool implements ITool {
             if (rollbackPoint) {
                 outputLines.push(`Rollback point: ${rollbackPoint.id}`);
             }
+            for (const filePath of filePaths) {
+                recordFreshFullFileState(filePath, context, toolCallId);
+            }
 
             return {
                 toolCallId,
@@ -84,6 +117,26 @@ export class ApplyPatchTool implements ITool {
     }
 }
 
+function recordFreshFullFileState(
+    filePath: string,
+    context: ToolContext,
+    toolCallId: string,
+): void {
+    if (!fs.existsSync(filePath)) {
+        return;
+    }
+
+    const stat = fs.statSync(filePath);
+    recordToolFileReadState(context, {
+        path: filePath,
+        fullFile: true,
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        readAt: new Date().toISOString(),
+        ...(toolCallId ? { toolCallId } : {}),
+    });
+}
+
 export class RestoreRollbackPointTool implements ITool {
     readonly definition: ToolDefinition = {
         name: 'restore_rollback_point',
@@ -92,6 +145,14 @@ export class RestoreRollbackPointTool implements ITool {
             { name: 'rollbackPointId', type: 'string', description: 'Rollback point ID', required: true },
         ],
     };
+
+    isReadOnly(): boolean {
+        return false;
+    }
+
+    isConcurrencySafe(): boolean {
+        return false;
+    }
 
     buildApprovalRequest(args: Record<string, unknown>, context: ToolContext): ToolApprovalRequest | undefined {
         const rollbackPointId = args['rollbackPointId'] as string;

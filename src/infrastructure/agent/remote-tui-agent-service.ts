@@ -215,6 +215,7 @@ export class RemoteTuiAgentService implements RemoteAgentConversationPort {
             let streamId: string | undefined;
             let cursor = 0;
             let completed = false;
+            let finalResponse = '';
 
             while (!completed) {
                 const attemptBody = streamId
@@ -291,6 +292,9 @@ export class RemoteTuiAgentService implements RemoteAgentConversationPort {
 
                             if (record.type === 'event') {
                                 callbacks.onEvent(record.event);
+                                if (record.event.type === 'message.completed' && record.event.payload.message.role === 'assistant') {
+                                    finalResponse = record.event.payload.message.content;
+                                }
 
                                 if (record.event.type === 'approval.requested') {
                                     const approvalRequest = toToolApprovalRequest(record.event);
@@ -330,6 +334,7 @@ export class RemoteTuiAgentService implements RemoteAgentConversationPort {
                             if (record.type === 'done') {
                                 completed = true;
                                 resolvedSessionId = record.sessionId ?? resolvedSessionId;
+                                finalResponse = record.response || finalResponse;
                                 break;
                             }
 
@@ -355,15 +360,27 @@ export class RemoteTuiAgentService implements RemoteAgentConversationPort {
                 }
             }
 
-            return {
+            return attachResponseFallback({
                 sessionId: resolvedSessionId,
-            };
+            }, finalResponse);
         } finally {
             this.busy = false;
             this.activeAbortController = null;
             this.activeStreamMeta = null;
         }
     }
+}
+
+function attachResponseFallback<T extends SendMessageResult>(result: T, response: string | undefined): T {
+    if (!response) {
+        return result;
+    }
+    Object.defineProperty(result, 'response', {
+        value: response,
+        enumerable: false,
+        configurable: true,
+    });
+    return result;
 }
 
 function toToolApprovalRequest(event: Extract<AgentRuntimeEvent, { type: 'approval.requested' }>): ToolApprovalRequest {

@@ -32,6 +32,17 @@ interface JsonSchema {
  * This is a hand-maintained schema that mirrors the TypeScript type definitions.
  */
 export function generateConfigSchema(): JsonSchema {
+    const modalitiesSchema: JsonSchemaProperty = {
+        type: 'object',
+        description: 'Native media inputs supported by the configured model',
+        properties: {
+            image: { type: 'boolean' },
+            pdf: { type: 'boolean' },
+            audio: { type: 'boolean' },
+            video: { type: 'boolean' },
+        },
+        additionalProperties: false,
+    };
     const hookHandlerSchema: JsonSchemaProperty = {
         type: 'object',
         properties: {
@@ -85,6 +96,7 @@ export function generateConfigSchema(): JsonSchema {
                     baseUrl: { type: 'string', description: 'Custom API base URL' },
                     maxTokens: { type: 'number', default: 4096 },
                     temperature: { type: 'number', default: 0.1 },
+                    modalities: modalitiesSchema,
                 },
                 required: ['provider'],
             },
@@ -99,6 +111,7 @@ export function generateConfigSchema(): JsonSchema {
                         baseUrl: { type: 'string' },
                         maxTokens: { type: 'number' },
                         temperature: { type: 'number' },
+                        modalities: modalitiesSchema,
                         disabled: { type: 'boolean' },
                     },
                 },

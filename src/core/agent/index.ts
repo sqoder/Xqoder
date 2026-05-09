@@ -76,7 +76,15 @@ export {
     type ToolHookRunnerConfig,
     type ToolHookExecutionResult,
 } from './hooks.js';
-export { ReadFileTool, WriteFileTool, PreviewDiffTool, SearchCodeTool } from './tools/file-tools.js';
+export { ReadFileTool, WriteFileTool, EditFileTool, PreviewDiffTool, SearchCodeTool } from './tools/file-tools.js';
+export {
+    ReadAnyFileTool,
+    readAnyFile,
+    renderFileAnalysis,
+    type FileAnalysisResult,
+    type FileKind,
+    type ReadAnyFileInput,
+} from './tools/read-any-file/index.js';
 export { SourcegraphTool, type SourcegraphParams } from './tools/sourcegraph-tool.js';
 export { ListFilesTool, GlobFilesTool, GrepContentTool, DiscoverSkillsTool } from './tools/discovery-tools.js';
 export {
@@ -93,6 +101,8 @@ export { RunCommandTool, RunShellTool, InstallPackageTool } from './tools/comman
 export { SkillTool, TodoWriteTool, TodoReadTool, QuestionTool } from './tools/interaction-tools.js';
 export { ApplyPatchTool, RestoreRollbackPointTool } from './tools/patch-tool.js';
 export { FetchUrlTool, WebSearchTool } from './tools/fetch-tool.js';
+export { InspectGitHubRepoTool } from './tools/github-repo-tool.js';
+export { parseGitHubRepositoryUrl, isGitHubRepositoryUrl } from './github-repo-url.js';
 export { DiagnosticsTool, type DiagnosticsProvider } from './tools/diagnostics-tool.js';
 export {
     FileRollbackStore,

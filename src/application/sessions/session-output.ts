@@ -44,6 +44,8 @@ export function formatSessionDetail(
 ): string {
     const verificationHistory = session.getVerificationHistory ? session.getVerificationHistory() : [];
     const checkpointHistory = session.getCheckpointHistory ? session.getCheckpointHistory() : [];
+    const pendingApprovals = session.getPendingApprovals ? session.getPendingApprovals() : [];
+    const approvalHistory = session.getApprovalHistory ? session.getApprovalHistory() : [];
     const conversationEvents = Array.isArray(session.getConversationEvents?.())
         ? session.getConversationEvents!() as ConversationEventStoreRecord[]
         : undefined;
@@ -89,6 +91,19 @@ export function formatSessionDetail(
         .map((entry) => (
             `- [${formatDateTime(entry.timestamp)}] ${entry.toolName} status=${entry.status}${entry.rollbackPointId ? ` rollback=${entry.rollbackPointId}` : ''}`
         ));
+    const approvals = [
+        ...pendingApprovals.map((entry) => ({
+            timestamp: entry.requestedAt,
+            line: `pending ${entry.toolName ?? 'tool'} ${entry.summary}`,
+        })),
+        ...approvalHistory.map((entry) => ({
+            timestamp: entry.resolvedAt,
+            line: `${entry.decision} ${entry.toolName ?? 'tool'} ${entry.summary}`,
+        })),
+    ]
+        .sort((left, right) => left.timestamp.getTime() - right.timestamp.getTime())
+        .slice(-historyLimit)
+        .map((entry) => `- [${formatDateTime(entry.timestamp)}] ${truncateText(entry.line, 180)}`);
     const toolHistory = session.getToolHistory()
         .slice(-historyLimit)
         .map((entry) => (
@@ -124,6 +139,9 @@ export function formatSessionDetail(
         '',
         'Checkpoint History:',
         ...(checkpoints.length > 0 ? checkpoints : ['- None']),
+        '',
+        'Approval History:',
+        ...(approvals.length > 0 ? approvals : ['- None']),
         '',
         'Tool History:',
         ...(toolHistory.length > 0 ? toolHistory : ['- None']),

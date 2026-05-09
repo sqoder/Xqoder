@@ -97,6 +97,45 @@ describe('instruction resolver', () => {
         ]);
     });
 
+    it('does not materialize empty notepad sections as working-memory instructions', () => {
+        const cwd = createTempDir();
+        writeNotepad(cwd, [
+            '## PRIORITY',
+            '',
+            '## WORKING MEMORY',
+            '',
+            '## MANUAL',
+            '',
+        ].join('\n'));
+
+        const resolved = resolveInstructionSet({ cwd });
+        const workingMemory = resolved.sources.find((source) => source.name === 'working_memory');
+
+        expect(workingMemory?.entries ?? []).toEqual([]);
+        expect(resolved.orderedInstructions.some((entry) => entry.includes('Latest working memory'))).toBe(false);
+        expect(resolved.orderedInstructions.some((entry) => entry.includes('Manual notes'))).toBe(false);
+    });
+
+    it('keeps duplicated manual notes collapsed to a single ordered instruction', () => {
+        const cwd = createTempDir();
+        writeNotepad(cwd, [
+            '## PRIORITY',
+            '',
+            '## WORKING MEMORY',
+            '',
+            '## MANUAL',
+            'Deploy owner: platform@example.com',
+            '',
+        ].join('\n'));
+
+        const resolved = resolveInstructionSet({
+            cwd,
+            userConfigInstructions: ['Manual notes:\nDeploy owner: platform@example.com'],
+        });
+
+        expect(resolved.orderedInstructions.filter((entry) => entry.includes('Deploy owner: platform@example.com'))).toHaveLength(1);
+    });
+
     it('respects source precedence and de-duplicates repeated instructions', () => {
         const cwd = createTempDir();
         fs.writeFileSync(path.join(cwd, 'xqoder.md'), 'Prefer local project rules.', 'utf-8');

@@ -15,6 +15,7 @@ export const SUPPORTED_V1_APPROVAL_POLICIES = [
 
 const NON_WRITE_VISIBLE_TOOL_NAMES = new Set([
     'read_file',
+    'read_any_file',
     'search_code',
     'grep_content',
     'glob_files',
@@ -22,6 +23,7 @@ const NON_WRITE_VISIBLE_TOOL_NAMES = new Set([
     'sourcegraph',
     'diagnostics',
     'fetch_url',
+    'inspect_github_repo',
     'websearch',
     'skill',
     'todoread',
@@ -133,8 +135,8 @@ function createPolicyBaseline(
                     todoread: 'allow',
                     edit: 'ask',
                     bash: 'ask',
-                    webfetch: 'deny',
-                    websearch: 'deny',
+                    webfetch: 'ask',
+                    websearch: 'ask',
                     task: 'deny',
                     todowrite: 'ask',
                 },

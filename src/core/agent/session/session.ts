@@ -6,6 +6,7 @@ import type { LLMMessage, MessageAttachment } from '@xqoder/shared';
 import type { ConversationEventEnvelope } from '@xqoder/protocol';
 
 import {
+    cloneApprovalRecord,
     cloneCheckpointRecord,
     cloneConversationEventEnvelope,
     cloneConversationEventStoreRecord,
@@ -14,6 +15,7 @@ import {
     cloneFileChangeEntry,
     cloneMessage,
     cloneMessages,
+    clonePendingApprovalRecord,
     cloneToolResultEventStoreRecord,
     cloneToolResultRendererEvent,
     cloneToolResultTranscriptEntry,
@@ -31,6 +33,7 @@ import {
     normalizeSessionMetadataSnapshot as normalizeMetadataSnapshot,
 } from './session-metadata.js';
 import type {
+    AgentApprovalRecord,
     AgentCheckpointRecord,
     AgentConversationEventEnvelope,
     AgentConversationEventStoreRecord,
@@ -40,6 +43,7 @@ import type {
     AgentSessionMetadataSnapshot,
     AgentSessionOptions,
     AgentSessionSnapshot,
+    AgentPendingApprovalRecord,
     AgentToolResultEventStoreRecord,
     AgentToolResultRendererEvent,
     AgentToolResultTranscriptEntry,
@@ -54,10 +58,12 @@ import { generateSessionId, normalizeDate, readString } from './session-utils.js
 
 export { normalizeSessionMetadataSnapshot } from './session-metadata.js';
 export type {
+    AgentApprovalRecord,
     AgentCheckpointRecord,
     AgentConversationEventStoreRecord,
     AgentCommandHistoryEntry,
     AgentFileChangeEntry,
+    AgentPendingApprovalRecord,
     AgentSessionCompaction,
     AgentSessionMetadataSnapshot,
     AgentSessionSnapshot,
@@ -75,6 +81,54 @@ const EMPTY_USAGE: AgentSessionUsage = {
     totalTokens: 0,
 };
 
+function normalizeApprovalStreamId(streamId: string | undefined): string | undefined {
+    const trimmed = streamId?.trim();
+    return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function hasSameApprovalIdentity(
+    left: Pick<AgentPendingApprovalRecord, 'requestId' | 'streamId'>,
+    right: Pick<AgentPendingApprovalRecord, 'requestId' | 'streamId'>,
+): boolean {
+    return left.requestId === right.requestId
+        && normalizeApprovalStreamId(left.streamId) === normalizeApprovalStreamId(right.streamId);
+}
+
+function findApprovalIndexForResolution(
+    approvals: AgentPendingApprovalRecord[],
+    identity: Pick<AgentPendingApprovalRecord, 'requestId' | 'streamId'>,
+): number {
+    const streamId = normalizeApprovalStreamId(identity.streamId);
+    if (streamId) {
+        return approvals.findIndex((entry) =>
+            entry.requestId === identity.requestId
+            && normalizeApprovalStreamId(entry.streamId) === streamId
+        );
+    }
+
+    const legacyIndex = approvals.findIndex((entry) =>
+        entry.requestId === identity.requestId
+        && normalizeApprovalStreamId(entry.streamId) === undefined
+    );
+    if (legacyIndex >= 0) {
+        return legacyIndex;
+    }
+
+    const matchingIndexes = approvals
+        .map((entry, index) => ({ entry, index }))
+        .filter(({ entry }) => entry.requestId === identity.requestId)
+        .map(({ index }) => index);
+    return matchingIndexes.length === 1 ? matchingIndexes[0]! : -1;
+}
+
+function findApprovalForResolution(
+    approvals: AgentPendingApprovalRecord[],
+    identity: Pick<AgentPendingApprovalRecord, 'requestId' | 'streamId'>,
+): AgentPendingApprovalRecord | undefined {
+    const index = findApprovalIndexForResolution(approvals, identity);
+    return index >= 0 ? approvals[index] : undefined;
+}
+
 /**
  * AgentSession
  * Manages message history and context for a single Agent session
@@ -91,6 +145,8 @@ export class AgentSession {
     private toolHistory: AgentToolExecution[];
     private verificationHistory: AgentVerificationSignal[];
     private checkpointHistory: AgentCheckpointRecord[];
+    private approvalHistory: AgentApprovalRecord[];
+    private pendingApprovals: AgentPendingApprovalRecord[];
     private commandHistory: AgentCommandHistoryEntry[];
     private fileChanges: AgentFileChangeEntry[];
     private toolResultRendererEvents: AgentToolResultRendererEvent[];
@@ -127,6 +183,8 @@ export class AgentSession {
         this.toolHistory = metadata.toolHistory;
         this.verificationHistory = metadata.verificationHistory;
         this.checkpointHistory = metadata.checkpointHistory;
+        this.approvalHistory = metadata.approvalHistory;
+        this.pendingApprovals = metadata.pendingApprovals;
         this.commandHistory = metadata.commandHistory;
         this.fileChanges = metadata.fileChanges;
         this.toolResultRendererEvents = metadata.toolResultRendererEvents;
@@ -172,8 +230,17 @@ export class AgentSession {
     }
 
     /** Add tool result message */
-    addToolResult(toolCallId: string, content: string): void {
-        this.addMessage({ role: 'tool', content, toolCallId });
+    addToolResult(toolCallId: string, content: string, attachments?: MessageAttachment[]): void {
+        this.addMessage({
+            role: 'tool',
+            content,
+            toolCallId,
+            ...(attachments && attachments.length > 0
+                ? {
+                    attachments: attachments.map((attachment) => ({ ...attachment })),
+                }
+                : {}),
+        });
         const toolExecution = [...this.toolHistory]
             .reverse()
             .find((entry) => entry.id === toolCallId);
@@ -303,6 +370,37 @@ export class AgentSession {
         }
 
         this.conversationEventEnvelopes.push(cloneConversationEventEnvelope(event));
+        this.recordApprovalFromEnvelopeEvent(event);
+    }
+
+    recordApprovalRequested(input: AgentPendingApprovalRecord): void {
+        const record = clonePendingApprovalRecord(input);
+        const existingIndex = this.pendingApprovals.findIndex((entry) => hasSameApprovalIdentity(entry, record));
+        if (existingIndex >= 0) {
+            this.pendingApprovals.splice(existingIndex, 1, record);
+            return;
+        }
+
+        this.pendingApprovals.push(record);
+    }
+
+    recordApprovalResolved(input: AgentApprovalRecord): void {
+        const record = cloneApprovalRecord(input);
+        const pendingIndex = findApprovalIndexForResolution(this.pendingApprovals, record);
+        if (pendingIndex >= 0) {
+            this.pendingApprovals.splice(pendingIndex, 1);
+        }
+
+        const existingIndex = this.approvalHistory.findIndex((entry) =>
+            hasSameApprovalIdentity(entry, record)
+            && entry.resolvedAt.getTime() === record.resolvedAt.getTime()
+        );
+        if (existingIndex >= 0) {
+            this.approvalHistory.splice(existingIndex, 1, record);
+            return;
+        }
+
+        this.approvalHistory.push(record);
     }
 
     recordToolResultArtifacts(input: {
@@ -407,6 +505,14 @@ export class AgentSession {
         return this.checkpointHistory.map(cloneCheckpointRecord);
     }
 
+    getApprovalHistory(): AgentApprovalRecord[] {
+        return this.approvalHistory.map(cloneApprovalRecord);
+    }
+
+    getPendingApprovals(): AgentPendingApprovalRecord[] {
+        return this.pendingApprovals.map(clonePendingApprovalRecord);
+    }
+
     /** Get command execution history */
     getCommandHistory(): AgentCommandHistoryEntry[] {
         return this.commandHistory.map(cloneCommandHistoryEntry);
@@ -457,6 +563,8 @@ export class AgentSession {
             toolHistory: this.getToolHistory(),
             verificationHistory: this.getVerificationHistory(),
             checkpointHistory: this.getCheckpointHistory(),
+            approvalHistory: this.getApprovalHistory(),
+            pendingApprovals: this.getPendingApprovals(),
             commandHistory: this.getCommandHistory(),
             fileChanges: this.getFileChanges(),
             toolResultRendererEvents: this.getToolResultRendererEvents(),
@@ -503,6 +611,8 @@ export class AgentSession {
         this.toolHistory = [];
         this.verificationHistory = [];
         this.checkpointHistory = [];
+        this.approvalHistory = [];
+        this.pendingApprovals = [];
         this.commandHistory = [];
         this.fileChanges = [];
         this.toolResultRendererEvents = [];
@@ -545,6 +655,73 @@ export class AgentSession {
 
     private shouldAppendLegacyConversationEvents(): boolean {
         return this.conversationEventEnvelopes.length === 0;
+    }
+
+    private recordApprovalFromEnvelopeEvent(event: ConversationEventEnvelope): void {
+        if (event.type !== 'approval.requested' && event.type !== 'approval.resolved') {
+            return;
+        }
+
+        const payload = event.payload as unknown as Record<string, unknown>;
+        const requestId = readString(payload.requestId);
+        if (!requestId) {
+            return;
+        }
+        const metadata = typeof payload.metadata === 'object' && payload.metadata !== null
+            ? payload.metadata as Record<string, unknown>
+            : {};
+        const streamId = readString(payload.streamId) ?? readString(metadata.streamId);
+
+        if (event.type === 'approval.requested') {
+            const rawPayload = typeof payload.payload === 'object' && payload.payload !== null
+                ? payload.payload as Record<string, unknown>
+                : {};
+            const summary = readString(rawPayload.summary) ?? readString(payload.summary);
+            if (!summary) {
+                return;
+            }
+
+            this.recordApprovalRequested({
+                requestId,
+                ...(readString(rawPayload.toolCallId) ? { toolCallId: readString(rawPayload.toolCallId) } : {}),
+                ...(readString(rawPayload.toolName) ? { toolName: readString(rawPayload.toolName) } : {}),
+                kind: readString(payload.kind) ?? 'tool',
+                summary,
+                ...(readString(rawPayload.reason) ? { reason: readString(rawPayload.reason) } : {}),
+                ...(readString(rawPayload.preview) ? { preview: readString(rawPayload.preview) } : {}),
+                ...(rawPayload.risk === 'low' || rawPayload.risk === 'medium' || rawPayload.risk === 'high'
+                    ? { risk: rawPayload.risk }
+                    : {}),
+                requestedAt: new Date(event.timestamp),
+                ...(readString(payload.source) ? { source: readString(payload.source) } : {}),
+                ...(streamId ? { streamId } : {}),
+            });
+            return;
+        }
+
+        const decision = payload.decision;
+        if (decision !== 'allow' && decision !== 'ask' && decision !== 'deny') {
+            return;
+        }
+
+        const pending = findApprovalForResolution(this.pendingApprovals, { requestId, streamId });
+        const source = pending?.source ?? readString(payload.source);
+        const resolvedStreamId = streamId ?? pending?.streamId;
+        this.recordApprovalResolved({
+            requestId,
+            ...(pending?.toolCallId ? { toolCallId: pending.toolCallId } : {}),
+            ...(pending?.toolName ? { toolName: pending.toolName } : {}),
+            kind: pending?.kind ?? 'tool',
+            summary: pending?.summary ?? `Approval ${requestId}`,
+            ...(pending?.reason ? { reason: pending.reason } : {}),
+            ...(pending?.preview ? { preview: pending.preview } : {}),
+            ...(pending?.risk ? { risk: pending.risk } : {}),
+            decision,
+            requestedAt: pending?.requestedAt ?? new Date(event.timestamp),
+            resolvedAt: new Date(event.timestamp),
+            ...(source ? { source } : {}),
+            ...(resolvedStreamId ? { streamId: resolvedStreamId } : {}),
+        });
     }
 
     private appendConversationEvent(

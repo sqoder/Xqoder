@@ -12,6 +12,10 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
     '.webp': 'image/webp',
 };
 
+const FILE_MIME_TYPES: Record<string, string> = {
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+
 export interface AttachmentIssue {
     filePath: string;
     reason: 'missing' | 'too_large' | 'unreadable';
@@ -61,7 +65,7 @@ function inferAttachmentType(filePath: string): { type: MessageAttachment['type'
 
     return {
         type: 'file',
-        mimeType: 'application/octet-stream',
+        mimeType: FILE_MIME_TYPES[ext] ?? 'application/octet-stream',
     };
 }
 

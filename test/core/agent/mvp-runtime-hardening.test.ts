@@ -3,6 +3,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'bun:test';
+import { AgentSession } from '@xqoder/agent';
+import { collectMvpContext } from '../../../src/core/agent/mvp/context-collector.js';
 import { orderMvpContextSections } from '../../../src/core/agent/mvp/freshness.js';
 import { distillMvpVerifierOutput } from '../../../src/core/agent/mvp/distiller.js';
 import { MvpFailurePatternMemory } from '../../../src/core/agent/mvp/pattern-memory.js';
@@ -10,7 +12,7 @@ import { resolveMvpRecoveryDecision } from '../../../src/core/agent/mvp/recovery
 import { loadMvpRuntimeConfig } from '../../../src/core/agent/mvp/runtime-config.js';
 import { evaluateMvpStopConditions } from '../../../src/core/agent/mvp/stop-condition.js';
 import type { MvpRuntimeConfig, MvpVerificationResult } from '../../../src/core/agent/mvp/types.js';
-import { WriteFileTool } from '../../../src/core/agent/tools/file-tools.js';
+import { ReadFileTool, WriteFileTool } from '../../../src/core/agent/tools/file-tools.js';
 import { FileRollbackStore } from '../../../src/core/agent/tools/rollback-store.js';
 
 const createdPaths = new Set<string>();
@@ -73,16 +75,19 @@ console.log('(pass) subject remains green');
 `);
         fs.writeFileSync(subjectPath, 'safe-state\n');
 
+        const reader = new ReadFileTool();
         const tool = new WriteFileTool();
-        const result = await tool.execute({
-            path: 'subject.txt',
-            content: 'REGRESSION\n',
-        }, {
+        const context = {
             cwd: projectRoot,
             projectRoot,
             rollbackStore: new FileRollbackStore(rollbackRoot),
             mvpRuntimeConfig: createRuntimeConfig(),
-        });
+        };
+        await reader.execute({ path: 'subject.txt', toolCallId: 'read-before-regression' }, context);
+        const result = await tool.execute({
+            path: 'subject.txt',
+            content: 'REGRESSION\n',
+        }, context);
 
         expect(result.success).toBe(false);
         expect(result.error).toContain('Regression detected');
@@ -116,16 +121,19 @@ console.log('(pass) stable baseline');
 `);
         fs.writeFileSync(subjectPath, 'safe-state\n');
 
+        const reader = new ReadFileTool();
         const tool = new WriteFileTool();
-        const result = await tool.execute({
-            path: 'subject.txt',
-            content: 'updated-state\n',
-        }, {
+        const context = {
             cwd: projectRoot,
             projectRoot,
             rollbackStore: new FileRollbackStore(rollbackRoot),
             mvpRuntimeConfig: createRuntimeConfig({ baselineCheckRetries: 1 }),
-        });
+        };
+        await reader.execute({ path: 'subject.txt', toolCallId: 'read-before-flaky-write' }, context);
+        const result = await tool.execute({
+            path: 'subject.txt',
+            content: 'updated-state\n',
+        }, context);
 
         expect(result.success).toBe(true);
         expect(result.output).toContain('after retry 1/1');
@@ -196,6 +204,34 @@ console.log('(pass) stable baseline');
         expect((ordered[2]?.freshnessScore ?? 1)).toBeLessThan(0.3);
     });
 
+    it('collects stable project rules across repeated runs and deduplicates symlinked rule files', () => {
+        const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-context-stability-'));
+        createdPaths.add(projectRoot);
+        const sharedRulesDir = path.join(projectRoot, 'shared-rules');
+        fs.mkdirSync(sharedRulesDir, { recursive: true });
+
+        const canonicalRulePath = path.join(sharedRulesDir, 'rule.md');
+        fs.writeFileSync(canonicalRulePath, '# Shared Rule\nKeep answers short.\n', 'utf-8');
+        fs.writeFileSync(path.join(projectRoot, 'CLAUDE.md'), '# Root Rule\nUse Bun first.\n', 'utf-8');
+        fs.symlinkSync(path.relative(projectRoot, canonicalRulePath), path.join(projectRoot, 'linked-rule.md'));
+        fs.symlinkSync(path.relative(projectRoot, canonicalRulePath), path.join(projectRoot, 'linked-rule-duplicate.md'));
+
+        const session = new AgentSession({ id: 'context-stability', systemPrompt: 'system' });
+        const runs = Array.from({ length: 3 }, () => collectMvpContext({
+            userGoal: 'stabilize linked-rule.md and linked-rule-duplicate.md',
+            projectRoot,
+            contextPaths: ['linked-rule.md', 'linked-rule-duplicate.md', 'CLAUDE.md'],
+            session,
+        }));
+
+        const projectRules = runs.map((result) => result.projectRules.map((entry) => entry.path));
+        expect(projectRules[0]).toEqual(['linked-rule.md', 'CLAUDE.md']);
+        expect(projectRules[1]).toEqual(projectRules[0]);
+        expect(projectRules[2]).toEqual(projectRules[0]);
+        expect(runs[0]?.projectRules[0]?.content).toContain('Shared Rule');
+        expect(runs[0]?.projectRules[1]?.content).toContain('Root Rule');
+    });
+
     it('reuses successful failure strategies from pattern memory', () => {
         const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-pattern-'));
         createdPaths.add(projectRoot);
@@ -240,6 +276,99 @@ console.log('(pass) stable baseline');
         expect(rememberedDecision.action).toBe('replan');
         expect(rememberedDecision.summary).toContain('Found known pattern');
         expect(rememberedDecision.summary).toContain('using: replan');
+    });
+
+    it('rolls back after a repeated verifier failure when a rollback point is available', () => {
+        const decision = resolveMvpRecoveryDecision({
+            verification: {
+                ok: false,
+                summary: 'test failure',
+                digest: 'test failure',
+                checks: [{
+                    name: 'test',
+                    status: 'failed',
+                    summary: 'expected true to be false',
+                }],
+            },
+            repeatedFailureCount: 1,
+            latestRollbackPointId: 'rb-123',
+        });
+
+        expect(decision.classification).toBe('test');
+        expect(decision.action).toBe('rollback');
+        expect(decision.rollbackPointId).toBe('rb-123');
+        expect(decision.summary).toContain('Repeated verifier failure detected');
+    });
+
+    it('retries timeout-like verification once before escalating to recovery', () => {
+        const decision = resolveMvpRecoveryDecision({
+            verification: {
+                ok: false,
+                summary: 'timeout failure',
+                digest: 'timeout failure',
+                checks: [{
+                    name: 'test',
+                    status: 'failed',
+                    category: 'Timeout',
+                    summary: 'command timed out after 30s',
+                }],
+            },
+            repeatedFailureCount: 0,
+        });
+
+        expect(decision.classification).toBe('timeout');
+        expect(decision.action).toBe('retry');
+        expect(decision.summary).toContain('Retry the same verification once');
+    });
+
+    it('replans after a second timeout-like failure when no rollback point exists', () => {
+        const decision = resolveMvpRecoveryDecision({
+            verification: {
+                ok: false,
+                summary: 'timeout failure',
+                digest: 'timeout failure',
+                checks: [{
+                    name: 'test',
+                    status: 'failed',
+                    category: 'Timeout',
+                    summary: 'command timed out after 30s',
+                }],
+            },
+            repeatedFailureCount: 1,
+        });
+
+        expect(decision.classification).toBe('timeout');
+        expect(decision.action).toBe('replan');
+        expect(decision.summary).toContain('Replan with a smaller, targeted change');
+    });
+
+    it('replans when failure memory suggests rollback but no rollback point exists', () => {
+        const decision = resolveMvpRecoveryDecision({
+            verification: {
+                ok: false,
+                summary: 'known failure',
+                digest: 'known failure',
+                checks: [{
+                    name: 'test',
+                    status: 'failed',
+                    summary: 'known flaky regression',
+                }],
+            },
+            repeatedFailureCount: 0,
+            rememberedPattern: {
+                taskType: 'bugfix',
+                errorSignature: 'known flaky regression',
+                errorCategory: 'test',
+                strategy: 'rollback',
+                occurrences: 2,
+                successes: 2,
+                lastSeenAt: new Date().toISOString(),
+                lastOutcome: 'success',
+            },
+        });
+
+        expect(decision.action).toBe('replan');
+        expect(decision.summary).toContain('no rollback point is available');
     });
 
     it('only allows completion when configured hard stop conditions are satisfied', () => {

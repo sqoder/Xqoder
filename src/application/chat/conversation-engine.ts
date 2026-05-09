@@ -26,7 +26,10 @@ import type {
     CompletionRequest,
     ILLMProvider,
 } from '@xqoder/llm-api';
-import { handleToolFollowUp } from './tool-follow-up.js';
+import {
+    handleToolFollowUp,
+    type ToolFollowUpResult,
+} from './tool-follow-up.js';
 import {
     runProviderTurn,
     type ProviderTurnResult,
@@ -36,6 +39,10 @@ import {
     ConversationEngineStopError,
     ConversationStopReason,
 } from './turn-stop.js';
+import {
+    compactIntermediateResponse,
+    removeRepeatedAssistantSections,
+} from './response-cleanup.js';
 import type { VerificationGateResult } from './verification-gate.js';
 import type { ConversationTurnInput } from './turn-intake.js';
 import type { ToolExecutionPort } from '../../domain/conversation/tool-execution-port.js';
@@ -63,6 +70,7 @@ export interface ConversationRuntimeLike {
     getForcedStopMessage?(): string | undefined;
     getCompletionBlocker(): string | undefined;
     getNoToolCompletionBlocker(toolUsed: boolean): string | undefined;
+    shouldDeferAssistantOutput?(toolUsed: boolean): boolean;
     finalizeAssistantResponse(content: string): string;
 }
 
@@ -221,18 +229,19 @@ async function executeConversationTurn(
             };
         }
 
-        const response = await requestAssistantTurn(dependencies, runtime);
+        const toolUsedBeforeProviderTurn = dependencies.session.getToolHistory().length > toolHistoryBaseline;
+        const response = await requestAssistantTurn(dependencies, runtime, toolUsedBeforeProviderTurn);
         await maybeAutoCompact(response.usage, dependencies);
 
         const completionBlocker = response.finishReason === 'tool_calls'
             ? undefined
             : activeVerificationBlocker ?? runtime?.getCompletionBlocker();
 
-        if (!completionBlocker || response.finishReason === 'tool_calls') {
-            dependencies.session.addAssistantMessage(response.message);
-        }
-
         if (response.finishReason === 'tool_calls' && response.message.toolCalls) {
+            dependencies.session.addAssistantMessage({
+                ...response.message,
+                content: compactIntermediateResponse(response.message.content),
+            });
             const toolCallBatchFingerprint = createToolCallBatchFingerprint(response.message.toolCalls);
             if (toolCallBatchFingerprint === lastToolCallBatchFingerprint) {
                 throw createStopError(
@@ -270,25 +279,7 @@ async function executeConversationTurn(
                 executeToolCalls: dependencies.executeToolCalls,
             });
             activeVerificationBlocker = followUp.verification.completionBlocker;
-            for (const execution of followUp.executions) {
-                dependencies.session.recordCheckpoint({
-                    toolCallId: execution.id,
-                    toolName: execution.name,
-                    required: execution.checkpoint.required,
-                    status: execution.checkpoint.status,
-                    rollbackPointId: execution.checkpoint.rollbackPointId,
-                    timestamp: execution.toolHistoryEntry?.completedAt
-                        ?? execution.fileChanges.at(-1)?.timestamp
-                        ?? new Date(),
-                });
-            }
-            dependencies.session.recordToolResultArtifacts({
-                rendererEvents: followUp.rendererEvents,
-                transcriptEntries: followUp.transcriptEntries.filter((entry) => entry.type === 'tool'),
-                eventStoreRecords: followUp.eventStoreRecords,
-            });
-            emitVerificationEvent(followUp.verification, dependencies);
-            const permissionDeniedMessage = resolvePermissionDeniedStopMessage(followUp.executions);
+            const permissionDeniedMessage = recordToolFollowUpResult(followUp, dependencies);
             if (permissionDeniedMessage) {
                 throw createStopError(
                     permissionDeniedMessage,
@@ -301,6 +292,11 @@ async function executeConversationTurn(
             }
             continue;
         }
+
+        const toolUsedInCurrentRun = dependencies.session.getToolHistory().length > toolHistoryBaseline;
+        const noToolCompletionBlocker = completionBlocker
+            ? undefined
+            : runtime?.getNoToolCompletionBlocker(toolUsedInCurrentRun);
 
         if (completionBlocker) {
             assertProgressOnBlockedContinuation({
@@ -323,9 +319,6 @@ async function executeConversationTurn(
             continue;
         }
 
-        const noToolCompletionBlocker = runtime?.getNoToolCompletionBlocker(
-            dependencies.session.getToolHistory().length > toolHistoryBaseline,
-        );
         if (noToolCompletionBlocker) {
             assertProgressOnBlockedContinuation({
                 blocker: noToolCompletionBlocker,
@@ -342,13 +335,77 @@ async function executeConversationTurn(
                 role: 'system',
                 content: noToolCompletionBlocker,
             });
+
+            const recoveryToolCall = createReadOnlyRecoveryToolCall({
+                blocker: noToolCompletionBlocker,
+                dependencies,
+                iteration,
+            });
+            if (recoveryToolCall) {
+                const toolCallBatchFingerprint = createToolCallBatchFingerprint([recoveryToolCall]);
+                if (toolCallBatchFingerprint === lastToolCallBatchFingerprint) {
+                    throw createStopError(
+                        `Duplicate tool call batch detected: ${describeToolCallBatch([recoveryToolCall])}`,
+                        {
+                            stopReason: 'duplicate_tool_call',
+                            agentEndReason: 'failed',
+                        },
+                        dependencies,
+                    );
+                }
+
+                const nextToolCallCount = toolCallCount + 1;
+                if (dependencies.maxToolCalls !== undefined && nextToolCallCount > dependencies.maxToolCalls) {
+                    throw createStopError(
+                        `Maximum tool calls reached (${dependencies.maxToolCalls})`,
+                        {
+                            stopReason: 'max_tool_calls',
+                            agentEndReason: 'failed',
+                        },
+                        dependencies,
+                    );
+                }
+
+                lastToolCallBatchFingerprint = toolCallBatchFingerprint;
+                lastBlockedContinuationFingerprint = undefined;
+                toolCallCount = nextToolCallCount;
+                const followUp = await handleToolFollowUp({
+                    toolCalls: [recoveryToolCall],
+                    callbacks: dependencies.callbacks,
+                    streamId: dependencies.streamId,
+                    session: dependencies.session,
+                    runtime,
+                    taskMode: dependencies.taskMode,
+                    toolExecutionPort: dependencies.toolExecutionPort,
+                    executeToolCalls: dependencies.executeToolCalls,
+                });
+                activeVerificationBlocker = followUp.verification.completionBlocker;
+                const permissionDeniedMessage = recordToolFollowUpResult(followUp, dependencies);
+                if (permissionDeniedMessage) {
+                    throw createStopError(
+                        permissionDeniedMessage,
+                        {
+                            stopReason: 'permission_denied',
+                            agentEndReason: 'failed',
+                        },
+                        dependencies,
+                    );
+                }
+            }
             continue;
         }
 
+        const finalContent = removeRepeatedAssistantSections(
+            runtime?.finalizeAssistantResponse(response.message.content) ?? response.message.content,
+        );
+        dependencies.session.addAssistantMessage({
+            ...response.message,
+            content: finalContent,
+        });
         dependencies.logger.success(`Agent completed in ${iteration} iterations`);
         emitAgentEnd(dependencies, 'completed', 'completed');
         return {
-            response: runtime?.finalizeAssistantResponse(response.message.content) ?? response.message.content,
+            response: finalContent,
             stopReason: 'completed',
             iterations: iteration,
             toolCallCount,
@@ -518,6 +575,20 @@ function createConversationTurnStream(
                 try { dependencies.callbacks?.onToken?.(token); } catch { /* noop */ }
                 ensureAssistantStarted();
                 assistantText += token;
+
+                // Real-time repetition detection:
+                if (assistantText.length > 2000) {
+                    const tail = assistantText.slice(-300);
+                    const head = assistantText.slice(0, 1200);
+                    if (head.includes(tail)) {
+                        dependencies.logger.warn('Repetition loop detected in LLM stream, aborting turn early for auto-cleanup.');
+                        throw new ConversationEngineStopError('Repetition loop detected; response auto-truncated.', {
+                            stopReason: 'no_progress',
+                            agentEndReason: 'failed',
+                        });
+                    }
+                }
+
                 emitRecord('message.delta', {
                     source: 'agent',
                     messageId: assistantMessageId,
@@ -679,7 +750,7 @@ function createConversationTurnStream(
                     id: assistantMessageId,
                     sessionId,
                     role: 'assistant',
-                    content: assistantText || result.response,
+                    content: result.response,
                     createdAt: Date.now(),
                 },
             });
@@ -690,7 +761,7 @@ function createConversationTurnStream(
             });
             return {
                 ...result,
-                response: assistantText || result.response,
+                response: result.response,
             };
         } catch (error) {
             const normalizedError = error instanceof Error ? error : new Error(String(error));
@@ -735,6 +806,31 @@ function emitVerificationEvent(
         blocked: signal.blocked,
         summary: signal.summary,
     }, dependencies.streamId);
+}
+
+function recordToolFollowUpResult(
+    followUp: ToolFollowUpResult,
+    dependencies: ConversationEngineDependencies,
+): string | undefined {
+    for (const execution of followUp.executions) {
+        dependencies.session.recordCheckpoint({
+            toolCallId: execution.id,
+            toolName: execution.name,
+            required: execution.checkpoint.required,
+            status: execution.checkpoint.status,
+            rollbackPointId: execution.checkpoint.rollbackPointId,
+            timestamp: execution.toolHistoryEntry?.completedAt
+                ?? execution.fileChanges.at(-1)?.timestamp
+                ?? new Date(),
+        });
+    }
+    dependencies.session.recordToolResultArtifacts({
+        rendererEvents: followUp.rendererEvents,
+        transcriptEntries: followUp.transcriptEntries.filter((entry) => entry.type === 'tool'),
+        eventStoreRecords: followUp.eventStoreRecords,
+    });
+    emitVerificationEvent(followUp.verification, dependencies);
+    return resolvePermissionDeniedStopMessage(followUp.executions);
 }
 
 function assertProgressOnBlockedContinuation(input: {
@@ -816,6 +912,115 @@ function describeToolCallBatch(toolCalls: ToolCall[]): string {
         .join(', ');
 }
 
+function createReadOnlyRecoveryToolCall(input: {
+    blocker: string;
+    dependencies: ConversationEngineDependencies;
+    iteration: number;
+}): ToolCall | undefined {
+    const toolNames = new Set(input.dependencies.getToolDefinitions().map((definition) => definition.name));
+
+    if (toolNames.has('read_file')) {
+        const readFileCall = createRecoveryToolCallFromExactInstruction({
+            blocker: input.blocker,
+            toolName: 'read_file',
+            id: `runtime-recovery-read-file-${input.iteration}`,
+            isValidArguments: isReadFileRecoveryArguments,
+        });
+        if (readFileCall) {
+            return readFileCall;
+        }
+    }
+
+    if (toolNames.has('inspect_github_repo')) {
+        const inspectGitHubRepoCall = createRecoveryToolCallFromExactInstruction({
+            blocker: input.blocker,
+            toolName: 'inspect_github_repo',
+            id: `runtime-recovery-inspect-github-repo-${input.iteration}`,
+            isValidArguments: isInspectGitHubRepoRecoveryArguments,
+        });
+        if (inspectGitHubRepoCall) {
+            return inspectGitHubRepoCall;
+        }
+    }
+
+    if (toolNames.has('fetch_url')) {
+        return createRecoveryToolCallFromExactInstruction({
+            blocker: input.blocker,
+            toolName: 'fetch_url',
+            id: `runtime-recovery-fetch-url-${input.iteration}`,
+            isValidArguments: isFetchUrlRecoveryArguments,
+        });
+    }
+
+    return undefined;
+}
+
+function createRecoveryToolCallFromExactInstruction(input: {
+    blocker: string;
+    toolName: 'read_file' | 'inspect_github_repo' | 'fetch_url';
+    id: string;
+    isValidArguments: (value: unknown) => value is Record<string, unknown>;
+}): ToolCall | undefined {
+    const line = input.blocker
+        .split(/\r?\n/)
+        .find((entry) => entry.includes(`Prefer this exact call: ${input.toolName}`));
+    const match = line?.match(new RegExp(`Prefer this exact call:\\s*${input.toolName}\\s+(.+)$`));
+    if (!match) {
+        return undefined;
+    }
+
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(match[1]!.trim());
+    } catch {
+        return undefined;
+    }
+    if (!input.isValidArguments(parsed)) {
+        return undefined;
+    }
+
+    return {
+        id: input.id,
+        name: input.toolName,
+        arguments: JSON.stringify(parsed),
+    };
+}
+
+function isReadFileRecoveryArguments(value: unknown): value is Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return false;
+    }
+
+    const args = value as Record<string, unknown>;
+    return typeof args.path === 'string'
+        && (args.startLine === undefined || typeof args.startLine === 'number')
+        && (args.endLine === undefined || typeof args.endLine === 'number');
+}
+
+function isInspectGitHubRepoRecoveryArguments(value: unknown): value is Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return false;
+    }
+
+    const args = value as Record<string, unknown>;
+    return typeof args.url === 'string'
+        && /^https:\/\/(?:www\.)?github\.com\/[^/\s]+\/[^/\s]+/i.test(args.url)
+        && (args.ref === undefined || typeof args.ref === 'string')
+        && (args.maxFiles === undefined || typeof args.maxFiles === 'number');
+}
+
+function isFetchUrlRecoveryArguments(value: unknown): value is Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return false;
+    }
+
+    const args = value as Record<string, unknown>;
+    return typeof args.url === 'string'
+        && /^https?:\/\//i.test(args.url)
+        && (args.format === undefined || ['text', 'markdown', 'html'].includes(String(args.format)))
+        && (args.timeout === undefined || typeof args.timeout === 'number');
+}
+
 function normalizeToolArguments(argumentsText: string | undefined): string {
     if (!argumentsText?.trim()) {
         return '{}';
@@ -850,11 +1055,14 @@ function normalizeContinuationField(value: string | undefined): string {
 async function requestAssistantTurn(
     dependencies: ConversationEngineDependencies,
     runtime: ConversationRuntimeLike | undefined,
+    toolUsedInCurrentRun: boolean,
 ): Promise<ProviderTurnResult> {
+    const messages = runtime ? runtime.prepareMessages() : dependencies.session.getMessages();
     const request: CompletionRequest = {
-        messages: runtime ? runtime.prepareMessages() : dependencies.session.getMessages(),
+        messages,
         tools: dependencies.getToolDefinitions(),
     };
+    const suppressAssistantMessages = runtime?.shouldDeferAssistantOutput?.(toolUsedInCurrentRun) ?? false;
 
     return await runProviderTurn({
         provider: dependencies.provider,
@@ -864,6 +1072,7 @@ async function requestAssistantTurn(
         agentName: dependencies.agentName,
         streamId: dependencies.streamId,
         callbacks: dependencies.callbacks,
+        suppressAssistantMessages,
         emit: dependencies.emit,
     });
 }

@@ -125,6 +125,7 @@ export interface TuiAgentSettings {
 export interface SendMessageResult {
     sessionId: string;
     sessionTitle?: string;
+    response?: string;
 }
 
 export interface SendMessageCallbacks {

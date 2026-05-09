@@ -513,9 +513,10 @@ export class XQoderAgentProvider implements AgentProvider {
 
         unsubscribe();
         ensureAssistantStarted();
+        const completedContent = finalText || completedAssistantMessage?.content || assistantText;
         const completedMessage = completedAssistantMessage ?? {
           role: 'assistant',
-          content: assistantText || finalText,
+          content: completedContent,
         } satisfies LLMMessage;
 
         events.push(eventEmitter.emitRecord('message.completed', {
@@ -523,7 +524,7 @@ export class XQoderAgentProvider implements AgentProvider {
           message: toCoreMessage(
             {
               ...completedMessage,
-              content: completedMessage.content || finalText,
+              content: completedContent,
             },
             runtime.sessionId,
             assistantMessageId,

@@ -3,6 +3,7 @@ export type ChatInteractionKind =
     | 'identity'
     | 'capability'
     | 'project_explanation'
+    | 'file_analysis'
     | 'engineering_task'
     | 'config_or_runtime';
 

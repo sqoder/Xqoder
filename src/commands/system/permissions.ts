@@ -2,6 +2,8 @@ import { Command } from 'commander';
 import { ConfigManager, configManager } from '@xqoder/shared';
 import {
     createPermissionsSnapshot,
+    describeSupportedApprovalPolicies,
+    describeSupportedPermissionModes,
     runPermissionsCommand,
     runPermissionsPathCommand,
     runSetApprovalPolicyCommand,
@@ -65,7 +67,7 @@ export function createPermissionsCommand(
     command
         .command('default')
         .description('Set the default permission mode in one config scope')
-        .argument('<mode>', 'allow | ask | deny')
+        .argument('<mode>', describeSupportedPermissionModes())
         .option('--dir <dir>', 'Project directory')
         .option('--scope <scope>', 'Write target scope: global | project', 'project')
         .option('--json', 'Output in JSON format')
@@ -76,7 +78,7 @@ export function createPermissionsCommand(
     command
         .command('policy')
         .description('Set the approval policy in one config scope')
-        .argument('<policy>', 'strict | balanced | workspace_auto')
+        .argument('<policy>', describeSupportedApprovalPolicies())
         .option('--dir <dir>', 'Project directory')
         .option('--scope <scope>', 'Write target scope: global | project', 'project')
         .option('--json', 'Output in JSON format')
@@ -88,7 +90,7 @@ export function createPermissionsCommand(
         .command('set')
         .description('Set a permission mode for a specific tool key in one config scope')
         .argument('<tool>', 'tool key, for example bash or edit')
-        .argument('<mode>', 'allow | ask | deny')
+        .argument('<mode>', describeSupportedPermissionModes())
         .option('--dir <dir>', 'Project directory')
         .option('--scope <scope>', 'Write target scope: global | project', 'project')
         .option('--json', 'Output in JSON format')

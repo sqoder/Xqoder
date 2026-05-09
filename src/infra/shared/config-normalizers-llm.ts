@@ -1,5 +1,6 @@
 import {
     type AgentSettingsMap,
+    type LLMInputModalities,
     type LLMModelReference,
     type LLMProviderConfig,
     type LLMProviderName,
@@ -23,6 +24,7 @@ export function buildLLMConfigInput(
         baseUrl: string | undefined;
         maxTokens: number | undefined;
         temperature: number | undefined;
+        modalities?: LLMInputModalities;
     },
 ): Partial<Omit<LLMProviderConfig, 'provider'>> & Pick<LLMProviderConfig, 'provider'> {
     return {
@@ -32,6 +34,7 @@ export function buildLLMConfigInput(
         ...withOptionalProp('baseUrl', input.baseUrl),
         ...withOptionalProp('maxTokens', input.maxTokens),
         ...withOptionalProp('temperature', input.temperature),
+        ...withOptionalProp('modalities', input.modalities),
     };
 }
 
@@ -72,6 +75,7 @@ export function resolveSmallModelConfig(
             baseUrl: providerSettings.baseUrl ?? (config.llm.provider === provider ? config.llm.baseUrl : undefined),
             maxTokens: providerSettings.maxTokens ?? (config.llm.provider === provider ? config.llm.maxTokens : undefined),
             temperature: providerSettings.temperature ?? (config.llm.provider === provider ? config.llm.temperature : undefined),
+            modalities: providerSettings.modalities ?? (config.llm.provider === provider ? config.llm.modalities : undefined),
         },
     ));
 }
@@ -142,6 +146,7 @@ export function resolveAgentLLMConfigFromState(
                     baseUrl: smallSettings.baseUrl,
                     maxTokens: smallSettings.maxTokens,
                     temperature: smallSettings.temperature,
+                    modalities: smallSettings.modalities,
                 },
             ));
         }
@@ -172,6 +177,9 @@ export function resolveAgentLLMConfigFromState(
                 ?? agent.temperature
                 ?? providerSettings.temperature
                 ?? legacySameProvider?.temperature,
+            modalities: overrides.modalities
+                ?? providerSettings.modalities
+                ?? legacySameProvider?.modalities,
         },
     ));
 }

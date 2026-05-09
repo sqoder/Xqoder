@@ -1,4 +1,8 @@
 import type { AgentRunStatus } from '../../../application/agent/index.js';
+import {
+    findPotentialRestartedAssistantAnswerIndex,
+    removeRepeatedAssistantSections,
+} from '../../../application/chat/response-cleanup.js';
 
 export const TERMINAL_INLINE_EVENT_MAX_LENGTH = 160;
 export const TERMINAL_INLINE_OUTPUT_MAX_LENGTH = 240;
@@ -13,6 +17,12 @@ export interface TerminalToolOutputState {
     tool: string;
     buffer: string;
     sawPartial: boolean;
+    suppressOutput: boolean;
+}
+
+export interface TerminalAssistantTextState {
+    raw: string;
+    visible: string;
 }
 
 export function createTerminalStreamingBlockState(): TerminalStreamingBlockState {
@@ -23,12 +33,87 @@ export function createTerminalStreamingBlockState(): TerminalStreamingBlockState
     };
 }
 
+export function createTerminalAssistantTextState(): TerminalAssistantTextState {
+    return {
+        raw: '',
+        visible: '',
+    };
+}
+
+export function appendTerminalAssistantTextDelta(
+    state: TerminalAssistantTextState,
+    delta: string,
+): string {
+    if (!delta) {
+        return '';
+    }
+
+    state.raw += delta;
+    return updateTerminalAssistantVisibleText(
+        state,
+        holdBackPotentialRestartTail(removeRepeatedAssistantSections(state.raw)),
+    );
+}
+
+export function completeTerminalAssistantText(
+    state: TerminalAssistantTextState,
+    finalText?: string,
+): string {
+    if (finalText !== undefined) {
+        state.raw = finalText;
+    }
+
+    return updateTerminalAssistantVisibleText(
+        state,
+        removeRepeatedAssistantSections(state.raw),
+    );
+}
+
+function updateTerminalAssistantVisibleText(
+    state: TerminalAssistantTextState,
+    nextVisible: string,
+): string {
+    if (nextVisible.startsWith(state.visible)) {
+        const nextVisibleDelta = nextVisible.slice(state.visible.length);
+        state.visible = nextVisible;
+        return nextVisibleDelta;
+    }
+
+    if (state.visible.startsWith(nextVisible)) {
+        state.visible = nextVisible;
+        return '';
+    }
+
+    return '';
+}
+
+function holdBackPotentialRestartTail(content: string): string {
+    const restartIndex = findPotentialRestartedAssistantAnswerIndex(content);
+    if (restartIndex === undefined) {
+        return content;
+    }
+
+    return removeTerminalDanglingRestartLeadIn(content.slice(0, restartIndex)).trimEnd();
+}
+
+function removeTerminalDanglingRestartLeadIn(content: string): string {
+    return content.replace(
+        /\s*(?:欢迎随时(?:告诉我|指定)|欢迎继续提问|请告诉我[！!]?|需要我帮你[:：]?|还需要我帮你[:：]?)[\s\p{P}\p{S}]*$/u,
+        '',
+    );
+}
+
 export function createTerminalToolOutputState(tool: string): TerminalToolOutputState {
     return {
         tool,
         buffer: '',
         sawPartial: false,
+        suppressOutput: shouldSuppressTerminalToolOutput(tool),
     };
+}
+
+export function shouldSuppressTerminalToolOutput(tool: string): boolean {
+    return QUIET_SUCCESS_TOOL_OUTPUTS.has(tool) || tool.startsWith('lsp_');
 }
 
 export function writeConversationBlock(
@@ -83,6 +168,19 @@ export function splitTerminalOutputBuffer(buffer: string, flush = false): { line
         rest: parts.at(-1) ?? '',
     };
 }
+
+const QUIET_SUCCESS_TOOL_OUTPUTS = new Set([
+    'read_any_file',
+    'read_file',
+    'search_code',
+    'grep_content',
+    'glob_files',
+    'inspect_github_repo',
+    'list_files',
+    'sourcegraph',
+    'diagnostics',
+    'todoread',
+]);
 
 export function ensureStreamingConversationBlock(
     stdout: NodeJS.WriteStream,

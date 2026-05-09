@@ -11,6 +11,7 @@ export interface ToolCallPreparation<TCallbacks = unknown, TState = unknown> {
     streamId: string;
     permissionMode: AgentPermissionMode;
     blocked: boolean;
+    canRunInParallel?: boolean;
     preToolUseDetail: string;
     permissionDetail: string;
     state: TState;

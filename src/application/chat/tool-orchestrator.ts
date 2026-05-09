@@ -110,6 +110,25 @@ export interface ToolOrchestratorDependencies<TCallbacks = unknown> {
     ) => Promise<ToolResult[]>;
 }
 
+interface PreparedToolCallExecution<TCallbacks = unknown> {
+    toolCall: ToolCall;
+    callbacks?: TCallbacks;
+    streamId: string;
+    session: AgentSession;
+    toolExecutionPort: ToolExecutionPort<TCallbacks>;
+    rendererProjection: ReturnType<typeof createToolRendererProjection<TCallbacks>>;
+    checkpointRequired: boolean;
+    preparation: ToolCallPreparation<TCallbacks>;
+    stages: ToolExecutionStageRecord[];
+}
+
+interface ToolExecutionSnapshots {
+    beforeMessages: ReturnType<AgentSession['getMessages']>;
+    beforeToolHistory: ReturnType<AgentSession['getToolHistory']>;
+    beforeCommandHistory: ReturnType<AgentSession['getCommandHistory']>;
+    beforeFileChanges: ReturnType<AgentSession['getFileChanges']>;
+}
+
 /**
  * Standardizes tool execution as an application-layer orchestration step.
  * The result includes tool_result projections for model, renderer, transcript, and event-store consumers.
@@ -130,16 +149,53 @@ export async function runToolOrchestrator<TCallbacks = unknown>(
 
     const toolHistoryBaseline = dependencies.session.getToolHistory().length;
     const results: ToolExecutionResult[] = [];
+    const toolExecutionPort = dependencies.toolExecutionPort
+        ?? createCompatibilityToolExecutionPort({
+            executeToolCalls: dependencies.executeToolCalls,
+        });
+    const preparedCalls: PreparedToolCallExecution<TCallbacks>[] = [];
 
     for (const toolCall of dependencies.toolCalls) {
-        results.push(await executeSingleToolCall({
+        preparedCalls.push(await prepareToolCallExecution({
             toolCall,
             callbacks: dependencies.callbacks,
             streamId: dependencies.streamId,
             session: dependencies.session,
-            toolExecutionPort: dependencies.toolExecutionPort,
-            executeToolCalls: dependencies.executeToolCalls,
+            toolExecutionPort,
         }));
+    }
+
+    for (let index = 0; index < preparedCalls.length;) {
+        const prepared = preparedCalls[index]!;
+        if (prepared.preparation.canRunInParallel) {
+            const batch: PreparedToolCallExecution<TCallbacks>[] = [];
+            while (index < preparedCalls.length && preparedCalls[index]?.preparation.canRunInParallel) {
+                batch.push(preparedCalls[index]!);
+                index += 1;
+            }
+
+            const rawResults = await Promise.all(batch.map((item) => item.preparation.blocked
+                ? Promise.resolve(undefined)
+                : item.toolExecutionPort.invokePreparedToolCall(item.preparation)));
+            for (let batchIndex = 0; batchIndex < batch.length; batchIndex += 1) {
+                const item = batch[batchIndex]!;
+                item.stages.push({
+                    stage: 'execute',
+                    detail: item.preparation.blocked
+                        ? 'Skipped raw tool invocation because tool preparation produced a terminal result.'
+                        : 'Executed the prepared tool call through the raw invocation port.',
+                });
+                results.push(await finalizePreparedToolCallExecution(
+                    item,
+                    rawResults[batchIndex],
+                    takeToolExecutionSnapshots(item.session),
+                ));
+            }
+            continue;
+        }
+
+        results.push(await invokeAndFinalizePreparedToolCallExecution(prepared));
+        index += 1;
     }
 
     return {
@@ -152,29 +208,20 @@ export async function runToolOrchestrator<TCallbacks = unknown>(
     };
 }
 
-async function executeSingleToolCall<TCallbacks = unknown>(input: {
+async function prepareToolCallExecution<TCallbacks = unknown>(input: {
     toolCall: ToolCall;
     callbacks?: TCallbacks;
     streamId: string;
     session: AgentSession;
-    toolExecutionPort?: ToolExecutionPort<TCallbacks>;
-    executeToolCalls: (
-        toolCalls: ToolCall[],
-        callbacks: TCallbacks | undefined,
-        streamId: string,
-    ) => Promise<ToolResult[]>;
-}): Promise<ToolExecutionResult> {
+    toolExecutionPort: ToolExecutionPort<TCallbacks>;
+}): Promise<PreparedToolCallExecution<TCallbacks>> {
     const checkpointRequired = requiresCheckpointBeforeTool(input.toolCall.name);
-    const toolExecutionPort = input.toolExecutionPort
-        ?? createCompatibilityToolExecutionPort({
-            executeToolCalls: input.executeToolCalls,
-        });
     const rendererProjection = createToolRendererProjection({
         sessionId: input.session.id,
         toolCall: input.toolCall,
         callbacks: input.callbacks,
     });
-    const preparation = await toolExecutionPort.prepareToolCall({
+    const preparation = await input.toolExecutionPort.prepareToolCall({
         toolCall: input.toolCall,
         callbacks: rendererProjection.callbacks,
         streamId: input.streamId,
@@ -192,30 +239,51 @@ async function executeSingleToolCall<TCallbacks = unknown>(input: {
             stage: 'checkpoint',
             detail: checkpointRequired
                 ? 'Checkpoint required; rollback metadata will be collected from file-change artifacts after raw execution.'
-                : 'No checkpoint metadata required for this tool call.',
+            : 'No checkpoint metadata required for this tool call.',
         },
     ];
-    const beforeMessages = input.session.getMessages();
-    const beforeToolHistory = input.session.getToolHistory();
-    const beforeCommandHistory = input.session.getCommandHistory();
-    const beforeFileChanges = input.session.getFileChanges();
 
-    const rawToolResult = preparation.blocked
+    return {
+        toolCall: input.toolCall,
+        callbacks: input.callbacks,
+        streamId: input.streamId,
+        session: input.session,
+        toolExecutionPort: input.toolExecutionPort,
+        rendererProjection,
+        checkpointRequired,
+        preparation,
+        stages,
+    };
+}
+
+async function invokeAndFinalizePreparedToolCallExecution<TCallbacks = unknown>(
+    input: PreparedToolCallExecution<TCallbacks>,
+): Promise<ToolExecutionResult> {
+    const snapshots = takeToolExecutionSnapshots(input.session);
+    const rawToolResult = input.preparation.blocked
         ? undefined
-        : await toolExecutionPort.invokePreparedToolCall(preparation);
-    stages.push({
+        : await input.toolExecutionPort.invokePreparedToolCall(input.preparation);
+    input.stages.push({
         stage: 'execute',
-        detail: preparation.blocked
+        detail: input.preparation.blocked
             ? 'Skipped raw tool invocation because tool preparation produced a terminal result.'
             : 'Executed the prepared tool call through the raw invocation port.',
     });
-    const toolResult = await toolExecutionPort.finalizeToolCall(preparation, rawToolResult);
+    return finalizePreparedToolCallExecution(input, rawToolResult, snapshots);
+}
 
-    const toolHistoryEntry = input.session.getToolHistory()[beforeToolHistory.length];
-    const commandHistory = input.session.getCommandHistory().slice(beforeCommandHistory.length);
-    const fileChanges = input.session.getFileChanges().slice(beforeFileChanges.length);
+async function finalizePreparedToolCallExecution<TCallbacks = unknown>(
+    input: PreparedToolCallExecution<TCallbacks>,
+    rawToolResult: ToolResult | undefined,
+    snapshots: ToolExecutionSnapshots,
+): Promise<ToolExecutionResult> {
+    const toolResult = await input.toolExecutionPort.finalizeToolCall(input.preparation, rawToolResult);
+
+    const toolHistoryEntry = input.session.getToolHistory()[snapshots.beforeToolHistory.length];
+    const commandHistory = input.session.getCommandHistory().slice(snapshots.beforeCommandHistory.length);
+    const fileChanges = input.session.getFileChanges().slice(snapshots.beforeFileChanges.length);
     const collectedToolMessages = input.session.getMessages()
-        .slice(beforeMessages.length)
+        .slice(snapshots.beforeMessages.length)
         .filter((message) => message.role === 'tool' && message.toolCallId === input.toolCall.id);
     const toolMessages = ensureToolResultMessage({
         session: input.session,
@@ -225,7 +293,7 @@ async function executeSingleToolCall<TCallbacks = unknown>(input: {
     });
     const toolResultContent = toolMessages.at(-1)?.content
         ?? buildFallbackToolResultContent(toolHistoryEntry);
-    stages.push({
+    input.stages.push({
         stage: 'collect',
         detail: `Collected ${toolMessages.length} tool_result message(s), ${commandHistory.length} command delta(s), and ${fileChanges.length} file change delta(s).`,
     });
@@ -250,11 +318,11 @@ async function executeSingleToolCall<TCallbacks = unknown>(input: {
         toolMessages,
         fallbackContent: toolResultContent,
     });
-    const rendererEvents = rendererProjection.rendererEvents.length > 0
-        ? rendererProjection.rendererEvents
+    const rendererEvents = input.rendererProjection.rendererEvents.length > 0
+        ? input.rendererProjection.rendererEvents
         : fallbackRendererEvents;
-    if (rendererProjection.rendererEvents.length === 0) {
-        rendererProjection.replayFallback({
+    if (input.rendererProjection.rendererEvents.length === 0) {
+        input.rendererProjection.replayFallback({
             args: parseToolCallArguments(input.toolCall.arguments),
             output: toolResultContent,
             success: toolHistoryEntry?.success ?? false,
@@ -267,25 +335,25 @@ async function executeSingleToolCall<TCallbacks = unknown>(input: {
         toolMessages,
         fallbackContent: toolResultContent,
     });
-    stages.push({
+    input.stages.push({
         stage: 'post_tool_use',
-        detail: preparation.blocked
+        detail: input.preparation.blocked
             ? 'Finalized the blocked tool call without raw execution.'
             : 'Applied post-tool finalization before projecting tool_result artifacts.',
     });
-    stages.push({
+    input.stages.push({
         stage: 'write_tool_result',
-        detail: `Projected tool_result to model (${toolMessages.length}), renderer (${rendererEvents.length}), transcript (${transcriptEntries.length}), and event-store (${eventStoreRecords.length}) artifacts${rendererProjection.rendererEvents.length > 0 ? ' via the ToolOrchestrator callback proxy' : ' via session fallback synthesis'}.`,
+        detail: `Projected tool_result to model (${toolMessages.length}), renderer (${rendererEvents.length}), transcript (${transcriptEntries.length}), and event-store (${eventStoreRecords.length}) artifacts${input.rendererProjection.rendererEvents.length > 0 ? ' via the ToolOrchestrator callback proxy' : ' via session fallback synthesis'}.`,
     });
-    stages.push({
+    input.stages.push({
         stage: 'emit_event',
         detail: `Prepared ${rendererEvents.length} renderer event artifact(s) for envelope-aware surfaces.`,
     });
     const checkpointMetadata = resolveCheckpointMetadata(fileChanges);
     const checkpoint = {
-        required: checkpointRequired,
+        required: input.checkpointRequired,
         delegated: false,
-        status: checkpointRequired
+        status: input.checkpointRequired
             ? (checkpointMetadata.rollbackPointId ? 'captured' : 'missing')
             : 'not_required',
         ...checkpointMetadata,
@@ -301,7 +369,7 @@ async function executeSingleToolCall<TCallbacks = unknown>(input: {
         ...(stopReason ? { stopReason } : {}),
         outputForModel: toolResultContent,
         outputForUser: toolResultContent,
-        stages,
+        stages: input.stages,
         ...(toolHistoryEntry ? { toolHistoryEntry } : {}),
         commandHistory,
         fileChanges,
@@ -310,6 +378,15 @@ async function executeSingleToolCall<TCallbacks = unknown>(input: {
         transcriptEntries,
         eventStoreRecords,
         checkpoint,
+    };
+}
+
+function takeToolExecutionSnapshots(session: AgentSession): ToolExecutionSnapshots {
+    return {
+        beforeMessages: session.getMessages(),
+        beforeToolHistory: session.getToolHistory(),
+        beforeCommandHistory: session.getCommandHistory(),
+        beforeFileChanges: session.getFileChanges(),
     };
 }
 

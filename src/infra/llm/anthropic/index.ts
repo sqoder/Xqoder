@@ -11,8 +11,9 @@ import type {
   LLMMessage,
   ToolCall,
   MessageAttachment,
+  LLMProviderCapabilities,
 } from '@xqoder/shared';
-import { LLMError } from '@xqoder/shared';
+import { LLMError, resolveLLMProviderCapabilities } from '@xqoder/shared';
 import { BaseLLMProvider, type CompletionRequest, type CompletionResponse } from '@xqoder/llm-api';
 
 function buildFileAttachmentContext(attachments: MessageAttachment[] | undefined): string {
@@ -22,15 +23,74 @@ function buildFileAttachmentContext(attachments: MessageAttachment[] | undefined
   return `[AttachedFiles]\nThe user attached these files to this request:\n${lines.join('\n')}\nTreat them as part of the request context and read them directly when needed.\n[/AttachedFiles]`;
 }
 
+type AnthropicAttachmentBlock = Anthropic.TextBlockParam | Anthropic.ImageBlockParam | Anthropic.DocumentBlockParam;
+
+function buildAnthropicAttachmentBlock(
+  attachment: MessageAttachment,
+  capabilities: LLMProviderCapabilities,
+): AnthropicAttachmentBlock | undefined {
+  if (attachment.type === 'image' && attachment.data && capabilities.input.image) {
+    return {
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: attachment.mimeType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
+        data: attachment.data,
+      },
+    };
+  }
+
+  if (attachment.type === 'file' && attachment.data && attachment.mimeType === 'application/pdf' && capabilities.nativePdf) {
+    return {
+      type: 'document',
+      source: {
+        type: 'base64',
+        media_type: 'application/pdf',
+        data: attachment.data,
+      },
+      title: attachment.fileName ?? attachment.filePath ?? 'attachment.pdf',
+    };
+  }
+
+  return undefined;
+}
+
+function buildAnthropicAttachmentBlocks(
+  attachments: MessageAttachment[] | undefined,
+  capabilities: LLMProviderCapabilities,
+): AnthropicAttachmentBlock[] {
+  return (attachments ?? [])
+    .map((attachment) => buildAnthropicAttachmentBlock(attachment, capabilities))
+    .filter((block): block is AnthropicAttachmentBlock => block !== undefined);
+}
+
+function buildAnthropicToolResultContent(
+  text: string,
+  attachments: MessageAttachment[] | undefined,
+  capabilities: LLMProviderCapabilities,
+): string | Anthropic.ToolResultBlockParam['content'] {
+  const attachmentBlocks = buildAnthropicAttachmentBlocks(attachments, capabilities);
+  if (attachmentBlocks.length === 0) {
+    return text;
+  }
+
+  return [
+    ...(text ? [{ type: 'text' as const, text }] : []),
+    ...attachmentBlocks,
+  ];
+}
+
 /**
  * Anthropic Provider Implementation
  */
 export class AnthropicProvider extends BaseLLMProvider {
   readonly name: LLMProviderName = 'anthropic';
   private client: Anthropic;
+  private readonly capabilities: LLMProviderCapabilities;
 
   constructor(config: LLMProviderConfig) {
     super(config);
+    this.capabilities = resolveLLMProviderCapabilities(config);
     this.client = new Anthropic({ apiKey: this.apiKey, baseURL: this.baseUrl });
   }
 
@@ -129,25 +189,19 @@ export class AnthropicProvider extends BaseLLMProvider {
       if (msg.role === 'tool') {
         return {
           role: 'user',
-          content: [{ type: 'tool_result', tool_use_id: msg.toolCallId ?? '', content: msg.content }],
+          content: [{
+            type: 'tool_result',
+            tool_use_id: msg.toolCallId ?? '',
+            content: buildAnthropicToolResultContent(msg.content, msg.attachments, this.capabilities),
+          }],
         };
       }
       if (msg.role === 'user' && msg.attachments && msg.attachments.length > 0) {
-        const content: Anthropic.MessageParam['content'] = [];
+        const content: Anthropic.ContentBlockParam[] = [];
         const fileContext = buildFileAttachmentContext(msg.attachments);
         const textContent = [msg.content, fileContext].filter(Boolean).join('\n\n');
         if (textContent) content.push({ type: 'text', text: textContent } as Anthropic.TextBlockParam);
-        for (const attachment of msg.attachments) {
-          if (attachment.type !== 'image' || !attachment.data) continue;
-          content.push({
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: attachment.mimeType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
-              data: attachment.data,
-            },
-          } as Anthropic.ImageBlockParam);
-        }
+        content.push(...buildAnthropicAttachmentBlocks(msg.attachments, this.capabilities));
         return { role: 'user', content };
       }
       return { role: msg.role as 'user' | 'assistant', content: msg.content };

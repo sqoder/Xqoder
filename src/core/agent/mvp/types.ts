@@ -2,7 +2,17 @@ export type AgentRuntimeProfile = 'full' | 'mvp' | 'hybrid';
 
 export type MvpTaskType = 'bugfix' | 'feature' | 'refactor' | 'question';
 
-export type MvpPlannerAction = 'search_code' | 'read_file' | 'write_file' | 'run_shell' | 'answer';
+export type MvpPlannerAction =
+    | 'search_code'
+    | 'list_files'
+    | 'read_file'
+    | 'inspect_github_repo'
+    | 'fetch_url'
+    | 'websearch'
+    | 'sourcegraph'
+    | 'write_file'
+    | 'run_shell'
+    | 'answer';
 
 export type MvpContextTier = 'Goal' | 'Error' | 'Active' | 'History' | 'Background';
 
@@ -39,6 +49,8 @@ export interface MvpCollectedContext {
     userGoal: string;
     taskType: MvpTaskType;
     targetPaths: string[];
+    targetUrls: string[];
+    targetPathKinds: Record<string, 'file' | 'directory' | 'unknown'>;
     relatedPaths: string[];
     projectRules: MvpProjectRule[];
     gitStatus: string[];

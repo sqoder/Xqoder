@@ -134,6 +134,8 @@ function toSessionDetailPayload(
         ...toSessionPayload(summary, { includeUsage: true }),
         transcript: session.getMessages(),
         conversationSignals: toConversationSignalsPayload(session),
+        pendingApprovals: session.getPendingApprovals?.() ?? [],
+        approvalHistory: session.getApprovalHistory?.() ?? [],
     };
 }
 

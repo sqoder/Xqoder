@@ -61,7 +61,15 @@ export interface PermissionWriteResult {
     permissions: ResolvedPermissionSettings;
 }
 
-const VALID_PERMISSION_MODES: AgentPermissionMode[] = ['allow', 'ask', 'deny'];
+const VALID_PERMISSION_MODES: AgentPermissionMode[] = [
+    'allow',
+    'ask',
+    'deny',
+    'auto',
+    'plan',
+    'default',
+    'bypassPermissions',
+];
 const VALID_APPROVAL_POLICIES = ['strict', 'balanced', 'workspace_auto'] as const;
 
 export function createPermissionsSnapshot(
@@ -118,6 +126,12 @@ export function formatPermissionsSnapshot(snapshot: PermissionsSnapshot): string
         `effectiveApprovalPolicy=${snapshot.permissions.approvalPolicy}`,
         `effectiveDefaultMode=${snapshot.permissions.defaultMode}`,
         `effectiveTools=${formatTools(snapshot.permissions.tools)}`,
+        'summary:',
+        ...buildPermissionSummary(snapshot),
+        'baseline:',
+        ...buildPermissionBaseline(snapshot),
+        'notes:',
+        ...buildPermissionNotes(snapshot),
     ];
 
     if (snapshot.rules.length > 0) {
@@ -141,6 +155,77 @@ export function formatPermissionsSnapshot(snapshot: PermissionsSnapshot): string
     }
 
     return lines.join('\n');
+}
+
+function buildPermissionSummary(snapshot: PermissionsSnapshot): string[] {
+    const workspaceWriteMode = snapshot.permissions.approvalPolicy === 'workspace_auto'
+        ? 'Ordinary workspace writes can proceed after context is read.'
+        : 'Workspace writes still require approval unless rules explicitly allow them.';
+
+    return [
+        `- Reads inside the workspace are treated as routine; reads outside it require approval.`,
+        `- Sensitive local files and protected config paths still require approval even when they are inside the workspace.`,
+        `- ${workspaceWriteMode}`,
+    ];
+}
+
+function buildPermissionBaseline(snapshot: PermissionsSnapshot): string[] {
+    const approvalPolicy = snapshot.permissions.approvalPolicy;
+    const workspaceWriteBaseline = approvalPolicy === 'workspace_auto'
+        ? 'workspace writes: allow after read when target is ordinary; protected/config/suspicious writes still ask'
+        : 'workspace writes: ask by default unless a stronger per-tool rule applies';
+
+    return [
+        '- workspace reads: auto-allow',
+        '- allowed read paths: auto-allow',
+        '- outside-workspace reads: ask',
+        '- sensitive/protected reads: ask',
+        `- ${workspaceWriteBaseline}`,
+        '- outside-project writes: ask',
+        '- internal runtime paths: allow by scope',
+    ];
+}
+
+function buildPermissionNotes(snapshot: PermissionsSnapshot): string[] {
+    const policyNote = snapshot.permissions.approvalPolicy === 'workspace_auto'
+        ? 'workspace_auto relaxes ordinary in-workspace writes, but it does not bypass sensitive-path checks, suspicious-path checks, or outside-project approval.'
+        : `${snapshot.permissions.approvalPolicy} keeps writes conservative unless a stronger rule overrides the default.`;
+
+    return [
+        `- Edit permission can imply ordinary read permission, but explicit read deny rules still win.`,
+        `- ${policyNote}`,
+        `- If a path keeps asking for approval, prefer an explicit rule or allowed path entry over relying on repeated one-off approvals.`,
+    ];
+}
+
+function formatPermissionModeList(): string {
+    return VALID_PERMISSION_MODES.join(' | ');
+}
+
+export function describeSupportedPermissionModes(): string {
+    return formatPermissionModeList();
+}
+
+export function describeSupportedApprovalPolicies(): string {
+    return VALID_APPROVAL_POLICIES.join(' | ');
+}
+
+export function parsePermissionMode(mode: string): AgentPermissionMode {
+    const normalized = mode.trim();
+    if (!VALID_PERMISSION_MODES.includes(normalized as AgentPermissionMode)) {
+        throw new Error(`Invalid permission mode: ${mode}. Expected one of ${describeSupportedPermissionModes()}`);
+    }
+
+    return normalized as AgentPermissionMode;
+}
+
+export function parseApprovalPolicy(policy: string): Extract<ApprovalPolicy, 'strict' | 'balanced' | 'workspace_auto'> {
+    const normalized = policy.trim();
+    if (!VALID_APPROVAL_POLICIES.includes(normalized as Extract<ApprovalPolicy, 'strict' | 'balanced' | 'workspace_auto'>)) {
+        throw new Error(`Invalid approval policy: ${policy}. Expected one of ${describeSupportedApprovalPolicies()}`);
+    }
+
+    return normalized as Extract<ApprovalPolicy, 'strict' | 'balanced' | 'workspace_auto'>;
 }
 
 export function runPermissionsPathCommand(
@@ -368,23 +453,6 @@ function resolvePermissionsWriteTargetOptions(options: PermissionsOutputOptions)
     };
 }
 
-function parsePermissionMode(value: string): AgentPermissionMode {
-    const normalized = value.trim().toLowerCase();
-    if ((VALID_PERMISSION_MODES as string[]).includes(normalized)) {
-        return normalized as AgentPermissionMode;
-    }
-    throw new Error(`Unsupported permission mode: ${value}`);
-}
-
-function parseApprovalPolicy(
-    value: string,
-): ResolvedPermissionSettings['approvalPolicy'] {
-    const normalized = value.trim().toLowerCase();
-    if ((VALID_APPROVAL_POLICIES as readonly string[]).includes(normalized)) {
-        return normalized as ResolvedPermissionSettings['approvalPolicy'];
-    }
-    throw new Error(`Unsupported approval policy: ${value}`);
-}
 
 function normalizeV1ApprovalPolicy(
     value: ApprovalPolicy | undefined,

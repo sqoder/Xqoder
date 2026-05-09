@@ -96,9 +96,11 @@ export function resolveTuiAgentConfig(
     const permissionPromptAppendix = includePermissionPromptAppendix
         ? [
             'Permission execution rules:',
-            '- When the user explicitly requests a path outside the project (e.g., Desktop), you MUST attempt use the target path directly.',
+            '- Built-in read-only tools can inspect user-requested paths directly, including outside the project, without asking for confirmation first.',
+            '- Use read_any_file for PDFs, Office documents, images, and unknown/binary files.',
+            '- When the user explicitly requests a side-effectful operation outside the project (e.g., Desktop), you MUST attempt to use the target path directly.',
             '- Do NOT reply "cannot access system path" and offer an alternative script instead.',
-            '- Let the tool trigger the permission approval dialog, allowing the user to decide (allow once / allow full session / deny).',
+            '- Let the permission system approve or deny side-effectful operations.',
         ].join('\n')
         : undefined;
     const promptAppendix = [

@@ -142,12 +142,16 @@ Output Style Requirements:
 
 Permission and Path Policies (VERY IMPORTANT):
 - Operations are by default within the project directory
-- If the user explicitly requests operations outside the project directory (e.g., Desktop, Downloads, system paths), do not refuse directly, and do not suggest alternatives like "writing it to the project first and then copying it"
-- Directly attempt the target path as requested by the user, allowing tools to trigger a permission approval popup for the user to decide
-- When the user expresses "letting you operate the entire computer/giving you full permissions", prioritize triggering the permission approval process and wait for the user's selection`;
+- Built-in read-only tools (read_file, list_files, search_code, grep_content, glob_files, diagnostics, and LSP read/navigation tools) may inspect user-requested paths directly, including outside the project directory, unless the runtime returns an explicit read-denied or sandbox error
+- Use read_any_file for PDFs, Office documents, images, and unknown/binary files; use read_file ranges for large plain text/code files
+- If read_any_file reports that document/PDF/image content was not extracted, do not infer or summarize the file from its file name or path alone
+- For read-only inspection, do not ask the user to confirm first and do not ask them to paste file contents; call the appropriate read/list/search tool and continue
+- Write, edit, shell, network, MCP, and other side-effectful operations remain governed by the permission system and may require approval
+- If the user explicitly requests a side-effectful operation outside the project directory (e.g., Desktop, Downloads, system paths), attempt the requested target path and let the permission system decide instead of substituting a project-internal workaround`;
 
 export const DEFAULT_MVP_SYSTEM_PROMPT = `You are XQoder, an AI programming assistant operating in MVP runtime mode. You can:
 - Read files
+- List and glob project files
 - Search code
 - Write files
 - Execute shell commands
@@ -156,10 +160,13 @@ Core behavior:
 - Work in a closed loop: inspect -> change -> verify -> continue until verified
 - Prefer the smallest safe change that solves the task
 - Read/search before editing
+- Built-in read/list/search tools can inspect concrete user-requested paths directly without asking for confirmation first
+- When the user gives a directory path and asks what the project is, inspect the directory with list_files or glob_files before reading key files
 - Do not claim success before the runtime verifier passes after file writes
 
 Output Style Requirements:
 - Use concise and straightforward text
+- Match the user's language; if the user writes in Chinese or asks for Chinese, answer in Chinese
 - Do not use emojis or decorative symbols
 - Use "-" as a standard list symbol only when necessary`;
 
@@ -250,6 +257,7 @@ export class XQoderAgent implements AgentProtocol {
             allowedPaths: (config.allowedPaths ?? []).map((entry) => path.resolve(entry)),
             shell: config.shell,
             rollbackStore: this.rollbackStore,
+            fileReadState: new Map(),
             ...(this.mvpRuntimeConfig ? { mvpRuntimeConfig: this.mvpRuntimeConfig } : {}),
         };
         this.logger = defaultLogger.child('Agent');

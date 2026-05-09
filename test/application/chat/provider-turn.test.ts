@@ -136,6 +136,72 @@ describe('provider turn bridge', () => {
         });
     });
 
+    it('can suppress assistant message side effects while still collecting the provider result', async () => {
+        const session = new AgentSession({ id: 'provider-turn-suppressed', systemPrompt: 'system' });
+        const emitted: string[] = [];
+        const tokens: string[] = [];
+        let completedMessage = '';
+
+        const result = await runProviderTurn({
+            provider: createFakeProvider({
+                streamImpl: async (callbacks) => {
+                    callbacks.onToken?.('fake read_file claim');
+                    return {
+                        message: {
+                            role: 'assistant',
+                            content: 'fake read_file claim',
+                        },
+                        usage: {
+                            promptTokens: 12,
+                            completionTokens: 4,
+                            totalTokens: 16,
+                        },
+                        finishReason: 'stop',
+                    };
+                },
+            }),
+            request: {
+                messages: [{ role: 'user', content: '/tmp/code.html 帮我分析' }],
+                tools: [],
+            },
+            session,
+            llmConfig: {
+                provider: 'openai',
+                model: 'gpt-4.1',
+                apiKey: 'test-key',
+            },
+            streamId: 'stream-provider-turn-suppressed',
+            suppressAssistantMessages: true,
+            callbacks: {
+                onToken(token) {
+                    tokens.push(token);
+                },
+                onComplete(message) {
+                    completedMessage = String(message.content ?? '');
+                },
+            },
+            emit(type) {
+                emitted.push(type);
+            },
+        });
+
+        expect(result).toMatchObject({
+            finishReason: 'stop',
+            message: {
+                role: 'assistant',
+                content: 'fake read_file claim',
+            },
+        });
+        expect(tokens).toEqual([]);
+        expect(completedMessage).toBe('');
+        expect(emitted).toEqual(['usage']);
+        expect(session.getUsage()).toMatchObject({
+            promptTokens: 12,
+            completionTokens: 4,
+            totalTokens: 16,
+        });
+    });
+
     it('raises a structured provider_error when the provider stream fails', async () => {
         const session = new AgentSession({ id: 'provider-turn-error', systemPrompt: 'system' });
         const emitted: Array<{ type: string; message?: string }> = [];

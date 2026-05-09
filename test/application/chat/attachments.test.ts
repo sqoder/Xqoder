@@ -61,6 +61,23 @@ describe('chat attachment helpers', () => {
         expect(attachments.map((attachment) => attachment.type)).toEqual(['file', 'image']);
         expect(issues).toEqual([{ filePath: path.resolve(missingFile), reason: 'missing' }]);
     });
+
+    it('assigns the docx attachment MIME type for file attachments', () => {
+        const cwd = createTempDir();
+        const docxFile = path.join(cwd, 'report.docx');
+        fs.writeFileSync(docxFile, 'placeholder', 'utf-8');
+
+        const { attachments, issues } = buildMessageAttachments([docxFile]);
+
+        expect(issues).toEqual([]);
+        expect(attachments).toHaveLength(1);
+        expect(attachments[0]).toMatchObject({
+            type: 'file',
+            mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            filePath: path.resolve(docxFile),
+            fileName: 'report.docx',
+        });
+    });
 });
 
 function createTempDir(): string {

@@ -50,6 +50,7 @@ import {
     createStreamToolApprovalHandler,
     writeAutoWorkingMemoryNote,
 } from './run-chat-stream-helpers.js';
+import { removeRepeatedAssistantSections } from './response-cleanup.js';
 export {
     buildAutoProjectContext,
     buildChatPromptAppendix,
@@ -307,7 +308,7 @@ function buildNonInteractiveTitle(prompt: string): string {
 }
 
 function resolveAgentTextOutput(streamedResponse: string, finalResponse: string): string {
-    return streamedResponse.length > 0 ? streamedResponse : finalResponse;
+    return removeRepeatedAssistantSections(streamedResponse.length > 0 ? streamedResponse : finalResponse);
 }
 
 function resolveTerminalStopReason(

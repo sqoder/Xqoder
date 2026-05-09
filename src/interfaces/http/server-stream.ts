@@ -95,6 +95,20 @@ interface StreamControllerOptions {
     maxStreamTimeoutMs?: number;
     questionTimeoutMs?: number;
     streamGcTtlMs?: number;
+    onApprovalPending?: (record: {
+        sessionId: string;
+        streamId: string;
+        requestId: string;
+        request: ToolApprovalRequest;
+        requestedAt: Date;
+    }) => void;
+    onApprovalResolved?: (record: {
+        sessionId: string;
+        streamId: string;
+        requestId: string;
+        decision: 'allow' | 'deny';
+        resolvedAt: Date;
+    }) => void;
 }
 
 interface ResolveQuestionRequestParams {
@@ -424,6 +438,13 @@ export function createStreamController(options: StreamControllerOptions = {}): S
                     return;
                 }
                 removePendingApproval(key, pending);
+                options.onApprovalResolved?.({
+                    sessionId: pending.sessionId,
+                    streamId: pending.streamId,
+                    requestId: pending.requestId,
+                    decision: pending.fallbackDecision,
+                    resolvedAt: new Date(),
+                });
                 resolve(pending.fallbackDecision === 'allow');
             }, questionTimeoutMs);
             unrefTimer(timeout);
@@ -441,6 +462,13 @@ export function createStreamController(options: StreamControllerOptions = {}): S
             };
 
             pendingApprovals.set(key, pending);
+            options.onApprovalPending?.({
+                sessionId,
+                streamId,
+                requestId,
+                request,
+                requestedAt: new Date(),
+            });
             const index = pendingApprovalsByLegacyKey.get(legacyKey);
             if (index) {
                 index.add(key);
@@ -456,6 +484,13 @@ export function createStreamController(options: StreamControllerOptions = {}): S
                 continue;
             }
             removePendingApproval(key, pending);
+            options.onApprovalResolved?.({
+                sessionId: pending.sessionId,
+                streamId: pending.streamId,
+                requestId: pending.requestId,
+                decision: pending.fallbackDecision,
+                resolvedAt: new Date(),
+            });
             pending.resolve(pending.fallbackDecision === 'allow');
         }
     }
@@ -619,6 +654,13 @@ export function createStreamController(options: StreamControllerOptions = {}): S
         }
 
         removePendingApproval(key, pending);
+        options.onApprovalResolved?.({
+            sessionId: pending.sessionId,
+            streamId: pending.streamId,
+            requestId: pending.requestId,
+            decision: params.decision,
+            resolvedAt: new Date(),
+        });
         pending.resolve(params.decision === 'allow');
         return { ok: true };
     }

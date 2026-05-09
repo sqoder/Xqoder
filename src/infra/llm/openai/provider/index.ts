@@ -11,12 +11,13 @@ import type {
   LLMMessage,
   ToolCall,
   MessageAttachment,
+  LLMProviderCapabilities,
 } from '@xqoder/shared';
-import { LLMError } from '@xqoder/shared';
+import { LLMError, resolveLLMProviderCapabilities } from '@xqoder/shared';
 import { BaseLLMProvider, type CompletionRequest, type CompletionResponse } from '@xqoder/llm-api';
 import { resolveProxyForProvider, type ProxyResolutionOptions } from '../../../../shared/network-proxy.js';
 
-const DEFAULT_OPENAI_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_OPENAI_REQUEST_TIMEOUT_MS = 120_000;
 
 type OpenAIClientOptions = NonNullable<ConstructorParameters<typeof OpenAI>[0]> & {
   fetchOptions?: Record<string, unknown>;
@@ -29,19 +30,135 @@ interface OpenAIProviderDependencies {
   systemProxyReader?: ProxyResolutionOptions['systemProxyReader'];
 }
 
-function buildFileAttachmentContext(attachments: MessageAttachment[] | undefined): string {
+function buildFileAttachmentContext(
+  attachments: MessageAttachment[] | undefined,
+  options: { capabilities: LLMProviderCapabilities },
+): string {
   const fileAttachments = (attachments ?? []).filter((a) => a.type === 'file');
-  if (fileAttachments.length === 0) return '';
-  const lines = fileAttachments.map((a) => `- ${a.filePath ?? a.fileName ?? 'file'}`);
-  return `[AttachedFiles]\nThe user attached these files to this request:\n${lines.join('\n')}\nTreat them as part of the request context and read them directly when needed.\n[/AttachedFiles]`;
+  const unsupported = collectUnsupportedNativeAttachments(attachments, options.capabilities);
+  const blocks: string[] = [];
+  if (fileAttachments.length > 0) {
+    const lines = fileAttachments.map((a) => `- ${a.filePath ?? a.fileName ?? 'file'}${a.mimeType ? ` (${a.mimeType})` : ''}`);
+    blocks.push(`[AttachedFiles]\nThe user attached these files to this request:\n${lines.join('\n')}\nTreat them as part of the request context and read them directly when needed.\n[/AttachedFiles]`);
+  }
+  if (unsupported.length > 0) {
+    blocks.push([
+      '[UnsupportedNativeAttachments]',
+      `Provider ${options.capabilities.provider}/${options.capabilities.model} cannot receive these attachments as native content parts:`,
+      ...unsupported.map((attachment) => `- ${attachment}`),
+      'Use extracted text, rendered/OCR page images, or a provider/model with the matching modality enabled.',
+      'Do not infer file contents from file names or paths alone.',
+      '[/UnsupportedNativeAttachments]',
+    ].join('\n'));
+  }
+  return blocks.join('\n\n');
 }
 
-function buildOpenAIImagePart(attachment: MessageAttachment): Record<string, unknown> | null {
-  if (attachment.type !== 'image' || !attachment.data) return null;
+function buildOpenAIContentParts(
+  text: string,
+  attachments: MessageAttachment[] | undefined,
+  options: { capabilities: LLMProviderCapabilities },
+): Array<Record<string, unknown>> {
+  const content: Array<Record<string, unknown>> = [];
+  const fileContext = buildFileAttachmentContext(attachments, options);
+  const textContent = [text, fileContext].filter(Boolean).join('\n\n');
+  if (textContent) content.push({ type: 'text', text: textContent });
+  for (const attachment of attachments ?? []) {
+    const imagePart = buildOpenAIImagePart(attachment, options.capabilities);
+    if (imagePart) {
+      content.push(imagePart);
+      continue;
+    }
+    const filePart = buildOpenAIFilePart(attachment, options.capabilities);
+    if (filePart) content.push(filePart);
+  }
+  return content;
+}
+
+function buildOpenAIImagePart(
+  attachment: MessageAttachment,
+  capabilities: LLMProviderCapabilities,
+): Record<string, unknown> | undefined {
+  if (attachment.type !== 'image' || !attachment.data || !capabilities.input.image) return undefined;
   return {
     type: 'image_url',
     image_url: { url: `data:${attachment.mimeType};base64,${attachment.data}` },
   };
+}
+
+function buildOpenAIFilePart(
+  attachment: MessageAttachment,
+  capabilities: LLMProviderCapabilities,
+): Record<string, unknown> | undefined {
+  if (
+    attachment.type !== 'file'
+    || !attachment.data
+    || attachment.mimeType !== 'application/pdf'
+    || !capabilities.nativePdf
+  ) {
+    return undefined;
+  }
+  const fileData = capabilities.openAIFileDataFormat === 'data-url'
+    ? `data:${attachment.mimeType};base64,${attachment.data}`
+    : attachment.data;
+  return {
+    type: 'file',
+    file: {
+      file_data: fileData,
+      filename: attachment.fileName ?? attachment.filePath ?? 'attachment',
+    },
+  };
+}
+
+function buildToolAttachmentText(records: ToolAttachmentRecord[], options: { capabilities: LLMProviderCapabilities }): string {
+  const lines = records.flatMap((record) =>
+    record.attachments.map((attachment) => `- tool_call_id=${record.toolCallId}: ${attachment.fileName ?? attachment.filePath ?? attachment.mimeType}`)
+  );
+  const text = [
+    '[ToolResultAttachments]',
+    'The previous tool result produced model-readable attachments:',
+    ...lines,
+    'Use these attachments together with the tool result text. If a provider does not support a given file block, rely on the extracted text and warnings.',
+    '[/ToolResultAttachments]',
+  ];
+  if (records.some((record) => collectUnsupportedNativeAttachments(record.attachments, options.capabilities).length > 0)) {
+    text.push(
+      '[UnsupportedToolResultAttachments]',
+      `Provider ${options.capabilities.provider}/${options.capabilities.model} cannot receive at least one previous tool attachment as a native content part.`,
+      'Unsupported native attachments from the previous tool result were not sent as media/file blocks.',
+      'Use extracted text, rendered/OCR image attachments, or switch to a provider/model with the matching modality enabled before answering.',
+      '[/UnsupportedToolResultAttachments]',
+    );
+  }
+  return text.join('\n');
+}
+
+function collectUnsupportedNativeAttachments(
+  attachments: MessageAttachment[] | undefined,
+  capabilities: LLMProviderCapabilities,
+): string[] {
+  const unsupported: string[] = [];
+  for (const attachment of attachments ?? []) {
+    const label = attachment.fileName ?? attachment.filePath ?? attachment.mimeType ?? attachment.type;
+    if (attachment.type === 'image' && attachment.data && !capabilities.input.image) {
+      unsupported.push(`${label} (${attachment.mimeType || 'image'}; image modality disabled)`);
+    }
+    if (attachment.type === 'file' && attachment.data) {
+      if (attachment.mimeType === 'application/pdf') {
+        if (!capabilities.nativePdf) {
+          unsupported.push(`${label} (application/pdf; PDF modality disabled or unavailable on this adapter)`);
+        }
+      } else {
+        unsupported.push(`${label} (${attachment.mimeType || 'file'}; native file modality unsupported)`);
+      }
+    }
+  }
+  return unsupported;
+}
+
+interface ToolAttachmentRecord {
+  toolCallId: string;
+  attachments: MessageAttachment[];
 }
 
 /**
@@ -51,10 +168,12 @@ export class OpenAIProvider extends BaseLLMProvider {
   readonly name: LLMProviderName = 'openai';
   private readonly client: Pick<OpenAI, 'chat'>;
   private readonly timeoutMs: number;
+  private readonly capabilities: LLMProviderCapabilities;
 
   constructor(config: LLMProviderConfig, dependencies: OpenAIProviderDependencies = {}) {
     super(config);
     this.timeoutMs = dependencies.timeoutMs ?? DEFAULT_OPENAI_REQUEST_TIMEOUT_MS;
+    this.capabilities = resolveLLMProviderCapabilities(config);
     this.client = dependencies.client ?? new OpenAI(buildOpenAIClientOptions(
       config,
       this.timeoutMs,
@@ -217,12 +336,40 @@ export class OpenAIProvider extends BaseLLMProvider {
   }
 
   private formatMessages(messages: LLMMessage[]): OpenAI.ChatCompletionMessageParam[] {
-    return messages.map((msg): OpenAI.ChatCompletionMessageParam => {
+    const formatted: OpenAI.ChatCompletionMessageParam[] = [];
+    let pendingToolAttachments: ToolAttachmentRecord[] = [];
+
+    const flushToolAttachments = (): void => {
+      if (pendingToolAttachments.length === 0) return;
+      const attachments = pendingToolAttachments.flatMap((record) => record.attachments);
+      const content = buildOpenAIContentParts(
+        buildToolAttachmentText(pendingToolAttachments, { capabilities: this.capabilities }),
+        attachments,
+        { capabilities: this.capabilities },
+      );
+      formatted.push({
+        role: 'user',
+        content: content as unknown as OpenAI.ChatCompletionUserMessageParam['content'],
+      });
+      pendingToolAttachments = [];
+    };
+
+    for (const msg of messages) {
+      if (msg.role !== 'tool') {
+        flushToolAttachments();
+      }
       if (msg.role === 'tool') {
-        return { role: 'tool', content: msg.content, tool_call_id: msg.toolCallId ?? '' };
+        formatted.push({ role: 'tool', content: msg.content, tool_call_id: msg.toolCallId ?? '' });
+        if (msg.attachments?.length) {
+          pendingToolAttachments.push({
+            toolCallId: msg.toolCallId ?? '',
+            attachments: msg.attachments,
+          });
+        }
+        continue;
       }
       if (msg.role === 'assistant' && msg.toolCalls) {
-        return {
+        formatted.push({
           role: 'assistant',
           content: msg.content || null,
           tool_calls: msg.toolCalls.map((tc) => ({
@@ -230,27 +377,27 @@ export class OpenAIProvider extends BaseLLMProvider {
             type: 'function' as const,
             function: { name: tc.name, arguments: tc.arguments },
           })),
-        };
+        });
+        continue;
       }
       if (msg.role === 'user' && msg.attachments && msg.attachments.length > 0) {
-        const content: Array<Record<string, unknown>> = [];
-        const fileContext = buildFileAttachmentContext(msg.attachments);
-        const textContent = [msg.content, fileContext].filter(Boolean).join('\n\n');
-        if (textContent) content.push({ type: 'text', text: textContent });
-        for (const attachment of msg.attachments) {
-          const imagePart = buildOpenAIImagePart(attachment);
-          if (imagePart) content.push(imagePart);
-        }
-        return {
+        const content = buildOpenAIContentParts(msg.content, msg.attachments, {
+          capabilities: this.capabilities,
+        });
+        formatted.push({
           role: 'user',
           content: content as unknown as OpenAI.ChatCompletionUserMessageParam['content'],
-        };
+        });
+        continue;
       }
-      return {
+      formatted.push({
         role: msg.role as 'system' | 'user' | 'assistant',
         content: msg.content,
-      };
-    });
+      });
+    }
+
+    flushToolAttachments();
+    return formatted;
   }
 
   protected formatTools(tools: ToolDefinition[]): unknown[] {
@@ -321,7 +468,21 @@ export function buildOpenAIClientOptions(
     };
   }
 
+  if (isDashScopeProvider(config)) {
+    clientOptions.defaultHeaders = {
+      ...clientOptions.defaultHeaders,
+      'User-Agent': 'Xqoder/0.1',
+      'X-DashScope-CacheControl': 'enable',
+      'X-DashScope-UserAgent': 'Xqoder/0.1',
+      'X-DashScope-AuthType': config.provider,
+    };
+  }
+
   return clientOptions as ConstructorParameters<typeof OpenAI>[0];
+}
+
+function isDashScopeProvider(config: LLMProviderConfig): boolean {
+  return config.provider === 'dashscope' || /([\w-]+\.)?dashscope(-intl)?\.aliyuncs\.com/i.test(config.baseUrl ?? '');
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {

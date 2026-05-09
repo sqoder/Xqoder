@@ -17,7 +17,16 @@ export interface GoldenTaskEvaluation {
     matchedForbidden: string[];
 }
 
-export interface GoldenTaskResult extends GoldenTaskEvaluation {
+export interface GoldenTaskMetrics {
+    steps?: number;
+    toolFailures?: number;
+    approvals?: number;
+    approvalInterruptions?: number;
+    rollbacks?: number;
+    humanTakeover?: boolean;
+}
+
+export interface GoldenTaskResult extends GoldenTaskEvaluation, GoldenTaskMetrics {
     id: string;
     title: string;
     cwd: string;
@@ -31,6 +40,15 @@ export interface GoldenTaskSummary {
     passed: number;
     failed: number;
     passRate: number;
+    successRate: number;
+    avgDurationMs: number;
+    avgSteps: number;
+    totalToolFailures: number;
+    toolFailureRate: number;
+    totalApprovals: number;
+    approvalInterruptionRate: number;
+    totalRollbacks: number;
+    rollbackRate: number;
 }
 
 export interface GoldenTaskBatchResult {
@@ -39,7 +57,7 @@ export interface GoldenTaskBatchResult {
 }
 
 export interface GoldenTaskRunner {
-    run(task: GoldenTaskDefinition): Promise<{ response: string }>;
+    run(task: GoldenTaskDefinition): Promise<{ response: string; metrics?: GoldenTaskMetrics }>;
 }
 
 export function evaluateGoldenTaskResponse(
@@ -77,7 +95,7 @@ export async function runGoldenTaskBatch(
     for (const task of tasks) {
         const startedAt = Date.now();
         try {
-            const { response } = await runner.run(task);
+            const { response, metrics } = await runner.run(task);
             const evaluation = evaluateGoldenTaskResponse(task, response);
             results.push({
                 id: task.id,
@@ -86,6 +104,7 @@ export async function runGoldenTaskBatch(
                 durationMs: Date.now() - startedAt,
                 response,
                 ...evaluation,
+                ...metrics,
             });
         } catch (error) {
             results.push({
@@ -100,6 +119,12 @@ export async function runGoldenTaskBatch(
                 missingAny: normalizeNeedles(task.expectedAny),
                 matchedForbidden: [],
                 error: error instanceof Error ? error.message : String(error),
+                steps: 0,
+                toolFailures: 0,
+                approvals: 0,
+                approvalInterruptions: 0,
+                rollbacks: 0,
+                humanTakeover: false,
             });
         }
     }
@@ -107,6 +132,12 @@ export async function runGoldenTaskBatch(
     const passed = results.filter((result) => result.ok).length;
     const total = results.length;
     const failed = total - passed;
+    const totalDurationMs = results.reduce((sum, result) => sum + result.durationMs, 0);
+    const totalSteps = results.reduce((sum, result) => sum + (result.steps ?? 0), 0);
+    const totalToolFailures = results.reduce((sum, result) => sum + (result.toolFailures ?? 0), 0);
+    const totalApprovals = results.reduce((sum, result) => sum + (result.approvals ?? 0), 0);
+    const approvalInterruptions = results.reduce((sum, result) => sum + (result.approvalInterruptions ?? 0), 0);
+    const totalRollbacks = results.reduce((sum, result) => sum + (result.rollbacks ?? 0), 0);
 
     return {
         summary: {
@@ -114,6 +145,15 @@ export async function runGoldenTaskBatch(
             passed,
             failed,
             passRate: total === 0 ? 0 : passed / total,
+            successRate: total === 0 ? 0 : passed / total,
+            avgDurationMs: total === 0 ? 0 : totalDurationMs / total,
+            avgSteps: total === 0 ? 0 : totalSteps / total,
+            totalToolFailures,
+            toolFailureRate: total === 0 ? 0 : totalToolFailures / total,
+            totalApprovals,
+            approvalInterruptionRate: total === 0 ? 0 : approvalInterruptions / total,
+            totalRollbacks,
+            rollbackRate: total === 0 ? 0 : totalRollbacks / total,
         },
         results,
     };

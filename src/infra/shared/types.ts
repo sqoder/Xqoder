@@ -244,6 +244,13 @@ export interface MessageAttachment {
     fileName?: string;
 }
 
+export interface LLMInputModalities {
+    image?: boolean;
+    pdf?: boolean;
+    audio?: boolean;
+    video?: boolean;
+}
+
 // ---- Structured message content types (XQoder internal) ----
 
 export type FinishReason = 'stop' | 'tool_calls' | 'length' | 'error' | 'cancelled';
@@ -287,6 +294,8 @@ export interface ToolResult {
     output: string;
     error?: string;
     metadata?: Record<string, unknown>;
+    /** Binary attachments produced by the tool, such as rendered PDF pages. */
+    attachments?: MessageAttachment[];
 }
 
 /** LLM Provider configuration */
@@ -300,6 +309,7 @@ export interface LLMProviderConfig {
     baseUrl?: string;
     maxTokens?: number;
     temperature?: number;
+    modalities?: LLMInputModalities;
 }
 
 /** LLM streaming callbacks */
@@ -403,6 +413,8 @@ export interface ProviderSettings {
     maxTokens?: number;
     /** Default temperature */
     temperature?: number;
+    /** Supported native input modalities for this provider/model */
+    modalities?: LLMInputModalities;
     /** Whether it is disabled */
     disabled?: boolean;
 }

@@ -174,3 +174,67 @@ export function isForbiddenCommand(command: string): boolean {
     }
     return FORBIDDEN_COMMAND_PATTERNS.some((pattern) => pattern.test(normalized));
 }
+
+export function isUncPath(targetPath: string): boolean {
+    const trimmed = targetPath.trim();
+    return /^\\\\[^\\]/.test(trimmed) || /^\/\/[^/]/.test(trimmed);
+}
+
+export function hasShellExpansionPathSyntax(targetPath: string): boolean {
+    const trimmed = targetPath.trim();
+    if (!trimmed) {
+        return false;
+    }
+
+    return /(^|[^\\])\$[{(A-Za-z_]/.test(trimmed)
+        || /%[A-Za-z_][A-Za-z0-9_]*%/.test(trimmed)
+        || /(^|[\\/])~[A-Za-z0-9._-]*(?:$|[\\/])/.test(trimmed)
+        || /(^|[\\/])=[^\\/]/.test(trimmed);
+}
+
+export function hasGlobPathPattern(targetPath: string): boolean {
+    const trimmed = targetPath.trim();
+    return /[*?\[\]{}]/.test(trimmed);
+}
+
+export function hasSuspiciousWindowsPathPattern(targetPath: string): boolean {
+    const trimmed = targetPath.trim();
+    if (!trimmed) {
+        return false;
+    }
+
+    return /^\\\\[?.]\\/.test(trimmed)
+        || /^[A-Za-z]:(?![\\/])/.test(trimmed)
+        || /(?:^|[\\/])[^\\/]{1,6}~\d(?:\.[^\\/]*)?(?=$|[\\/])/i.test(trimmed)
+        || /(?:^|[\\/])(?:[^\\/.][^\\/]*|\.[^./\\][^\\/]*)[. ](?=$|[\\/])/i.test(trimmed)
+        || /^[A-Za-z]:[^\\/]*:[^\\/:][^\\/]*$/.test(trimmed);
+}
+
+export function hasSuspiciousPathPattern(targetPath: string): boolean {
+    return isUncPath(targetPath)
+        || hasShellExpansionPathSyntax(targetPath)
+        || hasGlobPathPattern(targetPath)
+        || hasSuspiciousWindowsPathPattern(targetPath);
+}
+
+export function describeSuspiciousPathPattern(targetPath: string): string[] {
+    const reasons: string[] = [];
+    if (isUncPath(targetPath)) {
+        reasons.push('UNC or network-style path');
+    }
+    if (hasShellExpansionPathSyntax(targetPath)) {
+        reasons.push('shell expansion syntax');
+    }
+    if (hasGlobPathPattern(targetPath)) {
+        reasons.push('glob pattern');
+    }
+    if (hasSuspiciousWindowsPathPattern(targetPath)) {
+        reasons.push('suspicious Windows path pattern');
+    }
+    return reasons;
+}
+
+export function describeSuspiciousPath(targetPath: string): string | undefined {
+    const reasons = describeSuspiciousPathPattern(targetPath);
+    return reasons.length > 0 ? reasons.join(', ') : undefined;
+}

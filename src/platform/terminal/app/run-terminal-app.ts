@@ -21,6 +21,9 @@ import {
 import {
     TERMINAL_INLINE_EVENT_MAX_LENGTH,
     TERMINAL_INLINE_OUTPUT_MAX_LENGTH,
+    appendTerminalAssistantTextDelta,
+    completeTerminalAssistantText,
+    createTerminalAssistantTextState,
     createTerminalStreamingBlockState,
     createTerminalToolOutputState,
     finishStreamingConversationBlock,
@@ -231,9 +234,17 @@ export async function runTerminalScrollbackShell(
             let announcedThinking = false;
             let pendingUsageNote: string | null = null;
             const assistantStream = createTerminalStreamingBlockState();
+            const assistantText = createTerminalAssistantTextState();
             const toolOutputs = new Map<string, ReturnType<typeof createTerminalToolOutputState>>();
 
-            const flushToolOutput = (toolState: ReturnType<typeof createTerminalToolOutputState>, flush: boolean): void => {
+            const flushToolOutput = (
+                toolState: ReturnType<typeof createTerminalToolOutputState>,
+                flush: boolean,
+                force = false,
+            ): void => {
+                if (toolState.suppressOutput && !force) {
+                    return;
+                }
                 const { lines, rest } = splitTerminalOutputBuffer(toolState.buffer, flush);
                 toolState.buffer = rest;
                 if (lines.length === 0) {
@@ -249,6 +260,22 @@ export async function runTerminalScrollbackShell(
                 }
             };
 
+            const appendToolOutput = (
+                toolState: ReturnType<typeof createTerminalToolOutputState>,
+                output: string,
+            ): void => {
+                if (!toolState.suppressOutput) {
+                    toolState.buffer += output;
+                    return;
+                }
+
+                const next = toolState.buffer + output;
+                const maxSuppressedErrorPreview = TERMINAL_INLINE_OUTPUT_MAX_LENGTH * 20;
+                toolState.buffer = next.length <= maxSuppressedErrorPreview
+                    ? next
+                    : next.slice(-maxSuppressedErrorPreview);
+            };
+
             const flushPendingOutput = (): void => {
                 finishStreamingConversationBlock(stdout, assistantStream);
                 for (const toolState of toolOutputs.values()) {
@@ -258,15 +285,22 @@ export async function runTerminalScrollbackShell(
 
             const handleAssistantEvent = (event: AgentRuntimeEvent): void => {
                 if (event.type === 'message.delta' && event.payload.role === 'assistant') {
-                    assistantStreamed = true;
-                    assistantReply += event.payload.text;
-                    writeStreamingConversationChunk(stdout, 'XQoder', assistantStream, event.payload.text);
+                    const visibleDelta = appendTerminalAssistantTextDelta(assistantText, event.payload.text);
+                    assistantReply = assistantText.raw;
+                    if (visibleDelta) {
+                        assistantStreamed = true;
+                        writeStreamingConversationChunk(stdout, 'XQoder', assistantStream, visibleDelta);
+                    }
                     return;
                 }
 
                 if (event.type === 'message.completed' && event.payload.message.role === 'assistant') {
-                    assistantReply = event.payload.message.content;
+                    const finalDelta = completeTerminalAssistantText(assistantText, event.payload.message.content);
+                    assistantReply = assistantText.visible || event.payload.message.content;
                     if (assistantStreamed) {
+                        if (finalDelta) {
+                            writeStreamingConversationChunk(stdout, 'XQoder', assistantStream, finalDelta);
+                        }
                         finishStreamingConversationBlock(stdout, assistantStream);
                     } else {
                         writeConversationBlock(stdout, 'XQoder', assistantReply || '(No response)');
@@ -294,13 +328,13 @@ export async function runTerminalScrollbackShell(
 
                     if (event.payload.partial) {
                         toolState.sawPartial = true;
-                        toolState.buffer += event.payload.output;
+                        appendToolOutput(toolState, event.payload.output);
                         flushToolOutput(toolState, false);
                         return;
                     }
 
                     if (!toolState.sawPartial) {
-                        toolState.buffer += event.payload.output;
+                        appendToolOutput(toolState, event.payload.output);
                         flushToolOutput(toolState, true);
                     }
                     return;
@@ -309,9 +343,10 @@ export async function runTerminalScrollbackShell(
                 if (event.type === 'tool.completed') {
                     const key = getTerminalToolKey(event.payload);
                     const toolState = toolOutputs.get(key) ?? createTerminalToolOutputState(event.payload.tool);
-                    flushToolOutput(toolState, true);
+                    flushToolOutput(toolState, true, !event.payload.success);
                     toolOutputs.delete(key);
                     writeTerminalInlineNote(stdout, `[tool] ${event.payload.tool} ${event.payload.success ? 'done' : 'failed'}`);
+                    announcedThinking = false;
                 }
             };
 
@@ -374,9 +409,19 @@ export async function runTerminalScrollbackShell(
             } else {
                 activeSessionId = result.sessionId;
             }
+            if (!assistantDelivered && assistantStreamed && result.response) {
+                const finalDelta = completeTerminalAssistantText(assistantText, result.response);
+                assistantReply = assistantText.visible || result.response;
+                if (finalDelta) {
+                    writeStreamingConversationChunk(stdout, 'XQoder', assistantStream, finalDelta);
+                }
+            }
             flushPendingOutput();
             if (!assistantDelivered) {
-                writeConversationBlock(stdout, 'XQoder', assistantReply || '(No response)');
+                assistantReply = result.response ?? assistantReply;
+                if (!assistantStreamed) {
+                    writeConversationBlock(stdout, 'XQoder', assistantReply || '(No response)');
+                }
             }
             if (pendingUsageNote) {
                 writeTerminalInlineNote(stdout, pendingUsageNote);

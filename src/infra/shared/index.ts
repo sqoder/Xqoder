@@ -5,6 +5,7 @@
 export * from './types.js';
 export * from './errors.js';
 export * from './llm.js';
+export * from './provider-capabilities.js';
 export * from './paths.js';
 export { Logger, LogLevel, logger } from './logger.js';
 export {

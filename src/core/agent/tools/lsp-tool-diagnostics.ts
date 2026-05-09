@@ -2,12 +2,14 @@ import type { ToolDefinition, ToolResult } from '@xqoder/shared';
 import { ExternalLanguageServerManager } from '../lsp-manager.js';
 import type { ITool, ToolContext } from './tool.js';
 import { truncatePreview } from './diff.js';
-import { resolvePathWithinProject } from './sandbox.js';
+import { resolvePathForRead } from './sandbox.js';
 import { getOrCreateTsContext } from './lsp-tool-typescript-context.js';
 import { formatDiagnosticMatch } from './lsp-tool-formatters.js';
 
 export class LspFileDiagnosticsTool implements ITool {
     constructor(private readonly externalManager?: ExternalLanguageServerManager) {}
+
+    readonly persistLargeResult = false;
 
     readonly definition: ToolDefinition = {
         name: 'lsp_file_diagnostics',
@@ -17,11 +19,19 @@ export class LspFileDiagnosticsTool implements ITool {
         ],
     };
 
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return true;
+    }
+
     async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
         const toolCallId = (args['toolCallId'] as string) ?? '';
 
         try {
-            const filePath = resolvePathWithinProject(args['path'] as string, context);
+            const filePath = resolvePathForRead(args['path'] as string, context);
             const diagnostics = await this.getDiagnostics(filePath, context.projectRoot);
 
             return {

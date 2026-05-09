@@ -18,6 +18,7 @@ export interface AgentToolExecution {
     success: boolean;
     outputPreview: string;
     error?: string;
+    metadata?: Record<string, unknown>;
     startedAt: Date;
     completedAt: Date;
 }
@@ -69,6 +70,28 @@ export interface AgentCheckpointRecord {
     status: 'not_required' | 'captured' | 'missing';
     rollbackPointId?: string;
     timestamp: Date;
+}
+
+export type AgentApprovalDecision = 'allow' | 'ask' | 'deny';
+export type AgentApprovalRisk = 'low' | 'medium' | 'high';
+
+export interface AgentPendingApprovalRecord {
+    requestId: string;
+    toolCallId?: string;
+    toolName?: string;
+    kind: string;
+    summary: string;
+    reason?: string;
+    preview?: string;
+    risk?: AgentApprovalRisk;
+    requestedAt: Date;
+    source?: string;
+    streamId?: string;
+}
+
+export interface AgentApprovalRecord extends AgentPendingApprovalRecord {
+    decision: AgentApprovalDecision;
+    resolvedAt: Date;
 }
 
 export interface AgentWorkflowState {
@@ -126,6 +149,8 @@ export interface AgentSessionMetadataSnapshot {
     toolHistory: AgentToolExecution[];
     verificationHistory: AgentVerificationSignal[];
     checkpointHistory: AgentCheckpointRecord[];
+    approvalHistory: AgentApprovalRecord[];
+    pendingApprovals: AgentPendingApprovalRecord[];
     commandHistory: AgentCommandHistoryEntry[];
     fileChanges: AgentFileChangeEntry[];
     toolResultRendererEvents: AgentToolResultRendererEvent[];

@@ -9,6 +9,7 @@ import { spawnSync } from 'node:child_process';
 
 const rootDir = path.resolve(import.meta.dirname, '..');
 const distDir = path.resolve(rootDir, 'dist');
+const pdfJsWorkerRelativePath = path.join('node_modules', 'pdfjs-dist', 'legacy', 'build', 'pdf.worker.mjs');
 
 // Ensure the dist directory exists.
 if (!fs.existsSync(distDir)) {
@@ -68,6 +69,8 @@ async function build() {
       process.exit(declarations.status ?? 1);
     }
 
+    copyPdfJsWorkerAsset({ rootDir, distDir });
+
     console.log('✅ Build succeeded. Output: dist/index.js');
   } catch (err) {
     console.error('❌ Build failed:', err.message);
@@ -75,4 +78,24 @@ async function build() {
   }
 }
 
-build();
+export function copyPdfJsWorkerAsset({
+  rootDir,
+  distDir,
+} = {}) {
+  const resolvedRootDir = rootDir ?? path.resolve(import.meta.dirname, '..');
+  const resolvedDistDir = distDir ?? path.resolve(resolvedRootDir, 'dist');
+  const sourcePath = path.resolve(resolvedRootDir, pdfJsWorkerRelativePath);
+  const destPath = path.resolve(resolvedDistDir, 'pdf.worker.mjs');
+
+  if (!fs.existsSync(sourcePath)) {
+    throw new Error(`PDF.js worker asset is missing: ${sourcePath}`);
+  }
+
+  fs.mkdirSync(resolvedDistDir, { recursive: true });
+  fs.copyFileSync(sourcePath, destPath);
+  return { sourcePath, destPath };
+}
+
+if (import.meta.main) {
+  build();
+}

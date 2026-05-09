@@ -2,6 +2,8 @@
 // Tool System — Tool interfaces and registry
 // ============================================================
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { SandboxMode, ToolDefinition, ToolResult } from '@xqoder/shared';
 import { ToolError } from '@xqoder/shared';
 import type { RollbackStore } from './rollback-store.js';
@@ -29,6 +31,17 @@ export type {
 export interface ToolStreamEvent {
     chunk: string;
     stream: 'stdout' | 'stderr';
+}
+
+export interface ToolFileReadState {
+    path: string;
+    fullFile: boolean;
+    size: number;
+    mtimeMs: number;
+    readAt: string;
+    toolCallId?: string;
+    startLine?: number;
+    endLine?: number;
 }
 
 export interface QuestionOption {
@@ -61,6 +74,8 @@ export interface ToolContext {
     sandboxMode?: SandboxMode;
     /** Additional paths allowed for access */
     allowedPaths?: string[];
+    /** Per-session read capabilities granted after approval for outside-workspace reads */
+    approvedReadPaths?: string[];
     /** Environment variables */
     env?: Record<string, string>;
     /** Shell configuration */
@@ -79,6 +94,8 @@ export interface ToolContext {
     mvpRuntimeConfig?: MvpRuntimeConfig;
     /** Hook-injected approval patch or forced approval request */
     approvalRequestPatch?: ToolApprovalPatch;
+    /** Per-session file read state used by read-before-write checks */
+    fileReadState?: Map<string, ToolFileReadState>;
 }
 
 /**
@@ -98,8 +115,93 @@ export interface ITool {
         context: ToolContext,
     ): ToolApprovalRequest | undefined | Promise<ToolApprovalRequest | undefined>;
 
+    /** Whether this concrete invocation is read-only. Defaults to false. */
+    isReadOnly?(args: Record<string, unknown>, context: ToolContext): boolean;
+
+    /** Whether this concrete invocation can run concurrently with other safe calls. Defaults to false. */
+    isConcurrencySafe?(args: Record<string, unknown>, context: ToolContext): boolean;
+
+    /** Per-tool model-visible output cap before persistence/preview handling. */
+    maxResultSizeChars?: number;
+
+    /** Whether oversized outputs should be persisted and replaced with a preview. Defaults to true. */
+    persistLargeResult?: boolean;
+
     /** Execute the tool */
     execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult>;
+}
+
+export function isToolInvocationReadOnly(
+    tool: ITool | undefined,
+    args: Record<string, unknown>,
+    context: ToolContext,
+): boolean {
+    return tool?.isReadOnly?.(args, context) ?? false;
+}
+
+export function isToolInvocationConcurrencySafe(
+    tool: ITool | undefined,
+    args: Record<string, unknown>,
+    context: ToolContext,
+): boolean {
+    return tool?.isConcurrencySafe?.(args, context) ?? false;
+}
+
+export function getToolResultSizeLimit(tool: ITool | undefined, defaultLimit: number): number {
+    const limit = tool?.maxResultSizeChars;
+    return Number.isFinite(limit) && typeof limit === 'number' && limit > 0
+        ? limit
+        : defaultLimit;
+}
+
+export function shouldPersistLargeToolResult(tool: ITool | undefined): boolean {
+    return tool?.persistLargeResult !== false;
+}
+
+export function getFileReadStateMap(context: ToolContext): Map<string, ToolFileReadState> {
+    if (!context.fileReadState) {
+        context.fileReadState = new Map();
+    }
+    return context.fileReadState;
+}
+
+export function recordToolFileReadState(
+    context: ToolContext,
+    state: ToolFileReadState,
+): void {
+    getFileReadStateMap(context).set(path.resolve(state.path), {
+        ...state,
+        path: path.resolve(state.path),
+    });
+}
+
+export function getToolFileReadState(
+    context: ToolContext,
+    filePath: string,
+): ToolFileReadState | undefined {
+    return getFileReadStateMap(context).get(path.resolve(filePath));
+}
+
+export function validateExistingFileWasFullyRead(
+    filePath: string,
+    context: ToolContext,
+): string | undefined {
+    const resolvedPath = path.resolve(filePath);
+    if (!fs.existsSync(resolvedPath)) {
+        return undefined;
+    }
+
+    const state = getToolFileReadState(context, resolvedPath);
+    if (!state?.fullFile) {
+        return `Existing file must be read fully with read_file before it can be modified: ${resolvedPath}`;
+    }
+
+    const stat = fs.statSync(resolvedPath);
+    if (stat.size !== state.size || Math.abs(stat.mtimeMs - state.mtimeMs) > 1) {
+        return `File changed since it was last read and must be read again before modification: ${resolvedPath}`;
+    }
+
+    return undefined;
 }
 
 /**
@@ -195,20 +297,28 @@ export class ToolRegistry {
                     : await context.requestToolApproval(sandboxApprovalRequest);
 
                 if (approved) {
+                    const retryContext = shouldGrantNarrowReadAccess(tool, args, context)
+                        ? {
+                            ...context,
+                            approvedReadPaths: grantApprovedReadPaths(context.approvedReadPaths, context.cwd, err.inputPath, err.resolvedPath),
+                        }
+                        : {
+                            ...context,
+                            sandboxMode: 'full-access' as const,
+                        };
                     try {
                         return await tool.execute({
                             ...args,
                             toolCallId,
-                        }, {
-                            ...context,
-                            sandboxMode: 'full-access',
-                        });
+                        }, retryContext);
                     } catch (retryErr) {
                         return {
                             toolCallId,
                             success: false,
                             output: '',
-                            error: `Tool "${name}" failed after retrying with full-access: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
+                            error: shouldGrantNarrowReadAccess(tool, args, context)
+                                ? `Tool "${name}" failed after retrying with approved read access: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`
+                                : `Tool "${name}" failed after retrying with full-access: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
                         };
                     }
                 }
@@ -221,6 +331,15 @@ export class ToolRegistry {
                     metadata: {
                         stopReason: 'permission_denied',
                     },
+                };
+            }
+
+            if (isSandboxAccessError(err)) {
+                return {
+                    toolCallId,
+                    success: false,
+                    output: '',
+                    error: `Tool "${name}" execution failed: ${err.message}`,
                 };
             }
 
@@ -286,4 +405,30 @@ function approvalRequestCoversSandboxAccess(
     ]
         .filter((value): value is string => typeof value === 'string' && value.length > 0)
         .some((value) => value.includes(error.inputPath) || value.includes(error.resolvedPath));
+}
+
+function shouldGrantNarrowReadAccess(
+    tool: ITool,
+    args: Record<string, unknown>,
+    context: ToolContext,
+): boolean {
+    return isToolInvocationReadOnly(tool, args, context);
+}
+
+function grantApprovedReadPaths(
+    existingPaths: string[] | undefined,
+    cwd: string,
+    ...pathsToAdd: string[]
+): string[] {
+    const approvedPaths = existingPaths ?? [];
+    for (const candidate of [
+        ...pathsToAdd,
+        ...pathsToAdd.map((entry) => path.resolve(cwd, entry)),
+    ]) {
+        const normalized = path.resolve(candidate);
+        if (!approvedPaths.includes(normalized)) {
+            approvedPaths.push(normalized);
+        }
+    }
+    return approvedPaths;
 }

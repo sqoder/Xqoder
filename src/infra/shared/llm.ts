@@ -1,4 +1,5 @@
 import type { LLMProviderConfig, LLMProviderName } from './types.js';
+import { normalizeOptionalInputModalities } from './provider-capabilities.js';
 
 export const DASHSCOPE_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
 export const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
@@ -53,6 +54,7 @@ export function normalizeLLMConfig(
     config: Partial<Omit<LLMProviderConfig, 'provider'>> & Pick<LLMProviderConfig, 'provider'>,
 ): LLMProviderConfig {
     const baseUrl = config.baseUrl ?? getDefaultBaseUrlForProvider(config.provider);
+    const modalities = normalizeOptionalInputModalities(config.modalities);
     return {
         provider: config.provider,
         model: config.model ?? getDefaultModelForProvider(config.provider),
@@ -60,5 +62,6 @@ export function normalizeLLMConfig(
         ...(baseUrl !== undefined ? { baseUrl } : {}),
         maxTokens: config.maxTokens ?? 4096,
         temperature: config.temperature ?? 0.1,
+        ...(modalities !== undefined ? { modalities } : {}),
     };
 }

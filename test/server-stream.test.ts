@@ -249,6 +249,57 @@ describe('HTTP stream controller', () => {
         await flushAsyncWork();
     });
 
+    it('mirrors approval pending and resolved records for durable session persistence', async () => {
+        patchGlobalTime(1_750);
+        const pending: Array<{ sessionId: string; streamId: string; requestId: string; summary: string }> = [];
+        const resolved: Array<{ sessionId: string; streamId: string; requestId: string; decision: string }> = [];
+
+        const controller = createStreamController({
+            randomId: createDeterministicIdFactory(),
+            questionTimeoutMs: 1_000,
+            streamGcTtlMs: 25,
+            onApprovalPending: ({ sessionId, streamId, requestId, request }) =>
+                pending.push({ sessionId, streamId, requestId, summary: request.summary }),
+            onApprovalResolved: ({ sessionId, streamId, requestId, decision }) =>
+                resolved.push({ sessionId, streamId, requestId, decision }),
+        });
+        const approvalRequest = createApprovalRequest();
+
+        const operation = controller.beginStreamOperation({
+            sessionId: 'session-1',
+            projectRoot: '/project',
+            message: 'approval',
+            timeoutMs: 1_000,
+            runMessageStream: async ({ requestToolApproval }) => {
+                const approved = await requestToolApproval(approvalRequest);
+                return { response: approved ? 'approved' : 'denied', sessionId: 'session-1' };
+            },
+        });
+
+        await flushAsyncWork();
+        expect(pending).toEqual([{
+            sessionId: 'session-1',
+            streamId: operation.id,
+            requestId: approvalRequest.toolCallId!,
+            summary: approvalRequest.summary,
+        }]);
+
+        expect(controller.resolveApprovalRequest({
+            sessionId: 'session-1',
+            streamId: operation.id,
+            requestId: approvalRequest.toolCallId!,
+            decision: 'deny',
+        })).toEqual({ ok: true });
+
+        await flushAsyncWork();
+        expect(resolved).toEqual([{
+            sessionId: 'session-1',
+            streamId: operation.id,
+            requestId: approvalRequest.toolCallId!,
+            decision: 'deny',
+        }]);
+    });
+
     it('does not resolve approval requests across session boundaries even when streamId is provided', async () => {
         patchGlobalTime(1_550);
 

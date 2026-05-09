@@ -53,8 +53,18 @@ export function normalizeCommandTemplates(
     return templates;
 }
 
+const VALID_PERMISSION_MODES = new Set<NonNullable<PermissionSettings['defaultMode']>>([
+    'allow',
+    'ask',
+    'deny',
+    'auto',
+    'plan',
+    'default',
+    'bypassPermissions',
+]);
+
 export function normalizePermissionSettings(settings: PermissionSettings | undefined): PermissionSettings {
-    const defaultMode = settings?.defaultMode === 'allow' || settings?.defaultMode === 'ask' || settings?.defaultMode === 'deny'
+    const defaultMode = settings?.defaultMode && VALID_PERMISSION_MODES.has(settings.defaultMode)
         ? settings.defaultMode
         : 'ask';
     const approvalPolicy = normalizeApprovalPolicy(settings?.approvalPolicy, defaultMode);
@@ -66,7 +76,7 @@ export function normalizePermissionSettings(settings: PermissionSettings | undef
         tools: Object.fromEntries(
             Object.entries(settings?.tools ?? {})
                 .map(([toolName, mode]) => [toolName.trim(), mode] as const)
-                .filter(([toolName, mode]) => toolName.length > 0 && (mode === 'allow' || mode === 'ask' || mode === 'deny')),
+                .filter(([toolName, mode]) => toolName.length > 0 && !!mode && VALID_PERMISSION_MODES.has(mode)),
         ),
         approvalPolicy,
         ...(allowedTools.length > 0 ? { allowedTools } : {}),

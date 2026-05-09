@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { AgentSession } from '../../../src/core/agent/session/session.js';
 import { runToolOrchestrator } from '../../../src/application/chat/tool-orchestrator.js';
+import type { ToolExecutionPort } from '../../../src/domain/conversation/tool-execution-port.js';
 
 describe('tool orchestrator', () => {
     it('collects tool_result output plus checkpoint and file-change deltas per call', async () => {
@@ -282,6 +283,85 @@ describe('tool orchestrator', () => {
             },
         ]);
         expect(result.toolHistoryDelta).toBe(2);
+    });
+
+    it('invokes allowed read-only concurrency-safe prepared tool calls in parallel and finalizes them in order', async () => {
+        const session = new AgentSession({ id: 'tool-orchestrator-parallel-read', systemPrompt: 'system' });
+        const prepareOrder: string[] = [];
+        const invokeOrder: string[] = [];
+        const finalizeOrder: string[] = [];
+        let activeInvocations = 0;
+        let maxActiveInvocations = 0;
+
+        const port: ToolExecutionPort = {
+            async prepareToolCall(input) {
+                prepareOrder.push(input.toolCall.id);
+                return {
+                    toolCall: input.toolCall,
+                    args: JSON.parse(input.toolCall.arguments),
+                    callbacks: input.callbacks,
+                    streamId: input.streamId,
+                    permissionMode: 'allow',
+                    blocked: false,
+                    canRunInParallel: true,
+                    preToolUseDetail: 'prepared read-only call',
+                    permissionDetail: 'allowed read-only call',
+                    state: undefined,
+                };
+            },
+            async invokePreparedToolCall(preparation) {
+                activeInvocations += 1;
+                maxActiveInvocations = Math.max(maxActiveInvocations, activeInvocations);
+                invokeOrder.push(preparation.toolCall.id);
+                await new Promise((resolve) => setTimeout(resolve, 10));
+                activeInvocations -= 1;
+                return {
+                    toolCallId: preparation.toolCall.id,
+                    success: true,
+                    output: `contents:${String(preparation.args['path'])}`,
+                };
+            },
+            async finalizeToolCall(preparation, result) {
+                finalizeOrder.push(preparation.toolCall.id);
+                session.recordToolExecution({
+                    id: preparation.toolCall.id,
+                    name: preparation.toolCall.name,
+                    args: preparation.args,
+                    success: result?.success ?? false,
+                    output: result?.output ?? '',
+                    error: result?.error,
+                    startedAt: new Date(),
+                    completedAt: new Date(),
+                });
+                session.addToolResult(preparation.toolCall.id, result?.output ?? '');
+                return result!;
+            },
+        };
+
+        const result = await runToolOrchestrator({
+            toolCalls: [{
+                id: 'parallel-read-1',
+                name: 'read_file',
+                arguments: '{"path":"README.md"}',
+            }, {
+                id: 'parallel-read-2',
+                name: 'read_file',
+                arguments: '{"path":"package.json"}',
+            }],
+            streamId: 'stream-tool-orchestrator-parallel-read',
+            session,
+            toolExecutionPort: port,
+            executeToolCalls: async () => [],
+        });
+
+        expect(prepareOrder).toEqual(['parallel-read-1', 'parallel-read-2']);
+        expect(invokeOrder).toEqual(['parallel-read-1', 'parallel-read-2']);
+        expect(maxActiveInvocations).toBe(2);
+        expect(finalizeOrder).toEqual(['parallel-read-1', 'parallel-read-2']);
+        expect(result.results.map((entry) => entry.outputForModel)).toEqual([
+            'contents:README.md',
+            'contents:package.json',
+        ]);
     });
 
     it('proxies live tool renderer callbacks so user-visible tool output is mediated by the orchestrator', async () => {

@@ -2,7 +2,7 @@ import type { ToolDefinition, ToolResult } from '@xqoder/shared';
 import { ExternalLanguageServerManager } from '../lsp-manager.js';
 import type { ITool, ToolContext } from './tool.js';
 import { truncatePreview } from './diff.js';
-import { resolvePathWithinProject } from './sandbox.js';
+import { resolvePathForRead } from './sandbox.js';
 import {
     clampResolveLimit,
     clampResultLimit,
@@ -14,6 +14,8 @@ import { formatCompletionMatch, formatHoverMatch } from './lsp-tool-formatters.j
 export class LspHoverTool implements ITool {
     constructor(private readonly externalManager?: ExternalLanguageServerManager) {}
 
+    readonly persistLargeResult = false;
+
     readonly definition: ToolDefinition = {
         name: 'lsp_hover',
         description: 'Read hover information at a file position, supports built-in TypeScript/JavaScript and configured external LSP servers.',
@@ -24,11 +26,19 @@ export class LspHoverTool implements ITool {
         ],
     };
 
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return true;
+    }
+
     async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
         const toolCallId = (args['toolCallId'] as string) ?? '';
 
         try {
-            const filePath = resolvePathWithinProject(args['path'] as string, context);
+            const filePath = resolvePathForRead(args['path'] as string, context);
             const match = await this.getHover(
                 filePath,
                 Number(args['line']),
@@ -74,6 +84,8 @@ export class LspHoverTool implements ITool {
 export class LspCompletionTool implements ITool {
     constructor(private readonly externalManager?: ExternalLanguageServerManager) {}
 
+    readonly persistLargeResult = false;
+
     readonly definition: ToolDefinition = {
         name: 'lsp_completion',
         description: 'Read completion candidates at a file position, supports built-in TypeScript/JavaScript and configured external LSP servers.',
@@ -87,11 +99,19 @@ export class LspCompletionTool implements ITool {
         ],
     };
 
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return true;
+    }
+
     async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
         const toolCallId = (args['toolCallId'] as string) ?? '';
 
         try {
-            const filePath = resolvePathWithinProject(args['path'] as string, context);
+            const filePath = resolvePathForRead(args['path'] as string, context);
             const matches = await this.getCompletions(
                 filePath,
                 Number(args['line']),

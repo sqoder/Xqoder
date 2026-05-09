@@ -13,6 +13,7 @@ const CHAT_COMMAND_ALIASES = {
     tools: ['/tools'],
     compact: ['/compact', '/compress'],
     implement: ['/implement'],
+    skill: ['/skill'],
     plan: ['/plan'],
     review: ['/review'],
 } as const;
@@ -24,6 +25,7 @@ export type ChatCommandRoute =
     | { kind: 'tools' }
     | { kind: 'compact' }
     | { kind: 'implement'; input: string }
+    | { kind: 'skill'; name: string; input: string }
     | {
         kind: 'workflow';
         mode: WorkflowCommandMode;
@@ -32,7 +34,7 @@ export type ChatCommandRoute =
     }
     | {
         kind: 'usage';
-        command: WorkflowCommandMode | 'implement';
+        command: WorkflowCommandMode | 'implement' | 'skill';
         response: string;
     };
 
@@ -80,6 +82,23 @@ export function resolveChatCommandRoute(prompt: string): ChatCommandRoute {
                 kind: 'usage',
                 command: 'implement',
                 response: 'Usage: /implement <goal>',
+            };
+    }
+
+    const skillAlias = matchCommandAlias(trimmed, CHAT_COMMAND_ALIASES.skill);
+    if (skillAlias) {
+        const input = trimmed.slice(skillAlias.length).trim();
+        const parsed = parseSkillCommandInput(input);
+        return parsed
+            ? {
+                kind: 'skill',
+                name: parsed.name,
+                input: parsed.input,
+            }
+            : {
+                kind: 'usage',
+                command: 'skill',
+                response: 'Usage: /skill <name> [goal]',
             };
     }
 
@@ -152,6 +171,24 @@ export function resolveChatTurnRoute(prompt: string): ResolvedChatTurnRoute {
         };
     }
 
+    if (commandRoute.kind === 'skill') {
+        return {
+            commandRoute,
+            interaction: {
+                kind: 'engineering_task',
+                normalizedPrompt: commandRoute.input || `Apply skill ${commandRoute.name}`,
+                usesStructuredResponse: true,
+                includesRuntimeIdentity: false,
+                augmentsProjectContext: false,
+                addsCapabilityGuidance: false,
+            },
+            routedPrompt: [
+                `Load the "${commandRoute.name}" skill with the skill tool, then follow it for this turn.`,
+                commandRoute.input ? `Goal: ${commandRoute.input}` : 'After loading the skill, summarize the applicable procedure and ask only if a required goal is missing.',
+            ].join('\n'),
+        };
+    }
+
     return {
         commandRoute,
         interaction: resolveChatInteraction(prompt),
@@ -172,4 +209,21 @@ function matchCommandAlias(
     aliases: readonly string[],
 ): string | undefined {
     return aliases.find((alias) => prompt === alias || prompt.startsWith(`${alias} `));
+}
+
+function parseSkillCommandInput(input: string): { name: string; input: string } | undefined {
+    const trimmed = input.trim();
+    if (!trimmed) {
+        return undefined;
+    }
+
+    const [name, ...rest] = trimmed.split(/\s+/);
+    if (!name || !/^[a-zA-Z0-9._-]+$/.test(name)) {
+        return undefined;
+    }
+
+    return {
+        name,
+        input: rest.join(' ').trim(),
+    };
 }

@@ -155,9 +155,9 @@ export class TuiAgentService implements AgentConversationPort {
                     // ignore debug logging failures
                 }
 
-                return {
+                return attachResponseFallback({
                     sessionId: result.sessionId,
-                };
+                }, directResponse);
             }
 
             const resolvedDir = directExecution.turnInput.resolvedDir;
@@ -222,14 +222,16 @@ export class TuiAgentService implements AgentConversationPort {
 
             const eventState = eventRelay.getState();
             errorEmitted = eventState.errorEmitted;
+            const finalResponse = eventState.lastAssistantResponse
+                || findLastAssistantResponse(activeSession);
 
             try {
-                this.debugLogger?.logResponse({ response: eventState.lastAssistantResponse });
+                this.debugLogger?.logResponse({ response: finalResponse });
             } catch {
                 // ignore debug logging failures
             }
 
-            return persistTuiAgentSession({
+            const result = persistTuiAgentSession({
                 sessionStore: this.sessionStore,
                 activeSession,
                 resolvedDir,
@@ -237,6 +239,7 @@ export class TuiAgentService implements AgentConversationPort {
                 userMessage: message,
                 onTitleGenerated: this.onTitleGenerated,
             });
+            return attachResponseFallback(result, finalResponse);
         } catch (error) {
             const err = error instanceof Error ? error : new Error(String(error));
             errorEmitted = errorEmitted || eventRelay?.getState().errorEmitted === true;
@@ -267,4 +270,27 @@ export class TuiAgentService implements AgentConversationPort {
         await this.currentAgent?.dispose();
         this.currentAgent = null;
     }
+}
+
+function findLastAssistantResponse(session: AgentSession): string | undefined {
+    const messages = session.getMessages();
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
+        if (message?.role === 'assistant' && message.content.trim().length > 0) {
+            return message.content;
+        }
+    }
+    return undefined;
+}
+
+function attachResponseFallback<T extends SendMessageResult>(result: T, response: string | undefined): T {
+    if (!response) {
+        return result;
+    }
+    Object.defineProperty(result, 'response', {
+        value: response,
+        enumerable: false,
+        configurable: true,
+    });
+    return result;
 }

@@ -5,6 +5,7 @@ import {
     type ProviderSettingsMap,
 } from './types.js';
 import { getDefaultModelForProvider, SUPPORTED_LLM_PROVIDERS } from './llm.js';
+import { normalizeOptionalInputModalities } from './provider-capabilities.js';
 import { normalizeOptionalNumber, withOptionalProp } from './config-normalizers-common.js';
 
 export function normalizeProviderSettingsMap(
@@ -24,6 +25,7 @@ export function normalizeProviderSettingsMap(
         ...withOptionalProp('baseUrl', normalized[legacyLlm.provider]?.baseUrl ?? legacyLlm.baseUrl),
         ...withOptionalProp('maxTokens', normalized[legacyLlm.provider]?.maxTokens ?? legacyLlm.maxTokens),
         ...withOptionalProp('temperature', normalized[legacyLlm.provider]?.temperature ?? legacyLlm.temperature),
+        ...withOptionalProp('modalities', normalized[legacyLlm.provider]?.modalities ?? legacyLlm.modalities),
         disabled: normalized[legacyLlm.provider]?.disabled ?? false,
     });
 
@@ -37,12 +39,14 @@ export function normalizeProviderSettings(
     const baseUrl = settings.baseUrl?.trim() || undefined;
     const maxTokens = normalizeOptionalNumber(settings.maxTokens);
     const temperature = normalizeOptionalNumber(settings.temperature);
+    const modalities = normalizeOptionalInputModalities(settings.modalities);
     return {
         apiKey: settings.apiKey?.trim() || '',
         defaultModel: settings.defaultModel?.trim() || getDefaultModelForProvider(provider),
         ...(baseUrl !== undefined ? { baseUrl } : {}),
         ...(maxTokens !== undefined ? { maxTokens } : {}),
         ...(temperature !== undefined ? { temperature } : {}),
+        ...(modalities !== undefined ? { modalities } : {}),
         disabled: settings.disabled ?? false,
     };
 }
