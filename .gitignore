@@ -16,3 +16,9 @@ coverage/
 # Release-check generated artifacts — CI uploads these as workflow
 # artifacts; committing them causes dirty-worktree noise locally.
 docs/release/latest-*
+
+# Reference-only clone of OpenClaude used as a behavior spec.
+# Never commit this directory — it contains third-party code derived from
+# Anthropic's proprietary Claude Code CLI. See
+# docs/openclaude-parity/legal-and-licensing.md for details.
+openclaude/
