@@ -94,6 +94,160 @@ describe('direct chat commands', () => {
             '- run_shell (deny) - Execute shell commands',
         ].join('\n'));
     });
+
+    it('returns a help summary listing every routed slash command', async () => {
+        const cwd = createTempDir();
+        const execution = prepareChatExecution(
+            buildConversationTurnInput({
+                prompt: '/help',
+                cwd,
+                entrypoint: 'cli',
+            }),
+            {
+                configManager: { load: () => createLoadedConfig('test-key') },
+            },
+        );
+        const response = await resolveDirectChatCommandResponse(execution);
+        expect(response).toContain('/status');
+        expect(response).toContain('/doctor');
+        expect(response).toContain('/cost');
+        expect(response).toContain('/agents');
+        expect(response).toContain('/mcp');
+        expect(response).toContain('/memory');
+        expect(response).toContain('/model');
+        expect(response).toContain('/help');
+    });
+
+    it('exposes the primary model configuration for /model', async () => {
+        const cwd = createTempDir();
+        const execution = prepareChatExecution(
+            buildConversationTurnInput({
+                prompt: '/model',
+                cwd,
+                entrypoint: 'cli',
+            }),
+            {
+                configManager: { load: () => createLoadedConfig('test-key') },
+            },
+        );
+        const response = await resolveDirectChatCommandResponse(execution);
+        expect(response).toContain('primary.provider=openai');
+        expect(response).toContain('primary.model=gpt-4.1');
+        expect(response).toContain('activeAgent=general');
+    });
+
+    it('reports zero-usage when the session has not consumed tokens for /cost', async () => {
+        const cwd = createTempDir();
+        const session = new AgentSession({
+            id: 'cost-zero',
+            systemPrompt: 'system',
+        });
+        const execution = prepareChatExecution(
+            buildConversationTurnInput({
+                prompt: '/cost',
+                cwd,
+                sessionId: session.id,
+                entrypoint: 'cli',
+            }),
+            {
+                configManager: { load: () => createLoadedConfig('test-key') },
+                sessionStore: {
+                    findLatestSession: () => session,
+                    getSession: () => session,
+                    saveSession: () => ({ id: session.id }),
+                },
+            },
+        );
+        const response = await resolveDirectChatCommandResponse(execution);
+        expect(response).toContain('cost-zero');
+        expect(response).toContain('has not consumed any tokens');
+    });
+
+    it('surfaces the project notepad snapshot for /memory when the file exists', async () => {
+        const cwd = createTempDir();
+        const notepadDir = path.join(cwd, '.xqoder');
+        fs.mkdirSync(notepadDir, { recursive: true });
+        fs.writeFileSync(path.join(notepadDir, 'notepad.md'), [
+            '## PRIORITY',
+            '',
+            'Ship slice-12.',
+            '',
+            '## WORKING MEMORY',
+            '',
+            '[2026-05-09T00:00:00.000Z] Drafted direct-command handlers.',
+            '',
+            '## MANUAL',
+            '',
+            '- Remember to write tests.',
+            '',
+        ].join('\n'));
+
+        const execution = prepareChatExecution(
+            buildConversationTurnInput({
+                prompt: '/memory',
+                cwd,
+                entrypoint: 'cli',
+            }),
+            {
+                configManager: { load: () => createLoadedConfig('test-key') },
+            },
+        );
+        const response = await resolveDirectChatCommandResponse(execution);
+        expect(response).toContain('Notepad:');
+        expect(response).toContain('Ship slice-12.');
+        expect(response).toContain('Drafted direct-command handlers.');
+    });
+
+    it('returns a helpful empty-state for /memory when no notepad exists', async () => {
+        const cwd = createTempDir();
+        const execution = prepareChatExecution(
+            buildConversationTurnInput({
+                prompt: '/memory',
+                cwd,
+                entrypoint: 'cli',
+            }),
+            {
+                configManager: { load: () => createLoadedConfig('test-key') },
+            },
+        );
+        const response = await resolveDirectChatCommandResponse(execution);
+        expect(response).toContain('No project notepad');
+        expect(response).toContain('notepad write-working');
+    });
+
+    it('lists built-in and configured agents for /agents', async () => {
+        const cwd = createTempDir();
+        const execution = prepareChatExecution(
+            buildConversationTurnInput({
+                prompt: '/agents',
+                cwd,
+                entrypoint: 'cli',
+            }),
+            {
+                configManager: { load: () => createLoadedConfig('test-key') },
+            },
+        );
+        const response = await resolveDirectChatCommandResponse(execution);
+        expect(response).toContain('Agents (default:');
+        // "general" is configured in the test config
+        expect(response).toContain('general');
+    });
+
+    it('returns a no-servers message for /mcp when none are configured', async () => {
+        const cwd = createTempDir();
+        const execution = prepareChatExecution(
+            buildConversationTurnInput({
+                prompt: '/mcp',
+                cwd,
+                entrypoint: 'cli',
+            }),
+            {
+                configManager: { load: () => createLoadedConfig('test-key') },
+            },
+        );
+        const response = await resolveDirectChatCommandResponse(execution);
+        expect(response).toContain('No MCP servers configured');
+    });
 });
 
 function createLoadedConfig(

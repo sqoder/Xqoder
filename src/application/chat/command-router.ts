@@ -16,6 +16,13 @@ const CHAT_COMMAND_ALIASES = {
     skill: ['/skill'],
     plan: ['/plan'],
     review: ['/review'],
+    model: ['/model'],
+    doctor: ['/doctor'],
+    cost: ['/cost'],
+    agents: ['/agents'],
+    mcp: ['/mcp'],
+    memory: ['/memory'],
+    help: ['/help', '/?'],
 } as const;
 
 export type ChatCommandRoute =
@@ -24,6 +31,13 @@ export type ChatCommandRoute =
     | { kind: 'permissions' }
     | { kind: 'tools' }
     | { kind: 'compact' }
+    | { kind: 'model' }
+    | { kind: 'doctor' }
+    | { kind: 'cost' }
+    | { kind: 'agents' }
+    | { kind: 'mcp' }
+    | { kind: 'memory' }
+    | { kind: 'help' }
     | { kind: 'implement'; input: string }
     | { kind: 'skill'; name: string; input: string }
     | {
@@ -68,6 +82,34 @@ export function resolveChatCommandRoute(prompt: string): ChatCommandRoute {
     const compactAlias = matchCommandAlias(trimmed, CHAT_COMMAND_ALIASES.compact);
     if (compactAlias) {
         return { kind: 'compact' };
+    }
+
+    if (matchCommandAlias(trimmed, CHAT_COMMAND_ALIASES.model)) {
+        return { kind: 'model' };
+    }
+
+    if (matchCommandAlias(trimmed, CHAT_COMMAND_ALIASES.doctor)) {
+        return { kind: 'doctor' };
+    }
+
+    if (matchCommandAlias(trimmed, CHAT_COMMAND_ALIASES.cost)) {
+        return { kind: 'cost' };
+    }
+
+    if (matchCommandAlias(trimmed, CHAT_COMMAND_ALIASES.agents)) {
+        return { kind: 'agents' };
+    }
+
+    if (matchCommandAlias(trimmed, CHAT_COMMAND_ALIASES.mcp)) {
+        return { kind: 'mcp' };
+    }
+
+    if (matchCommandAlias(trimmed, CHAT_COMMAND_ALIASES.memory)) {
+        return { kind: 'memory' };
+    }
+
+    if (matchCommandAlias(trimmed, CHAT_COMMAND_ALIASES.help)) {
+        return { kind: 'help' };
     }
 
     const implementAlias = matchCommandAlias(trimmed, CHAT_COMMAND_ALIASES.implement);
@@ -201,6 +243,13 @@ export function isDirectChatCommandRoute(route: ChatCommandRoute): boolean {
         || route.kind === 'permissions'
         || route.kind === 'tools'
         || route.kind === 'compact'
+        || route.kind === 'model'
+        || route.kind === 'doctor'
+        || route.kind === 'cost'
+        || route.kind === 'agents'
+        || route.kind === 'mcp'
+        || route.kind === 'memory'
+        || route.kind === 'help'
         || route.kind === 'usage';
 }
 
