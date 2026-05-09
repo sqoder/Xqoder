@@ -38,4 +38,6 @@
   - `docs/release/p01-verification.md` — DoD 逐条证据 + 已识别 gap 登记
 - 本期 token 消耗: 未测量
 - ADR: 暂无(本期不触红线)
-- 下一期: **P02 — Compaction pipeline**
+- 下一期: **P01.1 — wrapStream + 120s idle 看门狗**
+  (验收发现的 G1; 见 docs/release/p01-verification.md)
+  P01.1 收官后再进 **P02 — Compaction pipeline**
