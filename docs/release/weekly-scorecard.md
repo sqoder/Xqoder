@@ -796,3 +796,25 @@
   - `xqoder hooks test --event UserPromptSubmit` → 走 bridge,不走通用 dispatcher;P15 如需
   - `xqoder hooks edit` → 施工单未要求
 - 下一期: **P15 — 按 02-execution-order-logic-first 顺序决定**(P14 三子期 a/b/c 收官)
+
+## P15a (2026-05-11) — NormalizedUsage + provider normalizers
+
+- release:check: ✅ (1105 pass / 0 fail,coverage 68.90% PASS,e2e smoke ✅,mcp:live-smoke ✅,security hygiene ✅,size guardrail ✅)
+- golden task pass: 未测量(本期只扩 usage 归一,未触及 live coding 链路)
+- /review 警告: 未跑(本期零红线触碰,0 修改文件,新增 only)
+- 本期关键决策(详见 ADR 0016):
+  - P15 拆 3 子期:P15a 归一(本期)/ P15b tracker+sink+cost CLI / P15c wiring + e2e
+  - `NormalizedUsage` 的 `input` 字段统一为 regular-rate(不含 cache),下游定价/遥测简洁
+  - 5 provider 归一函数(Anthropic / OpenAI / Codex / Minimax / Generic)
+  - Anthropic 的 raw vs XQoder 内部折叠 shape 用 key 命名消歧(snake_case = 原样;camelCase = 已折叠)
+  - `costUsd` best-effort:未知模型不填,不抛异常
+- 新增文件:
+  - `src/infra/llm/usage/normalize.ts`(~230L)
+  - `src/infra/llm/usage/index.ts`(barrel)
+  - `test/infra/llm/usage/normalize.test.ts`(19 条)
+- 本期 token 消耗: 未测量(主会话直接实施)
+- ADR: `docs/adr/0016-p15a-normalized-usage.md`
+- 不做 / 搁置:
+  - `CacheStatsTracker` + telemetry sink + `xqoder cost` CLI → **P15b**
+  - Wire NormalizedUsage 到 provider-turn.ts / tool / hook → **P15c**
+- 下一期: **P15b — CacheStatsTracker + telemetry sink + `xqoder cost` CLI**
