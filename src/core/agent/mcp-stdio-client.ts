@@ -7,6 +7,7 @@ import {
     hasCapability,
     resolveServerCwd,
 } from './mcp-utils.js';
+import { filterSensitiveEnv } from './tools/env-filter.js';
 import {
     MCP_CLIENT_INFO,
     MCP_REQUEST_PROTOCOL_VERSION,
@@ -229,10 +230,7 @@ export class McpStdioClient implements McpClientAdapter {
 
         const child = spawn(this.config.command, this.config.args ?? [], {
             cwd: resolveServerCwd(this.config.cwd, this.options.projectRoot, this.options.cwd),
-            env: {
-                ...process.env,
-                ...(this.config.env ?? {}),
-            },
+            env: filterSensitiveEnv(process.env, this.config.env),
             stdio: 'pipe',
         });
         this.child = child;

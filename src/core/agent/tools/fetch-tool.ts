@@ -5,6 +5,7 @@
 
 import type { ToolDefinition, ToolResult } from '@xqoder/shared';
 import type { ITool, ToolApprovalRequest, ToolContext } from './tool.js';
+import { checkUrlSafety } from './url-safety.js';
 
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024; // 5MB
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -15,13 +16,22 @@ const MAX_TIMEOUT_MS = 120_000;
  * Retrieves content from a URL and returns it in specified format (text / markdown / html)
  */
 export class FetchUrlTool implements ITool {
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return true;
+    }
+
     readonly definition: ToolDefinition = {
         name: 'fetch_url',
         description: [
             'Retrieve content from a URL and return it.',
             'Supports three output formats: text (extract plain text), markdown (HTML to Markdown), html (raw HTML).',
             'Suitable for retrieving documents, API responses, or web page content.',
-            'Restrictions: Maximum response size 5MB, supports HTTP/HTTPS only, no authentication.',
+            'Restrictions: Maximum response size 5MB. https:// only by default; set allowHttp=true to permit http://.',
+            'Hosts resolving to loopback, link-local, private (RFC1918), ULA, or cloud metadata ranges are blocked to prevent SSRF.',
         ].join('\n'),
         parameters: [
             { name: 'url', type: 'string', description: 'The URL to fetch content from', required: true },
@@ -38,6 +48,12 @@ export class FetchUrlTool implements ITool {
                 description: 'Request timeout in seconds (maximum 120)',
                 required: false,
             },
+            {
+                name: 'allowHttp',
+                type: 'boolean',
+                description: 'Opt in to plaintext http:// URLs (default false; https:// only)',
+                required: false,
+            },
         ],
     };
 
@@ -47,8 +63,8 @@ export class FetchUrlTool implements ITool {
             toolCallId: String(args['toolCallId'] ?? ''),
             toolName: this.definition.name,
             summary: `Fetch content from: ${url}`,
-            reason: 'Network requests may send data to external servers',
-            risk: 'medium',
+            reason: 'Network requests may send data to external servers and reach private networks',
+            risk: 'high',
         };
     }
 
@@ -60,18 +76,19 @@ export class FetchUrlTool implements ITool {
         const url = String(args['url'] ?? '');
         const format = String(args['format'] ?? 'text').toLowerCase();
         const timeoutSec = Number(args['timeout']) || DEFAULT_TIMEOUT_MS / 1000;
+        const allowHttp = args['allowHttp'] === true;
 
-        // Validate URL
         if (!url) {
             return { toolCallId, success: false, output: '', error: 'URL parameter cannot be empty' };
         }
 
-        if (!url.startsWith('http://') && !url.startsWith('https://')) {
-            return { toolCallId, success: false, output: '', error: 'URL must start with http:// or https://' };
-        }
-
         if (!['text', 'markdown', 'html'].includes(format)) {
             return { toolCallId, success: false, output: '', error: 'format must be text, markdown, or html' };
+        }
+
+        const safety = await checkUrlSafety(url, { allowHttp });
+        if (safety.allowed === false) {
+            return { toolCallId, success: false, output: '', error: `URL rejected: ${safety.reason}` };
         }
 
         const effectiveTimeout = Math.min(timeoutSec * 1000, MAX_TIMEOUT_MS);
@@ -172,6 +189,14 @@ export class FetchUrlTool implements ITool {
  * Uses DuckDuckGo HTML search page for lightweight search without a key.
  */
 export class WebSearchTool implements ITool {
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return true;
+    }
+
     readonly definition: ToolDefinition = {
         name: 'websearch',
         description: [

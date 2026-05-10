@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import type { HookHandlerConfig, Logger } from '@xqoder/shared';
 import { createLLMProvider } from './llm/factory.js';
+import { filterSensitiveEnv } from './tools/env-filter.js';
 import type {
     HookHandlerExecutionResult,
     ToolHookEventName,
@@ -261,10 +262,7 @@ async function executePromptHook(
 }
 
 function createHookEnvironment(config: ToolHookRunnerConfig, payload: ToolHookPayload): Record<string, string> {
-    return {
-        ...Object.fromEntries(
-            Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
-        ),
+    const explicit: Record<string, string> = {
         CLAUDE_PROJECT_DIR: config.projectRoot,
         CLAUDE_CWD: config.cwd,
         XQODER_PROJECT_DIR: config.projectRoot,
@@ -272,6 +270,7 @@ function createHookEnvironment(config: ToolHookRunnerConfig, payload: ToolHookPa
         XQODER_HOOK_EVENT_NAME: payload.hook_event_name,
         ...(config.sessionId ? { XQODER_SESSION_ID: config.sessionId } : {}),
     };
+    return filterSensitiveEnv(process.env, explicit);
 }
 
 function spawnHookProcess(

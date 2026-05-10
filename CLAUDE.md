@@ -125,7 +125,7 @@ docs/openclaude-parity/phase-XX-*.md,从 PXX 继续自动驾驶。
 只有 **2 个文件** 算硬红线:
 
 - `src/application/chat/verification-gate.ts` — 产品 moat 核心
-- `src/domain/conversation/events.ts` — Event Envelope 协议
+- `src/infra/protocol/events.ts` — Event Envelope 协议(权威位置,schemaVersion:1,见 ADR 0009)
 
 ### 软红线(允许改,但 commit 前必须额外 /review + ADR)
 

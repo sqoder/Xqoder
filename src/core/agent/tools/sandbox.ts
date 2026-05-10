@@ -337,7 +337,7 @@ function findSensitiveEnvironmentRead(command: string): string | undefined {
     return undefined;
 }
 
-function isSensitiveEnvKey(key: string): boolean {
+export function isSensitiveEnvKey(key: string): boolean {
     return /(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|COOKIE|SESSION)/i.test(key);
 }
 

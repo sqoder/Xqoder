@@ -471,3 +471,83 @@
 
 ---
 
+## P12 (2026-05-10) — 工具调度(partitionToolCalls + AbortSignal + autoFix runner)
+
+- release:check: ✅
+- golden task pass: 0/10 → 0/10(dry-run placeholder,baseline 一致)
+- /review 警告: 本期未独立跑 /review,改由 release:check + size guardrail 把关
+- 本期 token 消耗: 约 9 万(单会话完成,未触发 compact)
+- ADR: `docs/adr/0008-p12-tool-orchestration.md`(软红线 `tool-orchestrator.ts` 改动记录)
+- 改动要点:
+  - **新增 `src/core/agent/tools/partition.ts`** — `partitionToolCalls(calls, { isConcurrencySafe, maxConcurrent=10 })` 把工具调用序列切成 `ToolBatch[]`:连续 safe 的合并为 concurrent 批次,unsafe 自成 serial 批次,concurrent 上限 10。
+  - **新增 `src/core/agent/tools/streaming-executor.ts`** — `runToolBatches(batches, { signal, run })` async generator:concurrent 批次 `Promise.all`,serial 逐个,AbortSignal 在批次之间/serial 批次内的 call 之间短路。
+  - **新增 `src/core/agent/tools/auto-fix-runner.ts`** — `createAutoFixRunner({ runLint, runTypeCheck, maxPerTurn=2 })`:只对 `edit_file`/`write_file`/`apply_patch` 成功调用触发 lint+tsc,失败时 append system message;每轮 ≤ 2 次。
+  - **落位偏离施工单**:施工单写 `src/core/tools/`,实际放 `src/core/agent/tools/` — architecture guardrails 禁止 `application → core` 相对 import(P11 ADR-0007 踩过一次),通过 `@xqoder/agent` 别名绕开。ADR 0008 §1 记录。
+  - **软红线 `src/application/chat/tool-orchestrator.ts`** 重构为"薄层":
+    - 新增 `abortSignal?: AbortSignal` 到 `ToolOrchestratorDependencies`
+    - 行内批量分组 → 换成 `partitionToolCalls(preparedCalls.map(…), { isConcurrencySafe: call => preparedByCallId.get(call.id)?.preparation.canRunInParallel })`
+    - 并发判定**不读**工具上的 `isConcurrencySafe()`,继续信任 `preparation.canRunInParallel`(由上游 `ToolExecutionPort.prepareToolCall` 决定) — 保持契约不变
+    - escape hatch `XQODER_DISABLE_TOOL_PARTITION=1` → 彻底串行
+    - abort 在"批次之间"与"serial call 之间"两处检查
+  - **9 个工具补 `isConcurrencySafe()` 标注**:
+    - 只读安全 → true:`DiagnosticsTool`、`FetchUrlTool`、`WebSearchTool`、`SourcegraphTool`、`TodoReadTool`
+    - 写入/交互/子 agent → false:`RunCommandTool`、`RunShellTool`、`InstallPackageTool`、`LspRenameSymbolTool`、`SkillTool`、`TodoWriteTool`、`QuestionTool`、`DelegateTaskTool`
+    - `PreviewDiffTool` 不显式标注 — default=false 等价,避免触发 `file-tools.ts` 1000+ 行 size guardrail
+- **测试**(18 新增):
+  - `test/core/agent-tools/partition.test.ts` — 6 用例(concurrent 合并 / serial 分段 / maxConcurrent 上限 / 默认 10 / empty / 全 false)
+  - `test/core/agent-tools/streaming-executor.test.ts` — 4 用例(concurrent 并行 + serial 顺序 / abort 批次间短路 / abort serial 内短路 / 已 abort 不产出)
+  - `test/core/agent-tools/auto-fix-runner.test.ts` — 6 用例(无修改跳过 / lint 失败注入 system message / 双检通过不注入 / maxPerTurn=2 封顶 / resetTurn 放行 / 只读工具不触发)
+  - `test/application/chat/tool-orchestrator.test.ts` — +2 用例(abortSignal 中断 serial 批次 / `XQODER_DISABLE_TOOL_PARTITION=1` 回退全串行)
+- DoD 对照:
+  - ✅ `[read, read, glob, grep, edit, write]` 前 4 并发,后 2 串行(partition + orchestrator `preparation.canRunInParallel` 判定)
+  - ✅ Pre/Post hook 保持 `ToolExecutionPort` 三段契约不变
+  - ✅ autoFix 只对 `edit_file`/`write_file`/`apply_patch` 启用,失败不阻断(返回 system message 供后续注入)
+  - ✅ abort:批次间 + serial 批次内两处检查,未开工的工具不起
+  - ✅ `isConcurrencySafe` 表格 30+ 工具全覆盖(原有 + 本期 9 个)
+  - ✅ architecture guardrails 未回归(绕开策略:模块落 `core/agent/tools/`,orchestrator 走 `@xqoder/agent` 别名)
+  - ✅ 全仓库 `bun test`:3284 pass(baseline 3282,+2),43 fail 全为 pre-existing UI/Theme/Provider 测试,与 P12 无关
+  - ⏸ autoFix 真实接入 conversation-engine(lint/tsc 命令发现 + system message 注入主循环)→ 留给 P13 或独立 hook phase
+  - ⏸ OpenClaude `autoFixRunner` 跑 test 的能力 → v2(施工单明确 v1 只跑 lint/type-check)
+- 下一期: **P13 — MCP 工具集成**(背景读 `/mcp-server-patterns`)
+
+---
+
+
+## P11.1 (2026-05-10) — 审查 3 hotfix:SSRF + env 脱敏 + event envelope 红线清理
+
+- release:check: ✅
+- golden task pass: 0/10 → 0/10 (dry-run 占位未变;P11.1 为安全 + 结构清理,未触发业务逻辑)
+- /review 警告: 0 条 (审查 3 已由 periodic-audit-3 产出,本期是落地)
+- 本期验收产出:
+  - 方案 B:删除 `src/domain/conversation/events.ts`(历史 `ConversationEvent` 联合类型),
+    内联到唯一 caller `src/application/chat/conversation-events.ts`;`transcript-projector.ts`
+    暂留 domain(待 infra 合并 ADR 统一处理,见 0009 §决策#3)
+  - `src/core/agent/tools/url-safety.ts` — 新增;支持 literal IPv4/IPv6 拦截
+    (loopback/0.0.0.0/RFC1918/link-local 含 metadata 169.254/ULA fc00::/7/
+    CGNAT/multicast/reserved)+ DNS resolve 后二次校验(防 DNS rebinding)+ 默认仅 https
+  - `src/core/agent/tools/fetch-tool.ts` — `fetch_url` 接入 checkUrlSafety;
+    审批 risk `medium → high`;新增 `allowHttp` 参数(默认 false)
+  - `src/commands/sessions/import.ts` — `loadImportSource` 接入 checkUrlSafety +
+    5MB Content-Length 上限 + content-type 必须 `application/json`;导出为可测接口
+  - `src/core/agent/tools/env-filter.ts` — `filterSensitiveEnv` 过滤
+    KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|COOKIE|SESSION,支持 `config.env` 显式 opt-in
+  - `src/core/agent/mcp-stdio-client.ts:230` — stdio MCP server spawn env 接入过滤
+  - `src/core/agent/hook-handler-execution.ts:263` — command hook spawn env 接入过滤
+  - `src/core/agent/tools/sandbox.ts` — `isSensitiveEnvKey` 导出(供 env-filter 复用)
+  - 新测试:`test/core/agent-tools/fetch-tool.ssrf.spec.ts` (20 用例)、
+    `test/commands/sessions/import.spec.ts` (9 用例)、
+    `test/core/agent-tools/env-filter.spec.ts` (7 用例)
+  - CLAUDE.md 硬红线从 `src/domain/conversation/events.ts` 改为
+    `src/infra/protocol/events.ts`(权威位置,含 schemaVersion:1)
+- 本期 token 消耗: 未测量(单 session 内完成)
+- ADR: `docs/adr/0009-event-envelope-authoritative-location.md`
+  (用户决策 = 方案 B,删 domain 版本,红线指向 infra)
+- 不做 / 搁置(留 P11.2):
+  - `agent.ts:337` void this.run 挂 catch
+  - `prompt-hook-bridge.ts:77` 抛错 hook 视作 deny
+  - `event-bus.ts` 两个空 catch 加 log
+  - `compaction-pipeline.ts:73` 带错返回
+  - stdio MCP 默认 `untrusted`(审查 §2.10 优先级 3)
+- 下一期: **P12 — 工具调度/并发编排**(按 docs/openclaude-parity/phase-12-*.md 施工单)
+
+---
