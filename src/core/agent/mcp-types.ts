@@ -1,4 +1,5 @@
 import type { Logger, MCPServerConfig, SandboxMode } from '@xqoder/shared';
+import type { ElicitationAsk } from './mcp-elicitation.js';
 
 export const MCP_CLIENT_INFO = {
     name: 'xqoder',
@@ -124,6 +125,7 @@ export interface McpManagerOptions {
     sandboxMode?: SandboxMode;
     allowedPaths?: string[];
     logger?: Logger;
+    elicit?: ElicitationAsk;
 }
 
 export interface McpClientAdapter {

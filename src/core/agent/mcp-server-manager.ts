@@ -15,6 +15,7 @@ import {
 import { inspectMcpServersWithClientFactory } from './mcp-inspection.js';
 import type { McpServerInspection } from './mcp-inspection.js';
 import { McpHttpClient } from './mcp-http-client.js';
+import { McpSseClient } from './mcp-sse-client.js';
 import { McpStdioClient } from './mcp-stdio-client.js';
 import type {
     McpClientAdapter,
@@ -109,6 +110,7 @@ export class McpServerManager {
             sandboxMode: this.options.sandboxMode,
             allowedPaths: this.options.allowedPaths,
             logger: this.logger,
+            elicit: this.options.elicit,
         });
 
         this.clients.set(server.name, client);
@@ -120,7 +122,10 @@ export function createDefaultMcpClient(
     server: MCPServerConfig,
     options: Omit<McpManagerOptions, 'servers'>,
 ): McpClientAdapter {
-    if (server.transport === 'http' || server.transport === 'sse') {
+    if (server.transport === 'sse') {
+        return new McpSseClient(server, options);
+    }
+    if (server.transport === 'http') {
         return new McpHttpClient(server, options);
     }
     return new McpStdioClient(server, options);
@@ -133,6 +138,7 @@ export function createStandaloneMcpClient(server: MCPServerConfig, options: McpM
         sandboxMode: options.sandboxMode,
         allowedPaths: options.allowedPaths,
         logger: options.logger,
+        elicit: options.elicit,
     });
 }
 

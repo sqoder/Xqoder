@@ -599,3 +599,23 @@
 - 下一期: **P13 — MCP 工具集成**(背景读 `/mcp-server-patterns`)
 
 ---
+
+## P13a (2026-05-10) — MCP SSE transport + elicitation
+
+- release:check: ✅ (1018 pass / 0 fail,coverage gate PASS,mcp:live-smoke 绿)
+- golden task pass: 未测量(本期只增 MCP 子系统,未触及 live coding 链路)
+- /review 警告: 未跑,主会话直接审 diff(见下)
+- 本期关键决策:
+  - 把 P13 拆成 3 个子期(a/b/c),避免一个会话吃 ~3000 行改动撞 150k token 上限
+  - 2 次 `executor` 子代理都空返,换回主会话直接实施(见正文说明)
+  - `McpSseClient` 与 `McpHttpClient` 不合并:SSE 多一条 server→client 长连接 + 流式响应,
+    合并会让两边都更难读;重叠仅在 cursor 分页等小段,按"三次再抽象"原则押后
+  - `McpClientAdapter` 接口零变更;`McpManagerOptions` 只加 `elicit?` 字段
+- 新增:`mcp-sse-client.ts` (538L) · `mcp-elicitation.ts` (64L) ·
+  `mcp-sse-client.test.ts` (8) · `mcp-elicitation.test.ts` (6) ·
+  `mcp-server-manager.test.ts` +2 = 共 16 条新测
+- 本期 token 消耗: 未测量(两次子代理失败累计 ~9 万,主会话实施估 ~6 万)
+- ADR: `docs/adr/0010-p13a-mcp-sse-elicitation.md`
+- 下一期: **P13b — OAuth 2.1 + McpAuthTool**(会话切换前续)
+
+---
