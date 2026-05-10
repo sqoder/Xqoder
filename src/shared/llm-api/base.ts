@@ -4,6 +4,7 @@ import type {
   StreamCallbacks,
   LLMProviderConfig,
 } from '@xqoder/shared';
+import type { ThinkingConfig } from '../thinking/index.js';
 
 export interface CompletionRequest {
   messages: LLMMessage[];
@@ -11,6 +12,15 @@ export interface CompletionRequest {
   maxTokens?: number;
   temperature?: number;
   stream?: boolean;
+  /**
+   * P20 — reasoning depth / effort / fast-mode overrides for this request.
+   * Providers apply whichever of the three dimensions they support:
+   *   - Anthropic: `thinking` + `speed`
+   *   - OpenAI chat completions: `reasoning_effort`
+   *   - Codex /responses: `reasoning.effort`
+   * Missing or `mode: 'disabled'` keeps legacy behavior.
+   */
+  thinking?: ThinkingConfig;
 }
 
 export interface CompletionResponse {

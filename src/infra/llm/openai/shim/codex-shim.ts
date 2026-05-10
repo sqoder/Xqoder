@@ -34,6 +34,7 @@ import {
 } from '@xqoder/llm-api';
 import { isClassifiedLLMError, withRetry, wrapStream } from '../../retry/index.js';
 import { resolveProxyForProvider } from '../../../../shared/network-proxy.js';
+import { toCodexReasoningParams } from '../../../../shared/thinking/index.js';
 import { convertTools } from './convert-tools.js';
 import { ThinkTagFilter } from './think-tag-filter.js';
 
@@ -118,11 +119,12 @@ export class CodexShimProvider extends BaseLLMProvider {
         const tools = request.tools
             ? convertTools(request.tools, { strict: this.capabilities.supportsStrictTools })
             : undefined;
+        const reasoning = toCodexReasoningParams(request.thinking);
         return {
             model: this.model,
             input,
             stream: true,
-            reasoning: { effort: 'medium' },
+            reasoning: (reasoning.reasoning ?? { effort: 'medium' }) as { effort: 'low' | 'medium' | 'high' },
             tools: tools as unknown[] | undefined,
             max_output_tokens: request.maxTokens ?? this.maxTokens,
         };

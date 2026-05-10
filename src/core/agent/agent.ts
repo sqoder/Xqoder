@@ -19,6 +19,7 @@ import type {
 } from '@xqoder/shared';
 import { logger as defaultLogger, Logger, type CompactionConfig } from '@xqoder/shared';
 import { getXQoderPaths } from '@xqoder/shared';
+import { resolveThinking } from '../../shared/thinking/index.js';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
@@ -91,6 +92,8 @@ export interface AgentConfig {
     runtimeProfile?: AgentRuntimeProfile;
     /** Project context rule files (CLAUDE.md / xqoder.md / etc.) */
     contextPaths?: string[];
+    /** P20 — thinking/effort/fastMode overrides. Merged with model defaults per turn. */
+    thinking?: Partial<import('../../shared/thinking/index.js').ThinkingConfig>;
     /** Test seam for injecting a provider */
     providerFactory?: (config: LLMProviderConfig) => Promise<ILLMProvider> | ILLMProvider;
 }
@@ -204,6 +207,7 @@ export class XQoderAgent implements AgentProtocol {
     private readonly runtimeProfile: AgentRuntimeProfile;
     private readonly mvpRuntimeConfig?: MvpRuntimeConfig;
     private readonly contextPaths: string[];
+    private readonly thinkingOverride?: Partial<import('../../shared/thinking/index.js').ThinkingConfig>;
     private readonly providerFactory?: AgentConfig['providerFactory'];
     private readonly sessionResumed: boolean;
     private activeCallbacks?: AgentCallbacks;
@@ -216,6 +220,7 @@ export class XQoderAgent implements AgentProtocol {
         this.agentName = config.agentName;
         this.runtimeProfile = config.runtimeProfile ?? 'full';
         this.contextPaths = config.contextPaths ?? [];
+        this.thinkingOverride = config.thinking;
         this.providerFactory = config.providerFactory;
         // Provider will be initialized lazily in ensureProvider()
 
@@ -397,6 +402,9 @@ export class XQoderAgent implements AgentProtocol {
                 compaction: this.compaction,
                 cwd: this.toolContext.cwd,
                 projectRoot: this.toolContext.projectRoot,
+                ...(this.thinkingOverride
+                    ? { thinking: resolveThinking(this.llmConfig.model, this.thinkingOverride) }
+                    : {}),
                 ...(this.runtimeProfile === 'mvp' ? {} : (this.hooks ? { hooks: this.hooks } : {})),
                 disableAllHooks: this.disableAllHooks || this.runtimeProfile === 'mvp',
                 sessionResumed: this.sessionResumed,

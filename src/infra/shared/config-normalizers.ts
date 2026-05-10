@@ -193,5 +193,31 @@ export function normalizeXQoderConfig(input: Partial<XQoderConfig>): XQoderConfi
         ...withOptionalProp('contextPaths', contextPaths),
         ...withOptionalProp('shell', shell),
         plugins: normalizePluginPreferences(input.plugins),
+        ...withOptionalProp('thinking', normalizeThinkingPreference(input.thinking)),
     };
+}
+
+function normalizeThinkingPreference(
+    input: XQoderConfig['thinking'] | undefined,
+): XQoderConfig['thinking'] | undefined {
+    if (!input || typeof input !== 'object') return undefined;
+    const allowed: XQoderConfig['thinking'] = {};
+    if (input.mode === 'disabled' || input.mode === 'adaptive' || input.mode === 'enabled') {
+        allowed.mode = input.mode;
+    }
+    if (
+        input.effort === 'low'
+        || input.effort === 'medium'
+        || input.effort === 'high'
+        || input.effort === 'xhigh'
+    ) {
+        allowed.effort = input.effort;
+    }
+    if (input.fastMode === 'standard' || input.fastMode === 'fast') {
+        allowed.fastMode = input.fastMode;
+    }
+    if (typeof input.budgetTokens === 'number' && Number.isFinite(input.budgetTokens) && input.budgetTokens > 0) {
+        allowed.budgetTokens = Math.floor(input.budgetTokens);
+    }
+    return Object.keys(allowed).length > 0 ? allowed : undefined;
 }

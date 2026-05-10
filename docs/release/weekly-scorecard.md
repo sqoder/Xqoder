@@ -900,3 +900,43 @@
   - CLI `xqoder think|effort|fast` + session 持久化 → **P20b**
   - withRetry 捕 fast-mode rejected → triggerFastModeCooldown → **P20b**
 - 下一期: **P20b — wire thinking/effort/fast 到 provider + CLI + session**
+
+## P20b (2026-05-11) — Wire thinking/effort/fast to providers + CLI + session
+
+- release:check: ✅ (1203 pass / 0 fail,coverage 69.36% PASS,e2e smoke ✅,mcp:live-smoke 三 transport ✅,security hygiene ✅,size guardrail ✅)
+- golden task pass: 未测量(本期 provider + CLI + config wiring,未跑 golden set)
+- /review 警告: 未跑(本期动软红线 `conversation-engine.ts` + `query-loop.ts` + `agent.ts`,按 CLAUDE.md 规则留 ADR)
+- 本期关键决策(详见 ADR 0020):
+  - `CompletionRequest.thinking?: ThinkingConfig` 是传递载体;provider 层自己消费
+  - `toAnthropicThinkingParams` / `toOpenAIReasoningEffort` / `toCodexReasoningParams` 三个纯函数把 config 转成 provider 特定字段
+  - Anthropic:thinking 打开时 drop temperature;speed:fast 在 cooldown 期间被静默忽略
+  - OpenAI / Codex xhigh 折叠到 high(SDK 只认 low/medium/high)
+  - `isFastModeRejection()` 在 Anthropic `catch` 里调;不走 withRetry(fast 失败是 fatal)
+  - `config.thinking` 持久化到 `~/.xqoder/config.json`,`buildAgentConfigFromXQoderConfig` 透传到 `AgentConfig.thinking`
+  - `XQoderAgent` 每个 turn 跑 `resolveThinking(model, override)` 得到最终 config
+- 新增文件:
+  - `src/shared/thinking/provider-params.ts`(~70L)
+  - `src/shared/thinking/fast-mode-rejection.ts`(~25L)
+  - `src/commands/core/thinking.ts`(~160L)
+  - 4 个测试文件(20 条新测试)
+- 修改文件(软红线):
+  - `src/application/chat/conversation-engine.ts` — thinking 字段透传
+  - `src/application/chat/query-loop.ts` — 构造 CompletionRequest 时挂 thinking
+- 修改文件(非红线):
+  - `src/shared/llm-api/base.ts` — CompletionRequest 加 thinking 字段
+  - `src/infra/llm/anthropic/index.ts` — wire thinking + speed + fast rejection
+  - `src/infra/llm/openai/shim/provider.ts` — wire reasoning_effort
+  - `src/infra/llm/openai/shim/codex-shim.ts` — wire reasoning.effort
+  - `src/core/agent/agent.ts` — thinkingOverride 字段 + 运行时 resolveThinking
+  - `src/core/agent/agents.ts` — buildAgentConfigFromXQoderConfig 透传
+  - `src/infra/shared/types.ts` — XQoderConfig.thinking 字段
+  - `src/infra/shared/config-normalizers.ts` — normalizeThinkingPreference
+  - `src/plugins/command-plugins.ts` — 注册 think / effort / fast 命令
+  - `src/shared/thinking/index.ts` — barrel
+- 本期 token 消耗: 未测量
+- ADR: `docs/adr/0020-p20b-wire-thinking-effort-fast.md`
+- P20 收官:
+  - P20a 纯模块 + 38 单测
+  - P20b provider + CLI + session wiring + 20 单测 + 3 e2e
+  - 合计 S5 完成:P13(MCP) / P14(hooks) / P15(cost) / P20(thinking)
+- 下一期: **P21 — OAuth 凭据**(S5 最后一期)

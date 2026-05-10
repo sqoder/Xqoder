@@ -10,6 +10,7 @@ import { authCommand as loginCommand } from '../commands/core/auth.js';
 import { chatCommand } from '../commands/core/chat.js';
 import { configCommand } from '../commands/core/config.js';
 import { costCommand } from '../commands/core/cost.js';
+import { effortCommand, fastCommand, thinkCommand } from '../commands/core/thinking.js';
 import { fixCommand } from '../commands/fix.js';
 import { runCommand } from '../commands/workflows/run.js';
 import { startCommand } from '../commands/workflows/start.js';
@@ -89,6 +90,9 @@ function createBuiltInCommandPlugins(options: CommandPluginFactoryOptions = {}):
                 [
                     configCommand,
                     costCommand,
+                    thinkCommand,
+                    effortCommand,
+                    fastCommand,
                     loginCommand,
                     modelsCommand,
                     agentCommand,

@@ -245,6 +245,7 @@ export function buildAgentConfigFromXQoderConfig(
         compaction: config.compaction,
         runtimeProfile: options.runtimeProfile,
         contextPaths: config.contextPaths,
+        ...(config.thinking ? { thinking: config.thinking } : {}),
         ...(options.taskMode ? { taskMode: options.taskMode } : {}),
         ...(options.executionCapability ? { executionCapability: options.executionCapability } : {}),
         ...(options.approvalPolicy ? { approvalPolicy: options.approvalPolicy } : {}),

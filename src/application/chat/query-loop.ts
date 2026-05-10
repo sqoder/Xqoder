@@ -297,6 +297,7 @@ async function requestAssistantTurn(
     const request = {
         messages,
         tools: dependencies.getToolDefinitions(),
+        ...(dependencies.thinking ? { thinking: dependencies.thinking } : {}),
     };
     const suppressAssistantMessages = runtime?.shouldDeferAssistantOutput?.(toolUsedInCurrentRun) ?? false;
 

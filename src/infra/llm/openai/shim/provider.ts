@@ -14,6 +14,7 @@ import type {
 } from '@xqoder/shared';
 import { LLMError, resolveLLMProviderCapabilities } from '@xqoder/shared';
 import { BaseLLMProvider, type CompletionRequest, type CompletionResponse } from '@xqoder/llm-api';
+import { toOpenAIReasoningEffort } from '../../../../shared/thinking/index.js';
 import { isClassifiedLLMError, withRetry, wrapStream } from '../../retry/index.js';
 import { resolveProxyForProvider } from '../../../../shared/network-proxy.js';
 import { convertMessages } from './convert-messages.js';
@@ -99,6 +100,7 @@ export class OpenAIShimProvider extends BaseLLMProvider {
             ? convertTools(request.tools, { strict: this.capabilities.supportsStrictTools })
             : undefined;
         const messages = convertMessages(request.messages as LLMMessage[]);
+        const reasoning = toOpenAIReasoningEffort(request.thinking);
         return {
             model: this.model,
             messages: messages as unknown as OpenAI.ChatCompletionMessageParam[],
@@ -107,7 +109,10 @@ export class OpenAIShimProvider extends BaseLLMProvider {
             temperature: request.temperature ?? this.temperature,
             stream: true,
             stream_options: { include_usage: true },
-        };
+            ...(reasoning.reasoning_effort
+                ? ({ reasoning_effort: reasoning.reasoning_effort } as Record<string, unknown>)
+                : {}),
+        } as OpenAI.ChatCompletionCreateParams;
     }
 
     private buildClient(config: LLMProviderConfig, env: NodeJS.ProcessEnv | undefined): OpenAI {

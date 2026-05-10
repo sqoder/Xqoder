@@ -27,3 +27,12 @@ export {
     extractThinking,
     type ExtractedThinking,
 } from './token-extractor.js';
+export {
+    toAnthropicThinkingParams,
+    toCodexReasoningParams,
+    toOpenAIReasoningEffort,
+    type AnthropicThinkingParams,
+    type CodexReasoningParams,
+    type OpenAIReasoningEffortParams,
+} from './provider-params.js';
+export { isFastModeRejection, triggerFastModeCooldownOnRejection } from './fast-mode-rejection.js';

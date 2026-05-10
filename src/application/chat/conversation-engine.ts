@@ -32,6 +32,7 @@ import type {
     CompletionRequest,
     ILLMProvider,
 } from '@xqoder/llm-api';
+import type { ThinkingConfig } from '../../shared/thinking/index.js';
 import {
     type ToolFollowUpResult,
 } from './tool-follow-up.js';
@@ -93,6 +94,8 @@ export interface ConversationEngineDependencies {
     logger: Logger;
     llmConfig: LLMProviderConfig;
     agentName?: string;
+    /** P20 — resolved thinking config for this turn. Optional; absent keeps legacy behavior. */
+    thinking?: ThinkingConfig;
     runtimeProfile: AgentRuntimeProfile;
     maxTurns?: number;
     // Legacy caller alias; the engine protocol reports max_turns.

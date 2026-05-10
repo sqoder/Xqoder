@@ -785,6 +785,13 @@ export interface XQoderConfig {
     plugins?: PluginPreferences;
     /** Environment variables to apply at startup (merged into process.env by `enableConfigs`). */
     env?: Record<string, string>;
+    /** P20 — thinking/effort/fastMode runtime preference (persisted across invocations). */
+    thinking?: {
+        mode?: 'disabled' | 'adaptive' | 'enabled';
+        effort?: 'low' | 'medium' | 'high' | 'xhigh';
+        fastMode?: 'standard' | 'fast';
+        budgetTokens?: number;
+    };
 }
 /** Formatter configuration */
 export interface FormatterConfig {

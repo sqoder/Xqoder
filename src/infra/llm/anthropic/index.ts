@@ -15,6 +15,10 @@ import type {
 } from '@xqoder/shared';
 import { LLMError, resolveLLMProviderCapabilities } from '@xqoder/shared';
 import { BaseLLMProvider, type CompletionRequest, type CompletionResponse } from '@xqoder/llm-api';
+import {
+  toAnthropicThinkingParams,
+  triggerFastModeCooldownOnRejection,
+} from '../../../shared/thinking/index.js';
 // Clean-room retry wrapper inspired by Claude Code / OpenClaude behavior.
 // Absorbs 429 / 529 / OAuth401 / socket hiccups before they reach the
 // application layer, surfacing only classified LLM errors.
@@ -195,17 +199,23 @@ export class AnthropicProvider extends BaseLLMProvider {
     try {
       const systemMessage = request.messages.find((m) => m.role === 'system');
       const otherMessages = request.messages.filter((m) => m.role !== 'system');
+      const thinkingParams = toAnthropicThinkingParams(request.thinking);
+      const baseParams = {
+        model: this.model,
+        system: buildSystemParamWithCacheBreakpoint(systemMessage?.content),
+        messages: injectTailCacheBreakpoint(this.formatMessages(otherMessages)),
+        tools: request.tools ? (this.formatTools(request.tools) as Anthropic.Tool[]) : undefined,
+        max_tokens: request.maxTokens ?? this.maxTokens,
+      };
+      const extraParams: Record<string, unknown> = {};
+      if (!thinkingParams.dropTemperature) {
+        extraParams['temperature'] = request.temperature ?? this.temperature;
+      }
+      if (thinkingParams.thinking) extraParams['thinking'] = thinkingParams.thinking;
+      if (thinkingParams.speed) extraParams['speed'] = thinkingParams.speed;
       const response = await withRetry(
         { providerName: 'anthropic', foreground: true },
-        () =>
-          this.client.messages.create({
-            model: this.model,
-            system: buildSystemParamWithCacheBreakpoint(systemMessage?.content),
-            messages: injectTailCacheBreakpoint(this.formatMessages(otherMessages)),
-            tools: request.tools ? (this.formatTools(request.tools) as Anthropic.Tool[]) : undefined,
-            max_tokens: request.maxTokens ?? this.maxTokens,
-            temperature: request.temperature ?? this.temperature,
-          }),
+        () => this.client.messages.create({ ...baseParams, ...extraParams } as unknown as Anthropic.MessageCreateParamsNonStreaming),
       );
       const message = this.parseResponse(response);
       return {
@@ -214,6 +224,7 @@ export class AnthropicProvider extends BaseLLMProvider {
         finishReason: this.mapStopReason(response.stop_reason),
       };
     } catch (err) {
+      triggerFastModeCooldownOnRejection(err);
       if (isClassifiedLLMError(err)) {
         throw err;
       }
@@ -229,20 +240,26 @@ export class AnthropicProvider extends BaseLLMProvider {
     try {
       const systemMessage = request.messages.find((m) => m.role === 'system');
       const otherMessages = request.messages.filter((m) => m.role !== 'system');
+      const thinkingParams = toAnthropicThinkingParams(request.thinking);
+      const baseParams = {
+        model: this.model,
+        system: buildSystemParamWithCacheBreakpoint(systemMessage?.content),
+        messages: injectTailCacheBreakpoint(this.formatMessages(otherMessages)),
+        tools: request.tools ? (this.formatTools(request.tools) as Anthropic.Tool[]) : undefined,
+        max_tokens: request.maxTokens ?? this.maxTokens,
+      };
+      const extraParams: Record<string, unknown> = {};
+      if (!thinkingParams.dropTemperature) {
+        extraParams['temperature'] = request.temperature ?? this.temperature;
+      }
+      if (thinkingParams.thinking) extraParams['thinking'] = thinkingParams.thinking;
+      if (thinkingParams.speed) extraParams['speed'] = thinkingParams.speed;
       // withRetry only guards the handshake here. Once the SSE stream opens,
       // socket errors mid-flight surface directly — there's no idempotent way
       // to re-splice a partially-consumed stream at this layer.
       const stream = await withRetry(
         { providerName: 'anthropic', foreground: true },
-        async () =>
-          this.client.messages.stream({
-            model: this.model,
-            system: buildSystemParamWithCacheBreakpoint(systemMessage?.content),
-            messages: injectTailCacheBreakpoint(this.formatMessages(otherMessages)),
-            tools: request.tools ? (this.formatTools(request.tools) as Anthropic.Tool[]) : undefined,
-            max_tokens: request.maxTokens ?? this.maxTokens,
-            temperature: request.temperature ?? this.temperature,
-          }),
+        async () => this.client.messages.stream({ ...baseParams, ...extraParams } as unknown as Anthropic.MessageStreamParams),
       );
       let content = '';
       const toolCalls: ToolCall[] = [];
