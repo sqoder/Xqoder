@@ -5,29 +5,14 @@
 // reports cached_tokens as a nested field, Minimax uses snake_case fields).
 // This module normalizes them into a single structure that the cost tracker,
 // session totals, and telemetry layer can consume uniformly.
+//
+// The NormalizedUsage type itself lives in src/shared/telemetry/ so application
+// and shared layers can depend on it without a shared → infra hop.
 
 import { calculateCost } from '../../shared/model-costs.js';
+import type { NormalizedUsage } from '../../../shared/telemetry/normalized-usage.js';
 
-export interface NormalizedUsage {
-    /** Provider name (e.g. 'openai', 'anthropic', 'codex', 'minimax'). */
-    readonly provider: string;
-    /** Model name as reported / used. */
-    readonly model: string;
-    /** Regular prompt (input) tokens billed at the full input rate. */
-    readonly input: number;
-    /** Completion / output tokens. */
-    readonly output: number;
-    /** Prompt tokens served from cache. */
-    readonly cacheRead?: number;
-    /** Prompt tokens written into cache (Anthropic-style). */
-    readonly cacheCreate?: number;
-    /** Prompt tokens deleted from cache (Anthropic-style). */
-    readonly cacheDelete?: number;
-    /** Reasoning / thinking tokens (Codex, some OpenAI models). */
-    readonly reasoning?: number;
-    /** Best-effort cost in USD. Undefined when unknown. */
-    readonly costUsd?: number;
-}
+export type { NormalizedUsage };
 
 const NUMERIC_ZERO = 0;
 

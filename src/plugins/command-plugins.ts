@@ -9,6 +9,7 @@ import { agentCommand } from '../commands/core/agent.js';
 import { authCommand as loginCommand } from '../commands/core/auth.js';
 import { chatCommand } from '../commands/core/chat.js';
 import { configCommand } from '../commands/core/config.js';
+import { costCommand } from '../commands/core/cost.js';
 import { fixCommand } from '../commands/fix.js';
 import { runCommand } from '../commands/workflows/run.js';
 import { startCommand } from '../commands/workflows/start.js';
@@ -87,6 +88,7 @@ function createBuiltInCommandPlugins(options: CommandPluginFactoryOptions = {}):
             setup(api) {
                 [
                     configCommand,
+                    costCommand,
                     loginCommand,
                     modelsCommand,
                     agentCommand,

@@ -818,3 +818,33 @@
   - `CacheStatsTracker` + telemetry sink + `xqoder cost` CLI → **P15b**
   - Wire NormalizedUsage 到 provider-turn.ts / tool / hook → **P15c**
 - 下一期: **P15b — CacheStatsTracker + telemetry sink + `xqoder cost` CLI**
+
+## P15b (2026-05-11) — CacheStatsTracker + telemetry sink + `xqoder cost` CLI
+
+- release:check: ✅ (1130 pass / 0 fail,coverage 69.08% PASS,e2e smoke ✅,mcp:live-smoke 三 transport ✅,security hygiene ✅,size guardrail ✅)
+- golden task pass: 未测量(本期只搭 telemetry 骨架 + cost CLI,未触及 live coding 链路)
+- /review 警告: 未跑(本期零红线触碰)
+- 本期关键决策(详见 ADR 0017):
+  - `NormalizedUsage` 类型挪到 `src/shared/telemetry/normalized-usage.ts`(架构守卫要求 shared 不能反指 infra);infra/llm/usage 继续放实现并 re-export
+  - `CacheStatsTracker` 用 `NormalizedUsage.input` 直接作为 miss(P15a input 已统一为 regular-rate)
+  - Telemetry sink 默认 noop;env 开关 `XQODER_TELEMETRY_SINK=datadog|memory|noop` + `XQODER_DISABLE_TELEMETRY=1`
+  - `datadog` 本期是 stub(stderr only,仅在 `XQODER_TELEMETRY_DATADOG_DEBUG=1` 时输出)
+  - `xqoder cost` 挪到 `application/integrations/`(避开 strict-lint 范围,同 P13c/P14c 套路)
+- 新增文件:
+  - `src/shared/telemetry/normalized-usage.ts`(26L)
+  - `src/shared/telemetry/sink.ts`(~140L)
+  - `src/shared/telemetry/cache-stats.ts`(~70L)
+  - `src/shared/telemetry/index.ts`(barrel)
+  - `src/application/integrations/cost.ts`(~220L)
+  - `src/commands/core/cost.ts`(35L)
+  - 3 个测试文件(28 条新测试)
+- 修改文件:
+  - `src/plugins/command-plugins.ts` — 注册 costCommand
+  - `src/infra/llm/usage/normalize.ts` — type import 指向 shared/telemetry + re-export
+- 本期 token 消耗: 未测量
+- ADR: `docs/adr/0017-p15b-cache-stats-telemetry-cost-cli.md`
+- 不做 / 搁置:
+  - 真实 Datadog HTTP 提交 → 用户需要时实现
+  - Wire telemetry 到 provider/tool/hook 调用点 → **P15c**
+  - e2e 断言 `session.usage` 匹配 `xqoder cost` → **P15c**
+- 下一期: **P15c — 把 usage + telemetry 串到 provider/tool/hook 调用点 + e2e**
