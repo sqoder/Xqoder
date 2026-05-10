@@ -258,6 +258,8 @@ export class XQoderAgent implements AgentProtocol {
             shell: config.shell,
             rollbackStore: this.rollbackStore,
             fileReadState: new Map(),
+            ...(this.hooks && this.runtimeProfile !== 'mvp' ? { hooks: this.hooks } : {}),
+            ...(this.disableAllHooks || this.runtimeProfile === 'mvp' ? { disableAllHooks: true } : {}),
             ...(this.mvpRuntimeConfig ? { mvpRuntimeConfig: this.mvpRuntimeConfig } : {}),
         };
         this.logger = defaultLogger.child('Agent');
@@ -394,6 +396,9 @@ export class XQoderAgent implements AgentProtocol {
                 maxTurns: this.maxIterations,
                 compaction: this.compaction,
                 cwd: this.toolContext.cwd,
+                projectRoot: this.toolContext.projectRoot,
+                ...(this.runtimeProfile === 'mvp' ? {} : (this.hooks ? { hooks: this.hooks } : {})),
+                disableAllHooks: this.disableAllHooks || this.runtimeProfile === 'mvp',
                 sessionResumed: this.sessionResumed,
                 emit: this.emit.bind(this),
                 taskMode: this.taskMode,
@@ -469,6 +474,9 @@ export class XQoderAgent implements AgentProtocol {
                         maxTurns: self.maxIterations,
                         compaction: self.compaction,
                         cwd: self.toolContext.cwd,
+                        projectRoot: self.toolContext.projectRoot,
+                        ...(self.runtimeProfile === 'mvp' ? {} : (self.hooks ? { hooks: self.hooks } : {})),
+                        disableAllHooks: self.disableAllHooks || self.runtimeProfile === 'mvp',
                         sessionResumed: self.sessionResumed,
                         emit: self.emit.bind(self),
                         taskMode: self.taskMode,

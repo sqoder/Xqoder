@@ -96,6 +96,12 @@ export interface ToolContext {
     approvalRequestPatch?: ToolApprovalPatch;
     /** Per-session file read state used by read-before-write checks */
     fileReadState?: Map<string, ToolFileReadState>;
+    /** Hooks config forwarded to tools that spawn subagents or run lifecycle events */
+    hooks?: import('@xqoder/shared').HooksSettings;
+    /** Disable all configured hooks, including lifecycle hooks fired by subagent tools */
+    disableAllHooks?: boolean;
+    /** Logger reference shared with tool implementations */
+    logger?: import('@xqoder/shared').Logger;
 }
 
 /**

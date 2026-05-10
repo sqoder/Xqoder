@@ -744,3 +744,31 @@
   - UserPromptSubmit deny 的 e2e 阻断用例 → **P14c**
   - PostSamplingHooks(sampling 完成后)→ 施工单明确 v1 不纳入,留 P27 评估
 - 下一期: **P14b — 生命周期 hook 挂载到 conversation-engine / compact / subagent**
+
+## P14b (2026-05-11) — 生命周期 hook 挂到 conversation-engine / compact / subagent
+
+- release:check: ✅ (1076 pass / 0 fail,coverage 68.80% PASS,e2e smoke ✅,mcp:live-smoke 三 transport ✅,security hygiene ✅,size guardrail ✅)
+- golden task pass: 未测量(本期只挂 hook wiring,未触及 live coding 链路)
+- /review 警告: 未跑(本期动软红线 `conversation-engine.ts`,按 CLAUDE.md 规则留 ADR;无硬红线触碰)
+- 本期关键决策(详见 ADR 0014):
+  - 挂 4 个真实触发点:SessionStart(阻塞)/ Stop(fire-and-forget)在 conversation-engine;PreCompact(阻塞)/ PostCompact(fire-and-forget)在 compaction-pipeline;SubagentStop(fire-and-forget)在 DelegateTaskTool
+  - **SessionEnd 不在本期挂**:turn-level engine 不等于 session-level;硬挂会每轮误触发,留 P17+ 处理(需要 session 生命周期 owner)
+  - `hooks`/`disableAllHooks`/`projectRoot` 从 agent.ts 透传到 ConversationEngineDependencies 和 ToolContext,mvp profile 继承 P04 "hooks 禁用" 语义
+  - SessionStart block 时抛 ConversationEngineStopError(provider_error, error),`provider.stream` 保证不被调用
+- 新增文件:
+  - `test/application/chat/lifecycle-hooks-wiring.test.ts`(3 条 integration)
+- 修改文件(软红线):
+  - `src/application/chat/conversation-engine.ts` — SessionStart + Stop 挂点,deps 加 projectRoot/hooks/disableAllHooks
+- 修改文件(非红线):
+  - `src/application/chat/compaction-pipeline.ts` — PreCompact + PostCompact
+  - `src/core/agent/tools/tool.ts` — ToolContext 加可选 hooks/disableAllHooks/logger
+  - `src/core/agent/tools/agent-tool.ts` — DelegateTaskTool finally 触发 SubagentStop
+  - `src/core/agent/agent.ts` — 透传 hooks 到 toolContext + engine deps
+- 本期 token 消耗: 未测量(主会话直接实施,未用 executor 子代理)
+- ADR: `docs/adr/0014-p14b-lifecycle-hooks-wired.md`
+- 不做 / 搁置:
+  - SessionEnd wiring → P17+(session 生命周期 owner)
+  - PreCompact 在 reactive compaction(PromptTooLongError 路径)→ 故意不挂,紧急降级不应阻塞
+  - `xqoder hooks add/remove/list/test` CLI → **P14c**
+  - UserPromptSubmit deny 的 e2e → **P14c**
+- 下一期: **P14c — hooks CLI + e2e 阻断用例**

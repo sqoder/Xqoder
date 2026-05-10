@@ -7,6 +7,10 @@ import type { ToolDefinition, ToolResult, LLMProviderConfig, LLMMessage } from '
 import type { ILLMProvider } from '../../../shared/llm-api/base.js';
 import type { ITool, ToolContext } from './tool.js';
 import { createLLMProvider } from '@xqoder/agent';
+import {
+    buildSubagentStopPayload,
+    dispatchLifecycleHookFireAndForget,
+} from '../lifecycle-hooks.js';
 import { getBuiltInAgentDefinition } from '../agents.js';
 import { getMarkdownAgentDefinition } from '../markdown-agents.js';
 import { isToolVisibleForExecutionCapability } from '../../../domain/permissions/index.js';
@@ -73,8 +77,29 @@ export class DelegateTaskTool implements ITool {
             };
         }
 
+        const delegateConfig = resolveDelegateConfig(args, context.cwd);
+        const emitSubagentStop = () => {
+            dispatchLifecycleHookFireAndForget(
+                'SubagentStop',
+                buildSubagentStopPayload({
+                    ...(context.sessionId ? { sessionId: context.sessionId } : {}),
+                    cwd: context.cwd,
+                    projectRoot: context.projectRoot,
+                    stopHookActive: true,
+                    subagent: delegateConfig.agentName,
+                }),
+                {
+                    cwd: context.cwd,
+                    projectRoot: context.projectRoot,
+                    ...(context.sessionId ? { sessionId: context.sessionId } : {}),
+                    ...(context.hooks ? { hooks: context.hooks } : {}),
+                    ...(context.disableAllHooks ? { disableAllHooks: true } : {}),
+                    ...(context.logger ? { logger: context.logger } : {}),
+                },
+            );
+        };
+
         try {
-            const delegateConfig = resolveDelegateConfig(args, context.cwd);
             const provider = await this.providerFactory(this.llmConfig);
 
             const messages: LLMMessage[] = [
@@ -191,6 +216,8 @@ export class DelegateTaskTool implements ITool {
                 output: '',
                 error: `Sub-agent execution failed: ${err instanceof Error ? err.message : String(err)}`,
             };
+        } finally {
+            emitSubagentStop();
         }
     }
 

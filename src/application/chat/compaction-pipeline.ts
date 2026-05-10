@@ -3,7 +3,7 @@
 // (per-turn budget→snip→micro), and runTurnWithReactiveCompaction
 // (PromptTooLongError recovery loop).
 
-import type { Logger } from '@xqoder/shared';
+import type { HooksSettings, Logger } from '@xqoder/shared';
 import { getContextWindow } from '@xqoder/shared';
 import { feature } from '../../shared/feature-flags.js';
 import type { AgentCallbacks, AgentEvents, AgentRuntimeProfile, AgentSession } from '@xqoder/agent';
@@ -14,6 +14,10 @@ import {
     microcompact,
     nextReactiveStep,
     applyReactiveStep,
+    buildPreCompactPayload,
+    buildPostCompactPayload,
+    dispatchLifecycleHook,
+    dispatchLifecycleHookFireAndForget,
     type ReactiveStep,
 } from '@xqoder/agent';
 import type { LLMProviderConfig, CompactionConfig } from '@xqoder/shared';
@@ -35,6 +39,23 @@ interface CompactionPipelineDeps {
     callbacks?: AgentCallbacks;
     streamId: string;
     emit: CompactionEventEmitter;
+    cwd?: string;
+    projectRoot?: string;
+    hooks?: HooksSettings;
+    disableAllHooks?: boolean;
+}
+
+function buildLifecycleConfig(dependencies: CompactionPipelineDeps) {
+    const cwd = dependencies.cwd ?? process.cwd();
+    const projectRoot = dependencies.projectRoot ?? cwd;
+    return {
+        cwd,
+        projectRoot,
+        sessionId: dependencies.session.id,
+        logger: dependencies.logger,
+        ...(dependencies.hooks ? { hooks: dependencies.hooks } : {}),
+        ...(dependencies.disableAllHooks ? { disableAllHooks: dependencies.disableAllHooks } : {}),
+    };
 }
 
 export async function maybeAutoCompact(
@@ -58,6 +79,26 @@ export async function maybeAutoCompact(
     dependencies.logger.warn(
         `Context usage at ${Math.round(usage.promptTokens / ctxWindow * 100)}%, triggering auto-compact`,
     );
+
+    const lifecycleConfig = buildLifecycleConfig(dependencies);
+    const messagesBefore = dependencies.session.getMessages().length;
+    const preCompact = await dispatchLifecycleHook(
+        'PreCompact',
+        buildPreCompactPayload({
+            sessionId: dependencies.session.id,
+            cwd: lifecycleConfig.cwd,
+            projectRoot: lifecycleConfig.projectRoot,
+            trigger: 'auto',
+        }),
+        lifecycleConfig,
+    );
+    if (preCompact.blocked) {
+        dependencies.logger.warn(
+            `PreCompact hook blocked auto-compact${preCompact.reason ? `: ${preCompact.reason}` : ''}`,
+        );
+        return;
+    }
+
     try {
         const messages = dependencies.session.getMessages().filter((m) => m.role !== 'system');
         const { SummarizerAgent } = await import('@xqoder/agent');
@@ -70,6 +111,18 @@ export async function maybeAutoCompact(
             dependencies.streamId,
         );
         try { dependencies.callbacks?.onToolEnd?.('auto_compact', summary, true); } catch { /* noop */ }
+        dispatchLifecycleHookFireAndForget(
+            'PostCompact',
+            buildPostCompactPayload({
+                sessionId: dependencies.session.id,
+                cwd: lifecycleConfig.cwd,
+                projectRoot: lifecycleConfig.projectRoot,
+                trigger: 'auto',
+                messagesBefore,
+                messagesAfter: dependencies.session.getMessages().length,
+            }),
+            lifecycleConfig,
+        );
     } catch (err) {
         dependencies.logger.error(
             `Auto-compact failed: ${err instanceof Error ? err.message : String(err)}`,

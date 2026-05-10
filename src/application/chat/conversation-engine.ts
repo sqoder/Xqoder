@@ -1,5 +1,6 @@
 import type {
     CompactionConfig,
+    HooksSettings,
     LLMProviderConfig,
     Logger,
     MessageAttachment,
@@ -20,6 +21,12 @@ import type {
     AgentRuntimeProfile,
     AgentSession,
     ToolApprovalRequest,
+} from '@xqoder/agent';
+import {
+    buildSessionStartPayload,
+    buildStopPayload,
+    dispatchLifecycleHook,
+    dispatchLifecycleHookFireAndForget,
 } from '@xqoder/agent';
 import type {
     CompletionRequest,
@@ -94,6 +101,9 @@ export interface ConversationEngineDependencies {
     maxWallTimeMs?: number;
     compaction?: CompactionConfig;
     cwd?: string;
+    projectRoot?: string;
+    hooks?: HooksSettings;
+    disableAllHooks?: boolean;
     sessionResumed?: boolean;
     emit: ConversationEventEmitter;
     getToolDefinitions: () => ToolDefinition[];
@@ -261,11 +271,10 @@ function createConversationTurnStream(
     };
 
     const completed = (async () => {
+        const resumedSession = dependencies.sessionResumed === true || initialMessageCount > 1;
         emitRecord(
-            dependencies.sessionResumed === true || initialMessageCount > 1
-                ? 'session.resumed'
-                : 'session.started',
-            dependencies.sessionResumed === true || initialMessageCount > 1
+            resumedSession ? 'session.resumed' : 'session.started',
+            resumedSession
                 ? {
                     source: 'agent',
                     messageCount: initialMessageCount,
@@ -275,6 +284,49 @@ function createConversationTurnStream(
                     cwd: dependencies.cwd ?? process.cwd(),
                 },
         );
+
+        const lifecycleCwd = dependencies.cwd ?? process.cwd();
+        const lifecycleProjectRoot = dependencies.projectRoot ?? lifecycleCwd;
+        const lifecycleConfig = {
+            cwd: lifecycleCwd,
+            projectRoot: lifecycleProjectRoot,
+            sessionId,
+            logger: dependencies.logger,
+            ...(dependencies.hooks ? { hooks: dependencies.hooks } : {}),
+            ...(dependencies.disableAllHooks ? { disableAllHooks: dependencies.disableAllHooks } : {}),
+        };
+
+        const sessionStartResult = await dispatchLifecycleHook(
+            'SessionStart',
+            buildSessionStartPayload({
+                sessionId,
+                cwd: lifecycleCwd,
+                projectRoot: lifecycleProjectRoot,
+                source: resumedSession ? 'resume' : 'startup',
+            }),
+            lifecycleConfig,
+        );
+        if (sessionStartResult.blocked) {
+            const reason = sessionStartResult.reason ?? 'SessionStart hook blocked the conversation turn';
+            emitRecord('error', {
+                source: 'agent',
+                message: reason,
+                recoverable: false,
+                stopReason: 'provider_error',
+            });
+            emitRecord('status.changed', {
+                source: 'agent',
+                status: 'error',
+                stopReason: 'provider_error',
+                message: reason,
+            });
+            eventQueue.close();
+            throw new ConversationEngineStopError(reason, {
+                stopReason: 'provider_error',
+                agentEndReason: 'error',
+            });
+        }
+
         emitRecord('message.started', {
             source: 'agent',
             message: {
@@ -541,6 +593,16 @@ function createConversationTurnStream(
             });
             throw normalizedError;
         } finally {
+            dispatchLifecycleHookFireAndForget(
+                'Stop',
+                buildStopPayload({
+                    sessionId,
+                    cwd: lifecycleCwd,
+                    projectRoot: lifecycleProjectRoot,
+                    stopHookActive: true,
+                }),
+                lifecycleConfig,
+            );
             eventQueue.close();
         }
     })();
