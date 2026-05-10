@@ -14,6 +14,26 @@ import {
     resolveConfigWriteTarget,
     type ConfigWriteScope,
 } from '../system/config-targets.js';
+import {
+    collectMcpOAuthStatuses,
+    defaultTokenStorePath,
+    type McpOAuthStatus,
+} from './mcp-oauth-status.js';
+
+export { runAuthMcpCommand } from './mcp-auth-command.js';
+export type {
+    McpAuthCommandOptions,
+    McpAuthCommandDependencies,
+    McpAuthCommandResult,
+} from './mcp-auth-command.js';
+export { runDebugMcpCommand } from './mcp-debug-command.js';
+export type {
+    McpDebugCommandOptions,
+    McpDebugCommandDependencies,
+    McpDebugCommandResult,
+    McpDebugHandshake,
+} from './mcp-debug-command.js';
+export type { McpOAuthStatus } from './mcp-oauth-status.js';
 
 export interface McpOutputOptions {
     cwd?: string;
@@ -155,12 +175,22 @@ export function runShowMcpCommand(
     return detail;
 }
 
+export interface McpDoctorEntry extends McpServerInspection {
+    oauth: McpOAuthStatus;
+}
+
+export interface McpDoctorDependencies extends McpCommandDependencies {
+    tokenFilePath?: string;
+    now?: () => number;
+    env?: NodeJS.ProcessEnv;
+}
+
 export async function runDoctorMcpCommand(
     name: string | undefined,
     options: McpOutputOptions = {},
-    dependencies: McpCommandDependencies = {},
+    dependencies: McpDoctorDependencies = {},
     manager: Pick<ConfigManager, 'load'> = configManager,
-): Promise<McpServerInspection[]> {
+): Promise<McpDoctorEntry[]> {
     const projectRoot = resolveProjectCwd(options);
     const { config } = resolveConfigWithEnvOverrides(manager.load({ cwd: projectRoot }));
     const configuredServers = config.mcp?.servers ?? [];
@@ -181,20 +211,37 @@ export async function runDoctorMcpCommand(
         allowedPaths: config.sandbox?.allowedPaths,
     });
 
+    const statuses = await collectMcpOAuthStatuses({
+        servers: selectedServers,
+        tokenFilePath: dependencies.tokenFilePath ?? defaultTokenStorePath(),
+        ...(dependencies.now ? { now: dependencies.now } : {}),
+        ...(dependencies.env ? { env: dependencies.env } : {}),
+    });
+    const entries: McpDoctorEntry[] = inspections.map((inspection) => ({
+        ...inspection,
+        oauth: statuses.get(inspection.name) ?? {
+            configured: false,
+            disabledByEnv: false,
+            tokenPresent: false,
+            tokenExpired: false,
+            refreshTokenPresent: false,
+        },
+    }));
+
     if (options.json) {
-        writeOutput(JSON.stringify(inspections, null, 2), dependencies);
-        return inspections;
+        writeOutput(JSON.stringify(entries, null, 2), dependencies);
+        return entries;
     }
 
-    if (inspections.length === 0) {
+    if (entries.length === 0) {
         writeOutput('No MCP servers configured.', dependencies);
-        return inspections;
+        return entries;
     }
 
-    for (const inspection of inspections) {
-        writeOutput(formatMcpInspection(inspection), dependencies);
+    for (const entry of entries) {
+        writeOutput(formatMcpInspection(entry), dependencies);
     }
-    return inspections;
+    return entries;
 }
 
 export function runAddMcpCommand(
@@ -455,7 +502,7 @@ function resolveProjectCwd(options: Pick<McpOutputOptions, 'cwd' | 'dir'> = {}):
     return path.resolve(options.dir ?? options.cwd ?? process.cwd());
 }
 
-function formatMcpInspection(inspection: McpServerInspection): string {
+function formatMcpInspection(inspection: McpDoctorEntry): string {
     const status = inspection.status.toUpperCase();
     const lines = [
         `${inspection.name} ${status} transport=${inspection.transport} tools=${inspection.toolCount} prompts=${inspection.promptCount} resources=${inspection.resourceCount} templates=${inspection.resourceTemplateCount}`,
@@ -480,6 +527,18 @@ function formatMcpInspection(inspection: McpServerInspection): string {
     }
     if (inspection.resourceTemplates.length > 0) {
         lines.push(`resourceTemplates=${inspection.resourceTemplates.map((template) => template.uriTemplate).join(', ')}`);
+    }
+    if (inspection.oauth.configured) {
+        const tokenState = !inspection.oauth.tokenPresent
+            ? 'missing'
+            : inspection.oauth.tokenExpired
+                ? 'expired'
+                : 'ok';
+        lines.push(`oauth=${tokenState} refreshToken=${inspection.oauth.refreshTokenPresent ? 'yes' : 'no'}${inspection.oauth.disabledByEnv ? ' disabled=env' : ''}`);
+        if (inspection.oauth.tokenFileMode) {
+            const warn = inspection.oauth.tokenFileWorldReadable ? ' !world-readable' : '';
+            lines.push(`oauth.tokenFile=${inspection.oauth.tokenFilePath} mode=${inspection.oauth.tokenFileMode}${warn}`);
+        }
     }
     return lines.join('\n');
 }

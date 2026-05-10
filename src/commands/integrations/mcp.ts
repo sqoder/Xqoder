@@ -7,6 +7,8 @@ import {
     createMcpSnapshot,
     runAddMcpCommand,
     runAddMcpServerCommand,
+    runAuthMcpCommand,
+    runDebugMcpCommand,
     runDoctorMcpCommand,
     runListMcpCommand,
     runMcpCommand,
@@ -14,7 +16,12 @@ import {
     runShowMcpCommand,
     runToggleMcpCommand,
     type McpAddOptions,
+    type McpAuthCommandOptions,
+    type McpAuthCommandDependencies,
     type McpCommandDependencies,
+    type McpDebugCommandOptions,
+    type McpDebugCommandDependencies,
+    type McpDoctorDependencies,
     type McpOutputOptions,
     type McpServerDetail,
     type McpSnapshot,
@@ -25,6 +32,8 @@ export {
     createMcpSnapshot,
     runAddMcpCommand,
     runAddMcpServerCommand,
+    runAuthMcpCommand,
+    runDebugMcpCommand,
     runDoctorMcpCommand,
     runListMcpCommand,
     runRemoveMcpCommand,
@@ -33,7 +42,12 @@ export {
 };
 export type {
     McpAddOptions,
+    McpAuthCommandOptions,
+    McpAuthCommandDependencies,
     McpCommandDependencies,
+    McpDebugCommandOptions,
+    McpDebugCommandDependencies,
+    McpDoctorDependencies,
     McpOutputOptions,
     McpServerDetail,
     McpSnapshot,
@@ -150,6 +164,27 @@ export function createMcpCommand(
         .option('--json', 'Output in JSON format')
         .action((name: string | undefined, options: McpOutputOptions) => {
             return runMcpCommand(() => runDoctorMcpCommand(name, options, dependencies, manager));
+        });
+
+    command
+        .command('auth')
+        .description('Run OAuth 2.1 PKCE flow for an MCP server and cache tokens')
+        .argument('<name>', 'Server name')
+        .option('-d, --dir <dir>', 'Project directory used as root', '.')
+        .option('--json', 'Output in JSON format')
+        .option('--force', 'Re-run the flow even if a usable token exists')
+        .action((name: string, options: McpAuthCommandOptions) => {
+            return runMcpCommand(() => runAuthMcpCommand(name, options, dependencies, manager));
+        });
+
+    command
+        .command('debug')
+        .description('Deep diagnostic for one MCP server: OAuth state, handshake, tools')
+        .argument('<name>', 'Server name')
+        .option('-d, --dir <dir>', 'Project directory used as root', '.')
+        .option('--json', 'Output in JSON format')
+        .action((name: string, options: McpDebugCommandOptions) => {
+            return runMcpCommand(() => runDebugMcpCommand(name, options, dependencies, manager));
         });
 
     return command;

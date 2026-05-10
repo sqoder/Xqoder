@@ -47,9 +47,39 @@ export {
     type AgentName,
 } from './sub-agents.js';
 export {
+    createStandaloneMcpClient,
     McpServerManager,
     inspectMcpServers,
     type McpServerInspection,
+} from './mcp.js';
+export {
+    buildAuthorizeUrl,
+    createMcpAuthProvider,
+    exchangeAuthCode,
+    FileMcpTokenStore,
+    generatePkcePair,
+    generateState,
+    McpAuthTool,
+    oauthDisabled,
+    refreshAccessToken,
+    runMcpOauth,
+} from './mcp.js';
+export type {
+    McpAuthProvider,
+    McpAuthToolOptions,
+    McpCallToolResult,
+    McpClientAdapter,
+    McpGetPromptResult,
+    McpPromptArgumentDescriptor,
+    McpPromptDescriptor,
+    McpReadResourceResult,
+    McpResourceDescriptor,
+    McpResourceTemplateDescriptor,
+    McpServerInfo,
+    McpToolDescriptor,
+    McpTokenStore,
+    RunMcpOauthOptions,
+    StoredMcpToken,
 } from './mcp.js';
 export {
     type CompletionMatch,

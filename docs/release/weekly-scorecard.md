@@ -664,3 +664,53 @@
 
 ---
 
+## P13c (2026-05-10) — MCP auth/debug CLI + doctor OAuth 扩展 + HTTP/SSE live-smoke
+
+- release:check: ✅ (1055 pass / 0 fail,coverage gate PASS,cli smoke ✅、
+  mcp:live-smoke ✅ 三个 transport 全绿、security hygiene ✅、size guardrail ✅)
+- golden task pass: 未测量(本期只扩 MCP CLI / doctor / 测试 harness,未触及 live coding 链路)
+- /review 警告: 未跑(本期零触碰硬/软红线;改动仅 application/integrations/ 新增 3 文件
+  + commands/integrations/mcp.ts 30 行、core/agent/index.ts barrel 扩展、scripts/mcp-live-smoke.ts)
+- 本期关键决策(详见 ADR 0012):
+  - `xqoder mcp auth <name>` + `xqoder mcp debug <name>` 两条 Commander.js subcommand
+  - `runDoctorMcpCommand` 返回类型从 `McpServerInspection[]` 升级为
+    `McpDoctorEntry[]`(superset,加 `oauth: McpOAuthStatus` 字段)
+  - 落位 `src/application/integrations/`(不进 `@xqoder/agent`);`@xqoder/agent`
+    barrel 只转发 P13b 的 OAuth primitives + `createStandaloneMcpClient`
+  - `mcp:live-smoke` 用 `Bun.serve({ port: 0 })` 起 in-process HTTP/SSE fixture,
+    每个 transport 独立 checks[] 数组
+  - 不接顶层 `/mcp` skill 形式,留给 P17 skill 体系统一收口
+- 新增文件:
+  - `src/application/integrations/mcp-oauth-status.ts` (~130L) — `collectMcpOAuthStatuses`
+    + `defaultTokenStorePath` + 文件权限探测(0600 / world-readable)
+  - `src/application/integrations/mcp-auth-command.ts` (~140L) — `runAuthMcpCommand`
+    (force / 已有 token 短路 / disabled env / 无 oauth 四分支)
+  - `src/application/integrations/mcp-debug-command.ts` (~220L) — `runDebugMcpCommand`
+    (handshake ok / error / 未启用三状态,tools/prompts/resources 预览)
+- 修改文件:
+  - `src/application/integrations/mcp.ts` — `runDoctorMcpCommand` 接 OAuth 状态,
+    formatMcpInspection 多两行 `oauth=...` + `oauth.tokenFile=...`,re-export 新命令
+  - `src/commands/integrations/mcp.ts` — 接 `.command('auth')` + `.command('debug')`
+  - `src/core/agent/index.ts` + `mcp.ts` — barrel 扩展转发 OAuth primitives
+    + `createStandaloneMcpClient`
+  - `scripts/mcp-live-smoke.ts` — 扩展到三个 transport,共享 `handleFixtureRequest`
+- 新测试(9 条):
+  - `test/application/integrations/mcp-p13c.test.ts`:
+    - runAuthMcpCommand: 短路 / force / 无 oauth / disabled (4)
+    - runDebugMcpCommand: ok / error / unknown server (3)
+    - runDoctorMcpCommand: OAuth enrichment + expired (1)
+    - collectMcpOAuthStatuses: world-readable 探测 (1)
+  - `test/commands/system-compat-command-surfaces.test.ts` — 期望 subcommand
+    列表增加 `auth` / `debug`
+- 本期 token 消耗: 未测量(主会话直接实施,未用 executor 子代理)
+- ADR: `docs/adr/0012-p13c-mcp-cli-doctor-live-smoke.md`
+- 不做 / 搁置:
+  - `/mcp` 顶层 skill 形式 → P17 skill 体系
+  - TUI OAuth 登录成功通知 → P14+
+  - MCP token 刷新 observability 面板 → P15
+  - HTTP/SSE live-smoke 接 OAuth 端到端回路 → P15
+- 下一期: **P14 — hooks 生态完善**(按 02-execution-order-logic-first 顺序;
+  P13 三子期 a/b/c 收官)
+
+---
+

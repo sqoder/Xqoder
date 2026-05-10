@@ -1,5 +1,6 @@
 export type { McpServerInspection } from './mcp-inspection.js';
 export {
+    createStandaloneMcpClient,
     McpServerManager,
     inspectMcpServers,
 } from './mcp-server-manager.js';

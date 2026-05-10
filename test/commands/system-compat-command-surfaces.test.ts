@@ -124,6 +124,8 @@ describe('mcp command compatibility surface', () => {
             'enable',
             'disable',
             'doctor',
+            'auth',
+            'debug',
         ]);
         expect(commandExists(localCommandPath)).toBe(true);
 
