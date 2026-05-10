@@ -1,5 +1,6 @@
 import type { Logger, MCPServerConfig, SandboxMode } from '@xqoder/shared';
 import type { ElicitationAsk } from './mcp-elicitation.js';
+import type { McpAuthProvider } from './mcp-oauth.js';
 
 export const MCP_CLIENT_INFO = {
     name: 'xqoder',
@@ -126,6 +127,7 @@ export interface McpManagerOptions {
     allowedPaths?: string[];
     logger?: Logger;
     elicit?: ElicitationAsk;
+    authProvider?: McpAuthProvider;
 }
 
 export interface McpClientAdapter {

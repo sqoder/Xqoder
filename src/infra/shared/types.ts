@@ -621,6 +621,24 @@ export interface MCPServerConfig {
     enabled?: boolean;
     /** Timeout for a single request in milliseconds */
     timeoutMs?: number;
+    /** Optional OAuth 2.1 config for http/sse transports */
+    oauth?: MCPServerOAuthConfig;
+}
+
+/** OAuth 2.1 Authorization Code + PKCE configuration for an MCP server */
+export interface MCPServerOAuthConfig {
+    /** Authorization endpoint (e.g. https://auth.example.com/authorize) */
+    authorizationUrl: string;
+    /** Token endpoint (e.g. https://auth.example.com/token) */
+    tokenUrl: string;
+    /** Pre-registered public client id */
+    clientId: string;
+    /** Optional client secret for confidential clients (omit for public/PKCE-only) */
+    clientSecret?: string;
+    /** Space-delimited scopes requested */
+    scopes?: string[];
+    /** Optional audience claim */
+    audience?: string;
 }
 
 /** MCP configuration */

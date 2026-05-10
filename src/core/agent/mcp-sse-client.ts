@@ -1,6 +1,7 @@
 import { logger as defaultLogger, type Logger, type MCPServerConfig } from '@xqoder/shared';
 import { buildRoots, hasCapability } from './mcp-utils.js';
 import { handleElicitation, type ElicitationRequest } from './mcp-elicitation.js';
+import type { McpAuthProvider } from './mcp-oauth.js';
 import {
     MCP_CLIENT_INFO,
     MCP_REQUEST_PROTOCOL_VERSION,
@@ -35,6 +36,7 @@ const RECONNECT_BACKOFFS_MS = [250, 500, 1000];
 export class McpSseClient implements McpClientAdapter {
     private readonly logger: Logger;
     private readonly pendingRequests = new Map<string | number, PendingRequest>();
+    private readonly authProvider?: McpAuthProvider;
     private initialized = false;
     private closed = false;
     private nextId = 1;
@@ -53,6 +55,7 @@ export class McpSseClient implements McpClientAdapter {
         private readonly options: Omit<McpManagerOptions, 'servers'>,
     ) {
         this.logger = (options.logger ?? defaultLogger).child(`MCP:${config.name}`);
+        this.authProvider = options.authProvider;
     }
 
     get protocolVersion(): string | undefined {
@@ -238,16 +241,46 @@ export class McpSseClient implements McpClientAdapter {
         const controller = new AbortController();
         this.streamAbort = controller;
 
+        const authHeader = await this.authProvider?.getAuthHeader();
         const response = await fetch(endpoint, {
             method: 'POST',
             headers: {
                 accept: 'text/event-stream',
                 'content-type': 'application/json',
                 ...(this.config.headers ?? {}),
+                ...(authHeader ? { authorization: authHeader } : {}),
             },
             body: JSON.stringify({ jsonrpc: '2.0', method: 'stream/open', params: {} }),
             signal: controller.signal,
         });
+
+        if (response.status === 401 && this.authProvider) {
+            try { await response.body?.cancel(); } catch { /* ignore */ }
+            const refreshed = await this.authProvider.refresh();
+            if (refreshed) {
+                const retry = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        accept: 'text/event-stream',
+                        'content-type': 'application/json',
+                        ...(this.config.headers ?? {}),
+                        authorization: refreshed,
+                    },
+                    body: JSON.stringify({ jsonrpc: '2.0', method: 'stream/open', params: {} }),
+                    signal: controller.signal,
+                });
+                if (!retry.ok) {
+                    throw new Error(`SSE stream HTTP ${retry.status}`);
+                }
+                if (!retry.body) {
+                    throw new Error('SSE stream response missing body');
+                }
+                await consumeSseStream(retry.body, (payload) => {
+                    this.handleIncomingPayload(payload);
+                });
+                return;
+            }
+        }
 
         if (!response.ok) {
             throw new Error(`SSE stream HTTP ${response.status}`);
@@ -390,6 +423,13 @@ export class McpSseClient implements McpClientAdapter {
     }
 
     private async sendRaw(payload: Record<string, unknown>): Promise<JsonRpcResponse | undefined> {
+        return this.sendRawWithAuthRetry(payload, false);
+    }
+
+    private async sendRawWithAuthRetry(
+        payload: Record<string, unknown>,
+        alreadyRefreshed: boolean,
+    ): Promise<JsonRpcResponse | undefined> {
         const endpoint = this.requireEndpoint();
         const timeoutMs = this.config.timeoutMs ?? 15_000;
         const controller = new AbortController();
@@ -397,16 +437,25 @@ export class McpSseClient implements McpClientAdapter {
         const expectsResponse = typeof payload.method === 'string' && typeof payload.id !== 'undefined';
 
         try {
+            const authHeader = alreadyRefreshed
+                ? await this.authProvider?.refresh()
+                : await this.authProvider?.getAuthHeader();
             const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: {
                     accept: 'application/json, text/event-stream',
                     'content-type': 'application/json',
                     ...(this.config.headers ?? {}),
+                    ...(authHeader ? { authorization: authHeader } : {}),
                 },
                 body: JSON.stringify(payload),
                 signal: controller.signal,
             });
+
+            if (response.status === 401 && this.authProvider && !alreadyRefreshed) {
+                try { await response.body?.cancel(); } catch { /* ignore */ }
+                return this.sendRawWithAuthRetry(payload, true);
+            }
 
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);

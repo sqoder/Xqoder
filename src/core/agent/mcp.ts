@@ -12,6 +12,25 @@ export type {
     ElicitationRequest,
     ElicitationResponse,
 } from './mcp-elicitation.js';
+export {
+    buildAuthorizeUrl,
+    createMcpAuthProvider,
+    exchangeAuthCode,
+    FileMcpTokenStore,
+    generatePkcePair,
+    generateState,
+    oauthDisabled,
+    refreshAccessToken,
+    runMcpOauth,
+} from './mcp-oauth.js';
+export type {
+    McpAuthProvider,
+    McpTokenStore,
+    RunMcpOauthOptions,
+    StoredMcpToken,
+} from './mcp-oauth.js';
+export { McpAuthTool } from './tools/mcp-auth-tool.js';
+export type { McpAuthToolOptions } from './tools/mcp-auth-tool.js';
 export type {
     McpCallToolResult,
     McpClientAdapter,

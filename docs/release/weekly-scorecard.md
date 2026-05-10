@@ -619,3 +619,48 @@
 - 下一期: **P13b — OAuth 2.1 + McpAuthTool**(会话切换前续)
 
 ---
+
+## P13b (2026-05-10) — MCP OAuth 2.1 + McpAuthTool
+
+- release:check: ✅ (1046 pass / 0 fail,coverage gate PASS,mcp:live-smoke + security + size guardrail 全绿)
+- golden task pass: 未测量(本期只扩 MCP 认证层,未触及 live coding 链路)
+- /review 警告: 未跑(本期零触碰硬/软红线,改动范围全新文件 + 三个 MCP client 的 sendRaw)
+- 本期关键决策(详见 ADR 0011):
+  - OAuth 2.1 Authorization Code + PKCE,**不做** dynamic client registration;
+    `clientId` 必须在 `MCPServerConfig.oauth` 里预注册
+  - `McpClientAdapter` 接口零变更(延续 P13a 约束),只在 `McpManagerOptions` 加
+    可选 `authProvider?: McpAuthProvider` 注入点
+  - 401 → refresh once → retry,再失败原样抛出(防死循环);SSE 长连接单独处理
+  - `MCPServerConfig.oauth` 顶层字段 + normalizer(三必填缺一则丢弃),**不做** sidecar
+    配置文件
+  - Token 存在 `~/.xqoder/data/mcp-tokens.json`,tmp+rename 原子性,chmod 0o600
+  - `XQODER_MCP_DISABLE_OAUTH=1` 是唯一 kill switch(provider + tool 都会短路)
+  - `McpAuthTool` 默认先查现有 token,`force=true` 才重跑浏览器流程
+- 新增文件:
+  - `src/core/agent/mcp-oauth.ts` (370L) — PKCE + callback + FileMcpTokenStore + provider
+  - `src/core/agent/tools/mcp-auth-tool.ts` (145L) — 工具入口
+- 修改文件:
+  - `src/infra/shared/types.ts` — 加 `MCPServerOAuthConfig` 接口 + `oauth?` 字段
+  - `src/infra/shared/config-normalizers-integrations.ts` — 加 `normalizeMcpOAuth`
+  - `src/core/agent/mcp-types.ts` — 加 `McpManagerOptions.authProvider?`
+  - `src/core/agent/mcp-http-client.ts` — `sendRawWithAuthRetry(payload, alreadyRefreshed)`
+  - `src/core/agent/mcp-sse-client.ts` — sendRaw + openStreamOnce 都加 401 刷新
+  - `src/core/agent/mcp-server-manager.ts` — `getClient` 自动兜底生成 authProvider
+  - `src/core/agent/mcp.ts` — re-export OAuth API + McpAuthTool
+- 新测试(28 条,远超 ≥15 要求):
+  - `test/core/mcp-oauth.test.ts` (18 条)
+  - `test/core/mcp-http-client-auth.test.ts` (4 条)
+  - `test/core/mcp-sse-client-auth.test.ts` (1 条)
+  - `test/core/tools/mcp-auth-tool.test.ts` (5 条)
+- 本期 token 消耗: 未测量(主会话直接实施,未用 executor 子代理——继承 P13a 教训)
+- ADR: `docs/adr/0011-p13b-mcp-oauth.md`
+- 不做 / 搁置:
+  - `xqoder mcp auth <name>` CLI 子命令 → **P13c**
+  - `mcp doctor` OAuth 握手 / token 文件权限检查 → **P13c**
+  - `mcp:live-smoke` 真 HTTP/SSE + OAuth 端到端烟测 → **P13c**
+  - Dynamic client registration / JWT exp 解析 / refresh token rotation 检测 →
+    v1 不做,实际碰上再说
+- 下一期: **P13c — `mcp auth/debug` CLI + doctor 扩展 + HTTP/SSE live-smoke**
+
+---
+

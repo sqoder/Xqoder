@@ -17,6 +17,7 @@ import type { McpServerInspection } from './mcp-inspection.js';
 import { McpHttpClient } from './mcp-http-client.js';
 import { McpSseClient } from './mcp-sse-client.js';
 import { McpStdioClient } from './mcp-stdio-client.js';
+import { createMcpAuthProvider } from './mcp-oauth.js';
 import type {
     McpClientAdapter,
     McpManagerOptions,
@@ -104,6 +105,9 @@ export class McpServerManager {
             return existing;
         }
 
+        const authProvider = this.options.authProvider
+            ?? createMcpAuthProvider(server, { logger: this.logger });
+
         const client = this.createClient(server, {
             cwd: this.options.cwd,
             projectRoot: this.options.projectRoot,
@@ -111,6 +115,7 @@ export class McpServerManager {
             allowedPaths: this.options.allowedPaths,
             logger: this.logger,
             elicit: this.options.elicit,
+            ...(authProvider ? { authProvider } : {}),
         });
 
         this.clients.set(server.name, client);
@@ -132,6 +137,7 @@ export function createDefaultMcpClient(
 }
 
 export function createStandaloneMcpClient(server: MCPServerConfig, options: McpManagerOptions): McpClientAdapter {
+    const authProvider = options.authProvider ?? createMcpAuthProvider(server, { logger: options.logger });
     return createDefaultMcpClient(server, {
         cwd: options.cwd,
         projectRoot: options.projectRoot,
@@ -139,6 +145,7 @@ export function createStandaloneMcpClient(server: MCPServerConfig, options: McpM
         allowedPaths: options.allowedPaths,
         logger: options.logger,
         elicit: options.elicit,
+        ...(authProvider ? { authProvider } : {}),
     });
 }
 

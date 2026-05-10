@@ -1,5 +1,6 @@
 import { logger as defaultLogger, type Logger, type MCPServerConfig } from '@xqoder/shared';
 import { hasCapability } from './mcp-utils.js';
+import type { McpAuthProvider } from './mcp-oauth.js';
 import {
     MCP_CLIENT_INFO,
     MCP_REQUEST_PROTOCOL_VERSION,
@@ -24,6 +25,7 @@ import {
 
 export class McpHttpClient implements McpClientAdapter {
     private readonly logger: Logger;
+    private readonly authProvider?: McpAuthProvider;
     private initialized = false;
     private nextId = 1;
     private protocolVersionValue?: string;
@@ -36,6 +38,7 @@ export class McpHttpClient implements McpClientAdapter {
 
     constructor(private readonly config: MCPServerConfig, options: Omit<McpManagerOptions, 'servers'>) {
         this.logger = (options.logger ?? defaultLogger).child(`MCP:${config.name}`);
+        this.authProvider = options.authProvider;
     }
 
     get protocolVersion(): string | undefined {
@@ -213,6 +216,13 @@ export class McpHttpClient implements McpClientAdapter {
     }
 
     private async sendRaw(payload: Record<string, unknown>): Promise<JsonRpcResponse> {
+        return this.sendRawWithAuthRetry(payload, false);
+    }
+
+    private async sendRawWithAuthRetry(
+        payload: Record<string, unknown>,
+        alreadyRefreshed: boolean,
+    ): Promise<JsonRpcResponse> {
         const endpoint = this.config.url?.trim();
         if (!endpoint) {
             throw new Error(`MCP server ${this.config.name} missing url for ${this.config.transport ?? 'http'} transport`);
@@ -222,15 +232,24 @@ export class McpHttpClient implements McpClientAdapter {
         const timer = setTimeout(() => controller.abort(), timeoutMs);
 
         try {
+            const authHeader = alreadyRefreshed
+                ? await this.authProvider?.refresh()
+                : await this.authProvider?.getAuthHeader();
             const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: {
                     'content-type': 'application/json',
                     ...(this.config.headers ?? {}),
+                    ...(authHeader ? { authorization: authHeader } : {}),
                 },
                 body: JSON.stringify(payload),
                 signal: controller.signal,
             });
+
+            if (response.status === 401 && this.authProvider && !alreadyRefreshed) {
+                try { await response.body?.cancel(); } catch { /* ignore */ }
+                return this.sendRawWithAuthRetry(payload, true);
+            }
 
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
