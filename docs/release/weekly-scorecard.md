@@ -877,3 +877,26 @@
   - P15c wiring + 4 e2e
   - 共新增 51 条测试,1105 → 1134(+29)
 - 下一期: **P20 — thinking/effort/fastMode 档位(S5 子期)**
+
+## P20a (2026-05-11) — thinking/effort/fast/token-extractor pure modules
+
+- release:check: ✅ (1172 pass / 0 fail,coverage 69.26% PASS,e2e smoke ✅,mcp:live-smoke 三 transport ✅,security hygiene ✅,size guardrail ✅)
+- golden task pass: 未测量(本期纯 module 新增)
+- /review 警告: 未跑(本期零红线触碰,0 修改文件)
+- 本期关键决策(详见 ADR 0019):
+  - P20 拆两子期:P20a 纯模块(本期)/ P20b provider + CLI + session wiring
+  - 模块放 `src/shared/thinking/`(P15b 架构守卫教训:shared 不能反指 infra)
+  - `ThinkingConfig` 统一三维度(mode / budgetTokens / effort / fastMode)
+  - resolveThinking 三层合并:DEFAULT < 模型默认 < 用户覆盖;budgetTokens 缺省时从 effort 派生
+  - Fast cooldown 默认 120s,多次 trigger 取 max
+  - `extractThinking()` 专门处理非流式字符串,不替代 ThinkTagFilter
+- 新增文件:
+  - 5 个 module(thinking-config/effort/fast-mode/token-extractor/index)
+  - 4 个测试文件(38 条新测试)
+- 本期 token 消耗: 未测量
+- ADR: `docs/adr/0019-p20a-thinking-pure-modules.md`
+- 不做 / 搁置:
+  - Wire 到 Anthropic/OpenAI provider params → **P20b**
+  - CLI `xqoder think|effort|fast` + session 持久化 → **P20b**
+  - withRetry 捕 fast-mode rejected → triggerFastModeCooldown → **P20b**
+- 下一期: **P20b — wire thinking/effort/fast 到 provider + CLI + session**
