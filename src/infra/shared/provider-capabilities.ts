@@ -8,6 +8,7 @@ export interface LLMProviderCapabilities {
     readonly input: ResolvedLLMInputModalities;
     readonly nativePdf: boolean;
     readonly openAIFileDataFormat: 'base64' | 'data-url';
+    readonly supportsStrictTools: boolean;
 }
 
 const TEXT_ONLY: ResolvedLLMInputModalities = {
@@ -59,7 +60,21 @@ export function resolveLLMProviderCapabilities(config: LLMProviderConfig): LLMPr
         input,
         nativePdf: supportsNativePdf(config, input),
         openAIFileDataFormat: openAIFileDataFormat(config.provider),
+        supportsStrictTools: supportsStrictTools(config.provider),
     };
+}
+
+const STRICT_TOOLS_PROVIDERS = new Set<LLMProviderName>([
+    'openai',
+    'azure',
+    'openai-compatible',
+    'openrouter',
+    'xai',
+    'groq',
+]);
+
+function supportsStrictTools(provider: LLMProviderName): boolean {
+    return STRICT_TOOLS_PROVIDERS.has(provider);
 }
 
 export function normalizeInputModalities(input: LLMInputModalities | undefined): ResolvedLLMInputModalities {
