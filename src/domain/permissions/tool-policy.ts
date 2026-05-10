@@ -3,6 +3,7 @@ import type {
     PermissionSettings,
 } from '@xqoder/foundation-shared/types/permissions.js';
 import { mergeToolApprovalPatches, type ToolApprovalPatch } from './approval.js';
+import { resolveAcceptEditsMode, resolveAutoShellEarlyDeny, resolveAutoShellMode } from './permission-mode-helpers.js';
 import {
     classifyReadPathScope,
     classifyWritePathScope,
@@ -56,6 +57,7 @@ const VALID_PERMISSION_MODES: AgentPermissionMode[] = [
     'plan',
     'default',
     'bypassPermissions',
+    'acceptEdits',
 ];
 const READLIKE_TOOLS = new Set([
     'read_file',
@@ -184,8 +186,9 @@ export function resolveToolPermissionDecision(
             : structuredDecision ?? 'allow';
     }
 
-    let mode = resolveToolPermissionMode(toolName, permissions, input.securityContext);
-
+    const mode = resolveToolPermissionMode(toolName, permissions, input.securityContext);
+    const earlyDeny = mode === 'auto' ? resolveAutoShellEarlyDeny(toolName, input.args) : null;
+    if (earlyDeny) return earlyDeny;
     if (mode === 'bypassPermissions') {
         return requiresHardApproval || requiresReadBeforeWriteApproval || structuredDecision === 'ask'
             ? 'ask'
@@ -204,26 +207,17 @@ export function resolveToolPermissionDecision(
         return 'ask';
     }
 
-    if (mode === 'auto') {
-        return resolveAutoModeDecision(input);
-    }
+    if (mode === 'acceptEdits') return resolveAcceptEditsMode(isWriteLikeTool(toolName), isReadLikeTool(toolName, input.securityContext));
+    if (mode === 'auto') return resolveAutoModeDecision(input);
 
     if (mode === 'plan') {
         if (isMcpReadOnlyOperation(input.securityContext, toolName)) {
-            return evaluateToolRisk(toolName, input.args, input.securityContext) === 'low'
-                ? 'allow'
-                : 'ask';
+            return evaluateToolRisk(toolName, input.args, input.securityContext) === 'low' ? 'allow' : 'ask';
         }
-
-        return isReadLikeTool(toolName, input.securityContext) && isReadPathAllowedByDefault(input)
-            ? 'allow'
-            : 'ask';
+        return isReadLikeTool(toolName, input.securityContext) && isReadPathAllowedByDefault(input) ? 'allow' : 'ask';
     }
 
-    if (mode === 'default') {
-        // Fallback to ask if mode is literally 'default' but defaultMode is not set
-        return 'ask';
-    }
+    if (mode === 'default') return 'ask';
 
     return mode;
 }
@@ -243,6 +237,9 @@ function resolveAutoModeDecision(input: ToolPolicyDecisionInput): AgentPermissio
     if (isWriteLikeTool(toolName)) {
         return isWritePathAllowedByDefault(input) ? 'allow' : 'ask';
     }
+
+    // Shell commands in auto mode: rule classifier decides outright.
+    if (toolName === 'run_command' || toolName === 'run_shell') return resolveAutoShellMode(typeof args?.['command'] === 'string' ? args['command'] : '');
 
     // Basic Risk Classifier
     const risk = evaluateToolRisk(toolName, args, securityContext);

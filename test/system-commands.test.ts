@@ -425,7 +425,7 @@ describe('permissions snapshot helpers', () => {
     });
 
     it('exposes all supported permission modes and approval policies for CLI help', () => {
-        expect(describeSupportedPermissionModes()).toBe('allow | ask | deny | auto | plan | default | bypassPermissions');
+        expect(describeSupportedPermissionModes()).toBe('allow | ask | deny | auto | plan | default | bypassPermissions | acceptEdits');
         expect(describeSupportedApprovalPolicies()).toBe('strict | balanced | workspace_auto');
     });
 });

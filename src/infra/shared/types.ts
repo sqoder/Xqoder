@@ -443,7 +443,15 @@ export type ApprovalPolicy =
     | 'dangerous_full_access';
 
 /** Agent permission mode */
-export type AgentPermissionMode = 'allow' | 'ask' | 'deny' | 'auto' | 'plan' | 'default' | 'bypassPermissions';
+export type AgentPermissionMode =
+    | 'allow'
+    | 'ask'
+    | 'deny'
+    | 'auto'
+    | 'plan'
+    | 'default'
+    | 'bypassPermissions'
+    | 'acceptEdits';
 
 /** Agent model reference */
 export interface LLMModelReference {

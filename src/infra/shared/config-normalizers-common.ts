@@ -61,6 +61,7 @@ const VALID_PERMISSION_MODES = new Set<NonNullable<PermissionSettings['defaultMo
     'plan',
     'default',
     'bypassPermissions',
+    'acceptEdits',
 ]);
 
 export function normalizePermissionSettings(settings: PermissionSettings | undefined): PermissionSettings {

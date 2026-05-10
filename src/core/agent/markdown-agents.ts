@@ -31,6 +31,7 @@ const SUPPORTED_PERMISSION_MODES = new Set<AgentPermissionMode>([
     'plan',
     'default',
     'bypassPermissions',
+    'acceptEdits',
 ]);
 
 export interface MarkdownAgentLookupOptions {
