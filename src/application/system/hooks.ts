@@ -4,6 +4,7 @@ import {
     type HookEventName,
     type HookHandlerConfig,
     type HookHandlerType,
+    type HookMatcherConfig,
     type HooksSettings,
     SUPPORTED_HOOK_EVENTS,
     isHookEventName,
@@ -194,6 +195,192 @@ export function runHooksCommand(fn: () => void): void {
     } catch (error) {
         process.stderr.write(`hooks command failed: ${error instanceof Error ? error.message : String(error)}\n`);
         process.exit(1);
+    }
+}
+
+export interface HookMutationOptions extends HooksOutputOptions {
+    event: string;
+    matcher?: string;
+}
+
+export interface AddCommandHookOptions extends HookMutationOptions {
+    command: string;
+    async?: boolean;
+    timeout?: number;
+    shell?: string;
+}
+
+export interface AddHttpHookOptions extends HookMutationOptions {
+    url: string;
+    timeout?: number;
+}
+
+export interface AddPromptHookOptions extends HookMutationOptions {
+    prompt: string;
+    model?: string;
+    timeout?: number;
+}
+
+export interface AddAgentHookOptions extends HookMutationOptions {
+    prompt: string;
+    agent?: string;
+    model?: string;
+    timeout?: number;
+}
+
+export interface RemoveHookOptions extends HooksOutputOptions {
+    event: string;
+    index: number;
+}
+
+export interface HookMutationResult {
+    scope: ConfigWriteScope;
+    configPath: string;
+    event: HookEventName;
+    handlerCount: number;
+    mutation: 'added' | 'removed';
+}
+
+export function runAddHookCommand(
+    handler: HookHandlerConfig,
+    options: HookMutationOptions,
+    dependencies: HooksCommandDependencies = {},
+    manager?: Pick<ConfigManager, 'load' | 'set' | 'save' | 'getConfigPath'>,
+): HookMutationResult {
+    const eventName = resolveRequiredEventName(options.event);
+    const target = resolveMutationTarget(options, manager);
+    const current = target.manager.load({ mode: 'single' });
+    const matcher = options.matcher?.trim() || undefined;
+    const existingHooks = { ...(current.hooks ?? {}) } as HooksSettings;
+    const existingGroups = existingHooks[eventName] ?? [];
+    const groupIndex = matcher
+        ? existingGroups.findIndex((group) => (group.matcher ?? '') === matcher)
+        : existingGroups.findIndex((group) => group.matcher === undefined);
+    const nextGroups: HookMatcherConfig[] = existingGroups.map((group) => ({ ...group, hooks: [...group.hooks] }));
+    if (groupIndex >= 0) {
+        nextGroups[groupIndex]!.hooks.push(handler);
+    } else {
+        nextGroups.push({
+            ...(matcher !== undefined ? { matcher } : {}),
+            hooks: [handler],
+        });
+    }
+    existingHooks[eventName] = nextGroups;
+    target.manager.set({ ...current, hooks: existingHooks });
+    target.manager.save();
+    const handlerCount = nextGroups.reduce((total, group) => total + group.hooks.length, 0);
+
+    const result: HookMutationResult = {
+        scope: target.scope,
+        configPath: target.manager.getConfigPath(),
+        event: eventName,
+        handlerCount,
+        mutation: 'added',
+    };
+    writeMutationOutput(result, options, dependencies);
+    return result;
+}
+
+export function runRemoveHookCommand(
+    options: RemoveHookOptions,
+    dependencies: HooksCommandDependencies = {},
+    manager?: Pick<ConfigManager, 'load' | 'set' | 'save' | 'getConfigPath'>,
+): HookMutationResult {
+    const eventName = resolveRequiredEventName(options.event);
+    const target = resolveMutationTarget(options, manager);
+    const current = target.manager.load({ mode: 'single' });
+    const existingHooks = { ...(current.hooks ?? {}) } as HooksSettings;
+    const existingGroups = existingHooks[eventName] ?? [];
+    const flattened = existingGroups.flatMap((group, groupIndex) =>
+        group.hooks.map((handler, handlerIndex) => ({ groupIndex, handlerIndex, handler })),
+    );
+    if (!Number.isInteger(options.index) || options.index < 0 || options.index >= flattened.length) {
+        throw new Error(`hook index ${options.index} out of range for ${eventName} (have ${flattened.length})`);
+    }
+    const targetEntry = flattened[options.index]!;
+    const nextGroups: HookMatcherConfig[] = existingGroups
+        .map((group, groupIndex) => {
+            if (groupIndex !== targetEntry.groupIndex) {
+                return { ...group, hooks: [...group.hooks] };
+            }
+            const filtered = group.hooks.filter((_, handlerIndex) => handlerIndex !== targetEntry.handlerIndex);
+            return filtered.length === 0 ? null : { ...group, hooks: filtered };
+        })
+        .filter((group): group is HookMatcherConfig => group !== null);
+
+    if (nextGroups.length === 0) {
+        delete existingHooks[eventName];
+    } else {
+        existingHooks[eventName] = nextGroups;
+    }
+    target.manager.set({ ...current, hooks: existingHooks });
+    target.manager.save();
+    const handlerCount = nextGroups.reduce((total, group) => total + group.hooks.length, 0);
+
+    const result: HookMutationResult = {
+        scope: target.scope,
+        configPath: target.manager.getConfigPath(),
+        event: eventName,
+        handlerCount,
+        mutation: 'removed',
+    };
+    writeMutationOutput(result, options, dependencies);
+    return result;
+}
+
+export interface HookTestOptions extends HooksOutputOptions {
+    event: string;
+    toolName?: string;
+    payloadJson?: string;
+}
+
+export interface HookTestResult {
+    event: HookEventName;
+    executedHandlers: number;
+    blocked: boolean;
+    reason?: string;
+    additionalContexts: string[];
+    systemMessages: string[];
+    handlers: Array<{ type: string; error?: string; output?: string }>;
+}
+
+// NOTE: runTestHookCommand lives in ../integrations/hooks-test.ts to keep
+// @xqoder/agent out of the strict-lint scope that includes src/application/system.
+// Callers in src/commands (outside the strict scope) import it directly.
+
+function resolveMutationTarget(
+    options: HooksOutputOptions,
+    manager?: Pick<ConfigManager, 'load' | 'set' | 'save' | 'getConfigPath'>,
+): { scope: ConfigWriteScope; manager: Pick<ConfigManager, 'load' | 'set' | 'save' | 'getConfigPath'> } {
+    if (manager) {
+        return { scope: options.scope ?? 'project', manager };
+    }
+    return resolveConfigWriteTarget(resolveHooksWriteTargetOptions(options));
+}
+
+function resolveRequiredEventName(value: string | undefined): HookEventName {
+    const normalized = value?.trim();
+    if (!normalized) {
+        throw new Error('hook --event is required');
+    }
+    if (!isHookEventName(normalized)) {
+        throw new Error(`Unsupported hook event: ${normalized}. Supported events: ${SUPPORTED_HOOK_EVENTS.join(', ')}`);
+    }
+    return normalized;
+}
+
+function writeMutationOutput(
+    result: HookMutationResult,
+    options: HooksOutputOptions,
+    dependencies: HooksCommandDependencies,
+): void {
+    if (options.json) {
+        writeOutput(JSON.stringify(result, null, 2), dependencies);
+    } else {
+        writeOutput(
+            `mutation=${result.mutation} event=${result.event} scope=${result.scope} handlerCount=${result.handlerCount} configPath=${result.configPath}`,
+            dependencies,
+        );
     }
 }
 

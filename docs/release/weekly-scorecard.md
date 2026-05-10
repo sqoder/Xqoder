@@ -772,3 +772,27 @@
   - `xqoder hooks add/remove/list/test` CLI → **P14c**
   - UserPromptSubmit deny 的 e2e → **P14c**
 - 下一期: **P14c — hooks CLI + e2e 阻断用例**
+
+## P14c (2026-05-11) — hooks CLI (add/remove/list/test) + UserPromptSubmit e2e
+
+- release:check: ✅ (1086 pass / 0 fail,coverage 68.85% PASS,e2e smoke ✅,mcp:live-smoke 三 transport ✅,security hygiene ✅,size guardrail ✅)
+- golden task pass: 未测量(本期加 CLI,未触及 live coding 链路)
+- /review 警告: 未跑(本期零硬红线触碰)
+- 本期关键决策(详见 ADR 0015):
+  - 新增 4 个子命令:`list`(`show` 别名)/ `add`(4 种 handler 类型)/ `remove`(扁平 index)/ `test`(真实 dispatcher 调用,不 dry-run)
+  - `runTestHookCommand` 拆到 `application/integrations/hooks-test.ts`,避开 `application-system-exact-optional` 严格 lint 范围(参考 P13c mcp-auth-command 模式)
+  - `add` 按 matcher 分组 handler;`remove` 最后一个 handler 移除后删掉整个 event key
+  - UserPromptSubmit deny e2e 用真实 `resolvePromptSubmissionOutcome`,写 `.sh` + `config.json`,不 mock
+- 新增文件:
+  - `src/application/integrations/hooks-test.ts`(~235L)
+  - `test/application/system/hooks-mutations.test.ts`(9 条)
+  - `test/application/chat/turn-intake/user-prompt-submit-deny-e2e.test.ts`(1 条 e2e)
+- 修改文件:
+  - `src/application/system/hooks.ts` — 新增 add/remove 实现 + test 接口定义
+  - `src/commands/system/hooks.ts` — commander 子命令 + `buildHandlerFromCliOptions`
+- 本期 token 消耗: 未测量(主会话直接实施)
+- ADR: `docs/adr/0015-p14c-hooks-cli-and-user-prompt-submit-e2e.md`
+- 不做 / 搁置:
+  - `xqoder hooks test --event UserPromptSubmit` → 走 bridge,不走通用 dispatcher;P15 如需
+  - `xqoder hooks edit` → 施工单未要求
+- 下一期: **P15 — 按 02-execution-order-logic-first 顺序决定**(P14 三子期 a/b/c 收官)
