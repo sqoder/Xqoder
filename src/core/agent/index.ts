@@ -187,6 +187,20 @@ export {
     normalizeMvpFailureSignature,
 } from './mvp/pattern-memory.js';
 export { resolveMvpRecoveryDecision, applyMvpRecoveryDecision, renderMvpRecoveryMessage } from './mvp/recovery-manager.js';
+export {
+    applyToolResultBudget,
+    snipCompactIfNeeded,
+    microcompact,
+    nextReactiveStep,
+    applyReactiveStep,
+    TOOL_RESULT_MAX_BYTES,
+    SNIP_THRESHOLD_BYTES,
+    MICRO_PAIRS_THRESHOLD,
+    type ReactiveStep,
+    type ReactiveSessionTarget,
+    type ToolResultTruncation,
+} from './session/compaction/index.js';
+export { PromptTooLongError } from '../../infra/llm/retry/index.js';
 export { loadMvpRuntimeConfig } from './mvp/runtime-config.js';
 export {
     createMvpBaselineCheck,

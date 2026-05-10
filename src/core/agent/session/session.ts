@@ -623,6 +623,16 @@ export class AgentSession {
         this.workflowState = undefined;
     }
 
+    /**
+     * Replace the in-memory message sequence without triggering auto-compaction.
+     * Used by the P02 reactive compaction pipeline to install snip / micro
+     * results before retrying a provider turn. Caller is responsible for
+     * maintaining base-system placement and tool_use ↔ tool_result pairing.
+     */
+    replaceMessages(messages: LLMMessage[]): void {
+        this.messages = cloneMessages(messages);
+    }
+
     /** Force session compaction using externally provided summary */
     performCompaction(summary: string): void {
         const result = createManualCompactionResult({

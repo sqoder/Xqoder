@@ -8,7 +8,6 @@ import type {
     ToolDefinition,
     ToolResult,
 } from '@xqoder/shared';
-import { getContextWindow } from '@xqoder/shared';
 import {
     createConversationEventEnvelopeEmitter,
     type ConversationEventEnvelope,
@@ -22,6 +21,10 @@ import type {
     AgentSession,
     ToolApprovalRequest,
 } from '@xqoder/agent';
+import {
+    maybeAutoCompact,
+    runTurnWithReactiveCompaction,
+} from './compaction-pipeline.js';
 import type {
     CompletionRequest,
     ILLMProvider,
@@ -230,7 +233,11 @@ async function executeConversationTurn(
         }
 
         const toolUsedBeforeProviderTurn = dependencies.session.getToolHistory().length > toolHistoryBaseline;
-        const response = await requestAssistantTurn(dependencies, runtime, toolUsedBeforeProviderTurn);
+        const response = await runTurnWithReactiveCompaction(
+            () => requestAssistantTurn(dependencies, runtime, toolUsedBeforeProviderTurn),
+            dependencies.session,
+            dependencies.logger,
+        );
         await maybeAutoCompact(response.usage, dependencies);
 
         const completionBlocker = response.finishReason === 'tool_calls'
@@ -1075,34 +1082,6 @@ async function requestAssistantTurn(
         suppressAssistantMessages,
         emit: dependencies.emit,
     });
-}
-
-async function maybeAutoCompact(
-    usage: ProviderTurnResult['usage'],
-    dependencies: ConversationEngineDependencies,
-): Promise<void> {
-    const ctxWindow = getContextWindow(dependencies.llmConfig.model);
-    if (
-        dependencies.runtimeProfile === 'mvp'
-        || dependencies.compaction?.auto === false
-        || !ctxWindow
-        || usage.promptTokens < ctxWindow * 0.85
-    ) {
-        return;
-    }
-
-    dependencies.logger.warn(`Context usage at ${Math.round(usage.promptTokens / ctxWindow * 100)}%, triggering auto-compact`);
-    try {
-        const messages = dependencies.session.getMessages().filter((message) => message.role !== 'system');
-        const { SummarizerAgent } = await import('@xqoder/agent');
-        const summaryAgent = new SummarizerAgent(dependencies.llmConfig);
-        const summary = await summaryAgent.summarize(messages);
-        dependencies.session.performCompaction(summary);
-        dependencies.emit('message', { role: 'system', content: `[Auto-compacted context summary]: ${summary}` }, dependencies.streamId);
-        try { dependencies.callbacks?.onToolEnd?.('auto_compact', summary, true); } catch { /* noop */ }
-    } catch (err) {
-        dependencies.logger.error(`Auto-compact failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
 }
 
 function createStopError(
