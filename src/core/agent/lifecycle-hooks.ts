@@ -1,4 +1,5 @@
 import { logger as defaultLogger } from '@xqoder/shared';
+import { emitTelemetry } from '../../shared/telemetry/index.js';
 import { executeHookHandler } from './hook-handler-execution.js';
 import { parseHookHandlerOutput } from './hook-handler-output.js';
 import type {
@@ -73,6 +74,7 @@ export async function dispatchLifecycleHook(
     config: HookRunnerConfigBase,
 ): Promise<LifecycleHookResult> {
     const logger = config.logger ?? defaultLogger.child('LifecycleHookRunner');
+    const startedAt = Date.now();
     const result: LifecycleHookResult = {
         blocked: false,
         additionalContexts: [],
@@ -123,6 +125,16 @@ export async function dispatchLifecycleHook(
 
     result.additionalContexts = Array.from(new Set(result.additionalContexts));
     result.systemMessages = Array.from(new Set(result.systemMessages));
+
+    if (result.handlers.length > 0) {
+        emitTelemetry({
+            type: 'hook.completed',
+            event: eventName,
+            decision: result.blocked ? 'block' : 'allow',
+            durationMs: Date.now() - startedAt,
+            ...(config.sessionId ? { sessionId: config.sessionId } : {}),
+        });
+    }
     return result;
 }
 

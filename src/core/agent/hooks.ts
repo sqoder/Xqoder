@@ -6,6 +6,7 @@ import type {
     LLMProviderConfig,
 } from '@xqoder/shared';
 import { type Logger, logger as defaultLogger } from '@xqoder/shared';
+import { emitTelemetry, type HookLifecycleName } from '../../shared/telemetry/index.js';
 import { executeHookHandler } from './hook-handler-execution.js';
 import {
     mergePermissionDecision,
@@ -104,6 +105,7 @@ export async function runToolHooks(
     config: ToolHookRunnerConfig,
 ): Promise<ToolHookExecutionResult> {
     const logger = config.logger ?? defaultLogger.child('HookRunner');
+    const startedAt = Date.now();
     const result: ToolHookExecutionResult = {
         continue: true,
         systemMessages: [],
@@ -170,5 +172,22 @@ export async function runToolHooks(
 
     result.additionalContexts = Array.from(new Set(result.additionalContexts));
     result.systemMessages = Array.from(new Set(result.systemMessages));
+
+    if (result.handlers.length > 0) {
+        const decision = result.decision === 'block'
+            ? 'block'
+            : result.permissionDecision === 'deny'
+                ? 'deny'
+                : result.continue === false
+                    ? 'stop'
+                    : 'allow';
+        emitTelemetry({
+            type: 'hook.completed',
+            event: eventName as HookLifecycleName,
+            decision,
+            durationMs: Date.now() - startedAt,
+            ...(config.sessionId ? { sessionId: config.sessionId } : {}),
+        });
+    }
     return result;
 }

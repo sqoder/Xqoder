@@ -7,6 +7,10 @@ export {
 } from './cache-stats.js';
 export type { NormalizedUsage } from './normalized-usage.js';
 export {
+    buildNormalizedUsageFromProviderUsage,
+    type ProviderUsageLike,
+} from './build-usage.js';
+export {
     __resetTelemetrySinkForTests,
     createDatadogSinkStub,
     createInMemorySink,

@@ -8,6 +8,7 @@ import type {
     ToolCall,
     ToolResult,
 } from '@xqoder/shared';
+import { emitTelemetry } from '../../shared/telemetry/index.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createToolApprovalHandler } from '../../application/permissions/index.js';
@@ -353,6 +354,14 @@ export async function finalizePreparedAgentToolCall(
         try { state.callbacks?.onToolStart?.(state.toolCall.name, state.args); } catch { /* noop */ }
     }
     try { state.callbacks?.onToolEnd?.(state.toolCall.name, resultContent, projectedResult.success); } catch { /* noop */ }
+
+    emitTelemetry({
+        type: 'tool.completed',
+        name: state.toolCall.name,
+        success: projectedResult.success,
+        durationMs: Math.max(completedAt.getTime() - startedAt.getTime(), 0),
+        ...(state.dependencies.session.id ? { sessionId: state.dependencies.session.id } : {}),
+    });
 
     state.dependencies.session.recordToolExecution({
         id: state.toolCall.id,

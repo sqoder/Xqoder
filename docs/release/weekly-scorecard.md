@@ -848,3 +848,32 @@
   - Wire telemetry 到 provider/tool/hook 调用点 → **P15c**
   - e2e 断言 `session.usage` 匹配 `xqoder cost` → **P15c**
 - 下一期: **P15c — 把 usage + telemetry 串到 provider/tool/hook 调用点 + e2e**
+
+## P15c (2026-05-11) — Wire usage + telemetry into provider/tool/hook paths
+
+- release:check: ✅ (1134 pass / 0 fail,coverage 69.21% PASS,e2e smoke ✅,mcp:live-smoke 三 transport ✅,security hygiene ✅,size guardrail ✅)
+- golden task pass: 未测量(本期 wiring + e2e,未跑 golden set)
+- /review 警告: 未跑(本期动软红线 `provider-turn.ts`,按 CLAUDE.md 规则留 ADR;零硬红线触碰)
+- 本期关键决策(详见 ADR 0018):
+  - `model.completed` 在 provider-turn 成功返回前发;`tool.completed` 在 onToolEnd 后;`hook.completed` 在 lifecycle + tool hook 两处 dispatcher 末尾(仅 handlers>0 时发)
+  - 不走 infra normalizers,新加 `buildNormalizedUsageFromProviderUsage` 直接从 ConversationProviderUsage 构造 NormalizedUsage(application 层拿到的是已折叠 shape,再跑 normalizer 会误解)
+  - `session.ended` 不挂:turn-scoped runtime 无 session lifecycle owner(同 P14b SessionEnd 决策)
+  - e2e 4 条真实跑 XQoderAgent.run + stub provider + 内存 sink 验证 session.usage ≈ NormalizedUsage
+- 新增文件:
+  - `src/shared/telemetry/build-usage.ts`(~35L)
+  - `test/application/chat/telemetry-wiring-e2e.test.ts`(4 条,~220L)
+- 修改文件(软红线):
+  - `src/application/chat/provider-turn.ts` — recordUsage 返回 cost;末尾发 model.completed
+- 修改文件(非红线):
+  - `src/core/agent/agent-tool-execution.ts` — 发 tool.completed
+  - `src/core/agent/lifecycle-hooks.ts` — 发 hook.completed
+  - `src/core/agent/hooks.ts` — 发 hook.completed
+  - `src/shared/telemetry/index.ts` — barrel
+- 本期 token 消耗: 未测量
+- ADR: `docs/adr/0018-p15c-wire-usage-telemetry.md`
+- P15 收官:
+  - P15a 归一类型 + 19 单测
+  - P15b tracker + sink + CLI + 28 单测
+  - P15c wiring + 4 e2e
+  - 共新增 51 条测试,1105 → 1134(+29)
+- 下一期: **P20 — thinking/effort/fastMode 档位(S5 子期)**
