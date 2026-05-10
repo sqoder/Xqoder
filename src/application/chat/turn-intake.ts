@@ -31,6 +31,9 @@ import {
     defaultAgentForWorkflowMode,
 } from '../workflows/index.js';
 import { buildTurnPermissionGate } from './permission-gate.js';
+import { resolveTurnAttachments } from './turn-intake/attachment-resolver.js';
+import { loadMemdirContextSync } from '../memory/memdir.js';
+import { renderMemoryAppendix } from './turn-intake/memory-loader.js';
 
 const DEFAULT_SANDBOX = {
     mode: 'project',
@@ -131,13 +134,20 @@ export function buildConversationTurnInput(
     const directCommand = isDirectChatCommandRoute(turnRoute.commandRoute);
     const normalizedText = resolveNormalizedTurnText(options.prompt, turnRoute);
     const slashCommand = resolveSlashCommand(options.prompt, turnRoute.commandRoute);
+    const mentionResolution = directCommand
+        ? { attachments: options.attachments?.map((attachment) => ({ ...attachment })) ?? [] }
+        : resolveTurnAttachments({
+            prompt: options.prompt,
+            cwd: resolvedDir,
+            ...(options.attachments ? { userProvided: options.attachments } : {}),
+        });
 
     return {
         rawText: options.prompt,
         normalizedText,
         preparedText,
-        attachments: options.attachments?.map((attachment) => ({ ...attachment })) ?? [],
-        referencedFiles: extractReferencedFiles(options.prompt, options.attachments),
+        attachments: mentionResolution.attachments,
+        referencedFiles: extractReferencedFiles(options.prompt, mentionResolution.attachments),
         ...(slashCommand ? { slashCommand } : {}),
         cwd: resolvedDir,
         ...(options.sessionId ? { sessionId: options.sessionId } : {}),
@@ -195,6 +205,7 @@ export function prepareChatExecution<TTurnInput extends ConversationTurnInput>(
         effectiveTurnInput.cwd,
         effectiveTurnInput.agent,
     );
+    const memoryAppendix = buildTurnMemoryAppendix(effectiveTurnInput);
     const permissionGate = buildTurnPermissionGate({
         commandRoute: effectiveTurnInput.runtime.commandRoute,
         interaction: effectiveTurnInput.runtime.interaction,
@@ -213,6 +224,7 @@ export function prepareChatExecution<TTurnInput extends ConversationTurnInput>(
                 resolveChatRuntimeIdentity(effectiveConfig, effectiveTurnInput.agent, effectiveTurnInput.model),
             ),
             instructionAppendix,
+            memoryAppendix,
         ),
         session,
         sessionTitle: effectiveTurnInput.sessionTitle,
@@ -286,6 +298,20 @@ function buildResolvedInstructionAppendix(
         cwd,
         agentName,
     });
+}
+
+function buildTurnMemoryAppendix(turnInput: ConversationTurnInput): string | undefined {
+    if (isDirectChatCommandRoute(turnInput.runtime.commandRoute)) {
+        return undefined;
+    }
+    const prompt = turnInput.normalizedText || turnInput.rawText;
+    if (!prompt.trim()) return undefined;
+    const { memories } = loadMemdirContextSync({
+        cwd: turnInput.cwd,
+        sessionId: turnInput.sessionId ?? 'pending',
+        prompt,
+    });
+    return renderMemoryAppendix(memories);
 }
 
 function resolveNormalizedTurnText(

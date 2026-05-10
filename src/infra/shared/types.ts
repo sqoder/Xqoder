@@ -511,7 +511,7 @@ export interface PermissionSettings {
     approvalPolicy?: ApprovalPolicy;
 }
 
-export const SUPPORTED_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'] as const;
+export const SUPPORTED_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'UserPromptSubmit'] as const;
 
 export type HookEventName = typeof SUPPORTED_HOOK_EVENTS[number];
 
@@ -754,6 +754,8 @@ export interface XQoderConfig {
     shell?: ShellConfig;
     /** Plugin configuration */
     plugins?: PluginPreferences;
+    /** Environment variables to apply at startup (merged into process.env by `enableConfigs`). */
+    env?: Record<string, string>;
 }
 /** Formatter configuration */
 export interface FormatterConfig {

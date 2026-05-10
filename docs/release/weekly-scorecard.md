@@ -418,5 +418,56 @@
 
 ---
 
+## P11 (2026-05-10)
+
+- release:check: ✅ **PASS** (948 pass / 0 fail / 2906 expect;coverage ✅、cli smoke ✅、mcp live smoke ✅、security hygiene ✅、file-size guardrail ✅ — run-chat.ts 997 行 ≤ 1000)
+- golden task pass: 0/10 → 0/10(dry-run placeholder;baseline 一致,未跑 live)
+- /review 警告: 本期未独立跑 /review,改由 release:check + size guardrail 把关
+- 本期 token 消耗: 约 12 万(单会话完成,未触发 compact)
+- ADR: `docs/adr/0007-p11-input-preprocessing.md`
+- 改动要点:
+  - **Slash `/help` + `/?`**(`src/application/chat/command-router.ts` + `direct-command.ts`):
+    - 注册表加 `help: ['/help', '/?']`;`ChatCommandRoute` 新 kind `'help'`
+    - `isDirectChatCommandRoute` 将其识别为直出命令,走 `buildHelpResponse()` 返回静态帮助文本,不进主循环
+  - **@file mention expansion**(`src/application/chat/turn-intake/mention-expander.ts` ~70 行):
+    - 正则 `@([A-Za-z0-9_.\-/]+\.[A-Za-z0-9]{1,10})` 要求 `@` 前非字母(邮件 `user@example.com` 不命中)
+    - cwd 内路径白名单、去重、硬上限 5、`XQODER_DISABLE_MENTION_EXPANSION=1` 整开关
+    - 通过 `resolveTurnAttachments` 聚合(`attachment-resolver.ts`),与编辑器手动附件去重合并
+  - **memdir**(`src/application/memory/memdir.ts` ~160 行):
+    - 扫源:`CLAUDE.md` / `xqoder.md` / `.claude|.xqoder/CLAUDE.md` / `<cwd>/memdir/*.md` / `~/.xqoder/CLAUDE.md` / `~/.xqoder/memdir/*.md`
+    - v1 打分:小写 token(去 stopwords)交集,`MIN_TOKEN_OVERLAP=1`,每文件上限 4000 字符,每 turn 返 3 块
+    - `loadMemdirContextSync` 走 `prepareChatExecution` prompt appendix,`XQODER_DISABLE_MEMDIR=1` 关掉
+    - **放在 `application/memory/` 而不是 `core/memory/`** — architecture guardrails 禁止 application → core relative import;ADR 0007 §2 记录
+  - **UserPromptSubmit hook**(`src/application/chat/turn-intake/prompt-hook-bridge.ts` ~170 行 + `submission-preprocess.ts` ~90 行):
+    - `SUPPORTED_HOOK_EVENTS` 新增 `'UserPromptSubmit'`;config 解析器自动识别
+    - 独立 payload(`prompt` / `attachment_count`)+ 独立 output schema(`decision: 'deny'|'block'` / `rewritten` / `reason`)
+    - 仅支持 `type: 'command'`(shell),fail-open:JSON 错 / 超时 / 非 deny → 透传
+    - `resolvePromptSubmissionOutcome` 在 run-chat 三入口(`runChat` / `runChatHeadless` / `runChatMessageStream`)最前端调用,`blocked` → 合成响应直接返回,不进主循环
+  - **P10 尾 — enableConfigs 的 settings.env 回写**(`src/shared/settings-env.ts` ~55 行):
+    - `XQoderConfig` 加 optional `env?: Record<string, string>`
+    - `loadSettingsEnvFromFile(homeDir)` 读 `~/.xqoder/config.json` 的 `env` 字段(只收 string 值)
+    - `applySettingsEnv` 合并:**process.env 已有的 key 不覆盖**(CLI / shell 优先)
+    - `enableConfigs()` 在 feature-flags 加载后调一次
+    - `XQODER_SETTINGS_PATH` 支持路径重定向(测试友好)
+  - **测试**(31 新增):
+    - `test/application/chat/turn-intake/slash-router.test.ts` — 4 用例(/help / /? / isDirect / email 不误中)
+    - `test/application/chat/turn-intake/mention-expander.test.ts` — 7 用例(单/多 mention / 不存在 / 邮件 / 去重 / env 关闭 / 上限)
+    - `test/application/chat/turn-intake/prompt-hook-bridge.test.ts` — 6 用例(无 hook / deny / rewritten / 空 JSON / 坏 JSON / block)
+    - `test/application/chat/turn-intake/p11-wiring.test.ts` — 3 用例(@file 自动挂进 turnInput / 直出命令不扩展 / /help 返回帮助文本)
+    - `test/application/memory/memdir.test.ts` — 6 用例(扫描 / 过滤空 / 排序 / loadMemdirContext / 无交集 / env 关闭)
+    - `test/shared/settings-env.test.ts` — 5 用例(正常加载 / 缺文件降级 / 非 string 值忽略 / 不覆盖已有 env / XQODER_SETTINGS_PATH 重定向)
+- DoD 对照:
+  - ✅ 输入 `/help` → 命中本地命令,不走主循环
+  - ✅ 输入 `explain this @src/index.ts` → 自动把 `src/index.ts` 内容插入消息(attachment 形式,和编辑器手动挂的语义一致)
+  - ✅ 有 `CLAUDE.md` / `~/.xqoder/CLAUDE.md` 的项目 → 自动作为 memory 层注入 prompt appendix
+  - ✅ 有相关 memdir/*.md 片段 → `findRelevantMemories` 命中后注入
+  - ✅ `UserPromptSubmit` hook 可阻断或重写用户消息
+  - ✅ 所有新增 31 测试用例就位,全绿
+  - ✅ ADR 0006 §不确定项 #4(`enableConfigs` settings.env)收尾
+  - ⏸ memdir TF-IDF / "pattern memory" → P24
+  - ⏸ UserPromptSubmit hook 的 http/prompt/agent handler 类型 → 等 hook handler 通用化(P13/P16)
+  - ⏸ `contextPreload`(OpenClaude 独立文件) → XQoder 走现有 `buildAutoProjectContext`,等价,不另开
+- 下一期: **P12 — 工具调度**(软红线 `tool-orchestrator.ts` 预计要改,按铁律开新会话跑;背景读 `/agent-harness-construction` + `/subagent-driven-development`)
+
 ---
 
