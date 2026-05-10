@@ -31,6 +31,7 @@ import { tuiInterfaceCommand as tuiCommand } from '../interfaces/tui/index.js';
 import { githubCommandExport } from '../commands/tools/github.js';
 import { createMemoryCommand } from '../commands/system/memory.js';
 import { createHooksCommand } from '../commands/system/hooks.js';
+import { createFeaturesCommand } from '../commands/system/features.js';
 import { createMcpCommand } from '../commands/integrations/mcp.js';
 import { createServeCommand } from '../commands/remote/serve.js';
 import { teamCommand } from '../commands/workflows/team.js';
@@ -144,6 +145,7 @@ function createBuiltInCommandPlugins(options: CommandPluginFactoryOptions = {}):
                     upgradeCommand,
                     createMemoryCommand(),
                     createHooksCommand(),
+                    createFeaturesCommand(),
                     ideCommand,
                     createServeCommand(),
                 ].forEach((command) => api.registerCommand(defineCommanderCommand(command)));

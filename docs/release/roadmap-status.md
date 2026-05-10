@@ -4,19 +4,20 @@
 > 每完成一期,在"当前位置"和"阶段进度表"里打勾,"下一期施工单"指针前移。
 > 配套:`weekly-scorecard.md`(每期验收记录)、`docs/openclaude-parity/`(27 期施工单)。
 
-**最后更新**:2026-05-10 (P09 收官)
+**最后更新**:2026-05-10 (P10 收官)
 
 ---
 
 ## TL;DR — 现在该做什么
 
-**下一期:P10 — CLI fastpath + feature flag 系统(S1 轻量期,顺带打开 token-budget 主动触发)**
+**下一期:P11 — 输入预处理(slash 命令 / `@file` 粘贴 / memdir / contextPreload / handlePromptSubmit hook)**
 
-施工单:`docs/openclaude-parity/phase-10-cli-fastpath-and-feature-flags.md`
+施工单:`docs/openclaude-parity/phase-11-input-preprocessing.md`
 
 开工前 2 分钟维护:
-- [ ] 本文档的"当前位置"确认为 P09 已收官
+- [ ] 本文档的"当前位置"确认为 P10 已收官
 - [ ] P01 验收单 G2–G5 gap 登记(见本文末"积压票")
+- [ ] 用 `enableConfigs` 承载 settings.env 回写(P10 延后项,P11 一并做)
 
 ---
 
@@ -49,7 +50,8 @@ S7 · TUI 收尾       P06 + P22 + P23              Ink 渲染层(最后做)
 | P05 OpenAI 兼容 shim | S2 | ✅ 完成 | `f23f914` |
 | P08 Codex shim + compressToolHistory | S2 | ✅ 完成 | `f23f914` |
 | P09 QueryEngine + query-loop 抽离 | S3 | ✅ 完成 | `6f775cd` |
-| **P10 CLI fastpath + feature flags** | **S1** | **⏭ 下一期** | — |
+| P10 CLI fastpath + feature flags | S1 | ✅ 完成 | — (当前 HEAD 提交前) |
+| **P11 输入预处理** | **S4** | **⏭ 下一期** | — |
 
 ---
 
@@ -57,7 +59,7 @@ S7 · TUI 收尾       P06 + P22 + P23              Ink 渲染层(最后做)
 
 | 阶段 | 需要的期 | 已完成 | 未完成 | 里程碑 |
 |---|---|---|---|---|
-| S1 地基 | P01, P10 | P01 (+P01.1) | **P10** | M1 弱网恢复 |
+| S1 地基 | P01, P10 | P01 (+P01.1), P10 | — | M1 弱网恢复 |
 | S2 Provider 核心 | P07, P05, P08 | P05, P08 | **P07** | M2 多 provider |
 | S3 主循环骨架 | P02, P03, P09 | P02, P03, P09 | — | M3 长对话 |
 | S4 权限/输入/工具 | P04, P04-addendum, P11, P12 | P04(基建) | P04 真接入, P11, P12 | M4 autopilot |

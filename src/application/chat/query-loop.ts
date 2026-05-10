@@ -11,6 +11,7 @@
 
 import type { ToolCall } from '@xqoder/shared';
 import {
+    maybeActiveTokenBudgetCompact,
     maybeAutoCompact,
     runTurnWithReactiveCompaction,
 } from './compaction-pipeline.js';
@@ -122,6 +123,7 @@ export async function runQueryLoop(
         }
 
         const toolUsedBeforeProviderTurn = dependencies.session.getToolHistory().length > toolHistoryBaseline;
+        await maybeActiveTokenBudgetCompact(dependencies);
         const response = await runTurnWithReactiveCompaction(
             () => requestAssistantTurn(dependencies, runtime, toolUsedBeforeProviderTurn),
             dependencies.session,

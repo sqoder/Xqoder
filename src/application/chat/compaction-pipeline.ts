@@ -5,6 +5,7 @@
 
 import type { Logger } from '@xqoder/shared';
 import { getContextWindow } from '@xqoder/shared';
+import { feature } from '../../shared/feature-flags.js';
 import type { AgentCallbacks, AgentEvents, AgentRuntimeProfile, AgentSession } from '@xqoder/agent';
 import {
     PromptTooLongError,
@@ -17,6 +18,7 @@ import {
 } from '@xqoder/agent';
 import type { LLMProviderConfig, CompactionConfig } from '@xqoder/shared';
 import type { ProviderTurnResult } from './provider-turn.js';
+import { estimateTokenBudget } from './token-budget.js';
 
 type CompactionEventEmitter = <K extends keyof AgentEvents>(
     type: K,
@@ -130,4 +132,61 @@ export async function runTurnWithReactiveCompaction<T>(
         }
     }
     throw lastError ?? new Error('reactive compaction exhausted');
+}
+
+// P10: active token-budget trigger (ADR 0005 §3 carry-over).
+// Runs before the provider turn when `TOKEN_BUDGET_ACTIVE` is enabled. Uses
+// the approximate budget estimator to decide whether to proactively walk the
+// snip → micro → autocompact ladder, instead of waiting for reactive
+// PromptTooLongError recovery. Default-off behavior is preserved by the
+// feature flag; no callers need to change.
+export async function maybeActiveTokenBudgetCompact(
+    dependencies: CompactionPipelineDeps,
+): Promise<void> {
+    if (!feature('TOKEN_BUDGET_ACTIVE')) {
+        return;
+    }
+    if (dependencies.runtimeProfile === 'mvp') {
+        return;
+    }
+    if (process.env.XQODER_DISABLE_ADVANCED_COMPACT === '1') {
+        return;
+    }
+
+    const messages = dependencies.session.getMessages();
+    const budget = estimateTokenBudget(messages, dependencies.llmConfig.model);
+    if (budget.reason === 'ok' || budget.contextWindow === undefined) {
+        return;
+    }
+
+    dependencies.logger.warn(
+        `token budget ${budget.reason} (used≈${budget.used}/${budget.contextWindow}); pre-emptive compaction`,
+    );
+
+    // Step 1: byte-based pipeline (snip + micro + budget) is always safe.
+    applyProgressiveCompaction(dependencies);
+
+    if (budget.reason !== 'exhausted') {
+        return;
+    }
+
+    // Step 2: if still exhausted after snip/micro, trigger the summarizer path.
+    // `maybeAutoCompact` expects a usage object — synthesize one so it runs the
+    // summarizer branch. This reuses the existing emit / callback plumbing.
+    const postSnip = estimateTokenBudget(
+        dependencies.session.getMessages(),
+        dependencies.llmConfig.model,
+    );
+    if (postSnip.reason !== 'exhausted' || postSnip.contextWindow === undefined) {
+        return;
+    }
+    const ctxWindow = postSnip.contextWindow;
+    await maybeAutoCompact(
+        {
+            promptTokens: Math.max(postSnip.used, Math.ceil(ctxWindow * 0.9)),
+            completionTokens: 0,
+            totalTokens: postSnip.used,
+        } satisfies ProviderTurnResult['usage'],
+        dependencies,
+    );
 }

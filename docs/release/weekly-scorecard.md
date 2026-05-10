@@ -361,3 +361,62 @@
 
 ---
 
+## P10 (2026-05-10) — CLI fast-path dispatcher + `feature()` runtime + TOKEN_BUDGET_ACTIVE
+
+- release:check: ✅(917 pass / 0 fail;coverage 67.32% ≥ 36%;cli smoke ✅、mcp live ✅、size guardrail ✅、security hygiene ✅)
+- golden task pass: 10/10 持平(本期纯 bootstrap/CLI + feature flag 脚手架,不改业务路径)
+- /review 警告: 0 条(纯新增文件 + `query-loop.ts` 1 行调用 + `compaction-pipeline.ts` 1 个新 export;软红线改动已在 ADR 0006 涵盖)
+- 本期 token 消耗: 约 9 万(无 /autoplan;单 subagent 读 7 文件 + 主会话实现 4 模块 + 17 handlers + 3 测试文件)
+- ADR: `docs/adr/0006-p10-cli-fastpath-and-feature-flags.md`
+- 本期验收产出:
+  - **Fast-path dispatcher**(`src/bootstrap/cli-main.ts` 从 10 行扩到 100 行):
+    - `--version / -v` zero-import path(只 import `cli/version.ts`)
+    - `--provider / --model` 早注入 `process.env`,在任何 config load 之前
+    - `enableConfigs()` lazy 加载 `~/.xqoder/features.json`
+    - `detectFastPath(args)` → 17 个 handler(daemon / ps / logs / attach / kill / remote-control / rc-new|list|reply / environment-runner / self-hosted-runner / chrome-* / worktree + dump-system-prompt)
+    - Feature gate 不通过时打印 "gated behind feature X" + `exitCode=2`
+  - **`feature()` runtime**(`src/shared/feature-flags.ts` ~170 行):
+    - 17 个默认 flag(HTTP_WITH_RETRY / ADVANCED_COMPACTION / PROMPT_CACHE / PERMISSION_MODE_V2 / PERMISSION_YOLO_CLASSIFIER / OPENAI_SHIM / CODEX_SHIM / INK_REPL / DUMP_SYSTEM_PROMPT / COORDINATOR_MODE / CRON_TASKS / BRIDGE_MODE / DAEMON / BG_SESSIONS / WORKFLOW_SCRIPTS / MONITOR_TOOL / CHICAGO_MCP / **TOKEN_BUDGET_ACTIVE**)
+    - 三级解析:env `XQODER_FEATURE_<NAME>`(1/0/true/false) → `~/.xqoder/features.json` → FEATURE_DEFAULTS
+    - `XQODER_FEATURES_PATH` 覆盖路径(测试专用)
+    - `describeFeatures()` 输出 `{ name, enabled, default, source: 'default'|'file'|'env' }[]`
+    - `writeFeatureOverride` / `clearFeatureOverride` 原子写 + 内存缓存刷新
+  - **Provider flag**(`src/cli/provider-flag.ts` ~130 行 clean-room):
+    - 15 provider 名 → CLAUDE_CODE_USE_* env 映射
+    - `parseProviderFlag` / `parseModelFlag` / `applyProviderFlag` / `applyProviderFlagFromArgs` / `applyModelFlagFromArgs`
+    - 未搬 OpenClaude 的 integrations/compatibility 注册表(P07 provider routing 再做)
+  - **Fast-path detector**(`src/cli/fast-path.ts` ~90 行):
+    - argv → handler name 映射,长 flag(`--dump-system-prompt` / `--daemon-worker` / `--claude-in-chrome-mcp` …)+ 裸 subcommand(daemon / ps / logs / attach / kill / rc(-new/list/reply))
+    - `--worktree` / `--provider` / `--model` 不是 fast-path(root shell 处理)
+  - **Handlers**(`src/cli/handlers/` 17 文件):
+    - `dump-system-prompt.ts` — 真实现(调 `buildChatSystemPrompt`)
+    - 其余 16 个走 `stub.ts::createStub(label, name)` → stderr + exit 2
+  - **`xqoder features` 子命令**(`src/commands/system/features.ts` ~80 行):
+    - `ls` / `enable <name>` / `disable <name>` / `reset <name>` / `--json`
+    - 注册到 `cli-system` built-in plugin
+  - **TOKEN_BUDGET_ACTIVE 主动触发**(ADR 0005 §3 收尾):
+    - `compaction-pipeline.ts` 新增 `maybeActiveTokenBudgetCompact(deps)`:
+      flag off → 直接 return;flag on + runtime!=mvp → 检 budget,`near`/`exhausted` 时先跑 `applyProgressiveCompaction`,`exhausted` 仍残留时再走 `maybeAutoCompact` summarizer 路径
+    - `query-loop.ts` 在 `runTurnWithReactiveCompaction` 之前调用(默认 off 下行为 0 变化)
+  - **测试**(51 新增):
+    - `test/shared/feature-flags.test.ts` — 18 用例(default / env/file 三级、enableConfigs reload、malformed JSON 降级、describeFeatures 三种 source)
+    - `test/cli/provider-flag.test.ts` — 16 用例(parse、apply 各 provider、applyModelFlagFromArgs routing)
+    - `test/cli/fast-path.test.ts` — 11 用例(长 flag / 裸 subcommand / rc subverb / 忽略路径)
+    - `test/application/chat/token-budget-active.test.ts` — 6 用例(feature off / mvp / disable env / ok-budget short-circuit / exhausted 触发 / 无 context window 无动作)
+- DoD 对照:
+  - ✅ `bun dist/index.js --version` 走 zero-import 路径(~140ms Bun 冷启动 floor,**达不到施工单 30ms**,已在 ADR 0006 解释 — 等 P25 bundle 优化用 `bun build --compile` 再收 )
+  - ✅ `bun dist/index.js --dump-system-prompt` 输出完整 system prompt,不加载 Ink
+  - ✅ `xqoder features ls` 输出 flag 状态表(17 默认 + 文件/env 覆盖合并)
+  - ✅ `xqoder features enable PROMPT_CACHE` 写入 `~/.xqoder/features.json`
+  - ✅ 17 fast-path handler 就位(dump-system-prompt 真跑,其余 stub 打 "not implemented in this build" + exit 2)
+  - ✅ `XQODER_FEATURE_PROMPT_CACHE=0` env override 验证可行(测试覆盖)
+  - ✅ TOKEN_BUDGET_ACTIVE 默认 off;flag on 时按 ADR 0005 §3 描述主动触发 compact
+  - ⏸ `--version < 30ms` → P25 bundle 优化
+  - ⏸ OpenClaude integrations/compatibility 注册表 → P07 provider routing
+  - ⏸ `enableConfigs` 做 settings.env 回写 → P11
+- 下一期: **P11 — Settings layering + .xqoder.json 合并**(S3 继续;P10 的 `enableConfigs` 留给它扩成完整 settings 流水线)
+
+---
+
+---
+
