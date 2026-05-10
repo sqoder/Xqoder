@@ -940,3 +940,29 @@
   - P20b provider + CLI + session wiring + 20 单测 + 3 e2e
   - 合计 S5 完成:P13(MCP) / P14(hooks) / P15(cost) / P20(thinking)
 - 下一期: **P21 — OAuth 凭据**(S5 最后一期)
+
+## P21a (2026-05-11) — OAuth + credentials pure modules
+
+- release:check: ✅ (1245 pass / 0 fail,coverage 69.51% PASS,e2e smoke ✅,mcp:live-smoke 三 transport ✅,security hygiene ✅,size guardrail ✅)
+- golden task pass: 未测量(本期纯 module 新增)
+- /review 警告: 未跑(本期零红线触碰,0 修改文件)
+- 本期关键决策(详见 ADR 0021):
+  - P21 拆三子期;本期只做 pure module + 单测
+  - 模块放 `src/shared/auth/`(避开 P15b 架构守卫陷阱)
+  - PKCE helper 全部用 Node `crypto` + `URLSearchParams`,零第三方依赖
+  - `EncryptedFileStorage` 走 AES-256-GCM,iv(12)‖authTag(16)‖ciphertext;master.key 存 `~/.xqoder/master.key` 固定 0600
+  - `CredentialsManager.ensureFreshTokens` 5min window 内自动 refresh
+  - Device flow 支持 `authorization_pending` / `slow_down`(+5s)/ 过期
+  - `parseTokenResponse(payload, now, previousRefresh)` 保留上次 refresh 以应对某些服务刷新时不返回新 refresh_token
+  - 文件名清洗(`anthropic/console` → `anthropic_console.enc`)避免路径穿越
+- 新增文件(src/shared/auth/):types / oauth-client / secure-storage / device-flow / credentials-manager / index
+- 新增测试:42 条(oauth-client 13 / device-flow 5 / credentials-manager 13 / secure-storage 11)
+- 本期 token 消耗: 未测量
+- ADR: `docs/adr/0021-p21a-oauth-credentials-pure-modules.md`
+- 不做 / 搁置:
+  - Keychain / libsecret / DPAPI 平台绑定 → P21b 或 P21c
+  - 本地 callback server → P21b
+  - 各 provider OAuth 流程(Anthropic/Codex/GitHub/Gemini)→ P21b
+  - CLI + provider-bootstrap wiring → P21c
+  - withRetry oauth401 接入 → P21c
+- 下一期: **P21b — provider-specific OAuth flows**
