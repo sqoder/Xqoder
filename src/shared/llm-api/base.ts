@@ -19,6 +19,10 @@ export interface CompletionResponse {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    // Anthropic prompt cache indicators. Non-Anthropic providers leave them
+    // undefined; downstream calculateCost/recordUsage tolerate absence.
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
   };
   finishReason: 'stop' | 'tool_calls' | 'length' | 'error';
 }
