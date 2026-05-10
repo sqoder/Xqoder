@@ -10,6 +10,7 @@ export * from './ports.js';
 export * from './provider-turn.js';
 export * from './prompt-composer.js';
 export * from './prompt-layers.js';
+export * from './query-engine.js';
 export * from './run-chat.js';
 export * from './tool-orchestrator.js';
 export * from './tool-follow-up.js';
