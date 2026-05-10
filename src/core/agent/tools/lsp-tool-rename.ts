@@ -27,6 +27,10 @@ export class LspRenameSymbolTool implements ITool {
         ],
     };
 
+    isConcurrencySafe(): boolean {
+        return false;
+    }
+
     async buildApprovalRequest(
         args: Record<string, unknown>,
         context: ToolContext,

@@ -54,6 +54,14 @@ LIMITATIONS: Max 20 results per query.`,
     };
 
     /** Execute Sourcegraph tool */
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return true;
+    }
+
     async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
         const query = args['query'] as string;
         if (!query) {

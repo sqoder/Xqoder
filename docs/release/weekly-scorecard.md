@@ -551,3 +551,51 @@
 - 下一期: **P12 — 工具调度/并发编排**(按 docs/openclaude-parity/phase-12-*.md 施工单)
 
 ---
+
+## P12 (2026-05-10) — 工具调度:partition + streaming executor + autoFix runner
+
+- release:check: ✅ (1002 pass / 0 fail, coverage gate PASS, CLI/MCP live smoke + security/file-size guardrail 全绿)
+- golden task pass: 0/10 → 0/10 (P12 为调度层重构,dry-run 占位未变)
+- /review 警告: 0 条 (软红线改动范围已在 ADR 0008 锁定,未跑独立 /review)
+- 本期验收产出:
+  - `src/core/agent/tools/partition.ts` — `partitionToolCalls(calls, opts)`
+    把 `[read, read, edit, read, write]` 切成 `[concurrent(2), serial(1), concurrent(1), serial(1)]`,
+    受 `maxConcurrent=10` 约束;`isConcurrencySafe` 走 orchestrator 注入的回调,
+    不直接读工具字段(并发判定口径不变)
+  - `src/core/agent/tools/streaming-executor.ts` — `runToolBatches(batches, ctx)`
+    通用并发/串行驱动,子 agent / 批量工具 / 独立 pipeline 都能复用;
+    支持 `abortSignal`,在"批次之间"与"serial 批次内的 call 之间"两处检查 `signal.aborted`
+  - `src/core/agent/tools/auto-fix-runner.ts` — `createAutoFixRunner({runLint, runTypeCheck, maxPerTurn})`;
+    v1 仅对 `edit_file`/`write_file`/`apply_patch` 触发,失败转 system message(不阻断),
+    每轮上限 2 次;lint/tsc 命令以 Promise 工厂形式注入,**本期未接入 conversation-engine**
+  - `src/core/agent/index.ts` — re-export 上述三模块,application 层经 `@xqoder/agent` 别名消费,
+    绕开 architecture guardrail 的 `application → core` 相对 import 禁令(ADR 0007 §2 教训)
+  - `src/application/chat/tool-orchestrator.ts` — **软红线改动**
+    原地替换行内批量分组为 `partitionToolCalls`;新增 `abortSignal?: AbortSignal` 形参;
+    新增 escape hatch `XQODER_DISABLE_TOOL_PARTITION=1`(返 false → 彻底串行);
+    不动 `prepareToolCall`/`invokePreparedToolCall`/`finalizeToolCall` 三段语义,
+    不动 `stages[]` / `ToolExecutionPort` / `createCompatibilityToolExecutionPort` fallback
+  - `isConcurrencySafe` 补标 9 个工具:
+    只读安全(true):`DiagnosticsTool` / `FetchUrlTool` / `SourcegraphTool`
+    写入/交互/子 agent(false):`RunCommandTool` / `LspRenameSymbolTool` +
+    `interaction-tools.ts` 批量(`QuestionTool` / `TodoWriteTool` 等)
+  - `AgentTool` 补 `isConcurrencySafe = () => false`(子 agent 保守串行,
+    避免 LSP 竞争,与 OpenClaude 语义一致)
+- 新测试:
+  - `test/core/agent-tools/partition.test.ts` (6 用例,含 maxConcurrent 边界)
+  - `test/core/agent-tools/streaming-executor.test.ts` (4 用例,含 AbortSignal 中断 2 例)
+  - `test/core/agent-tools/auto-fix-runner.test.ts` (6 用例)
+  - `test/application/chat/tool-orchestrator.test.ts` +2 用例
+    (AbortSignal 中断 + `XQODER_DISABLE_TOOL_PARTITION=1` 串行回退)
+- 架构 guardrail: ✅ 未回归
+- 本期 token 消耗: 未测量(跨 session,P11.1 收尾 + P12 主体)
+- ADR: `docs/adr/0008-p12-tool-orchestration.md`(软红线范围 + 落位理由 + 4 项不确定项)
+- 不做 / 搁置:
+  - autoFix 接入 conversation-engine(lint/tsc 真实命令发现 + system message 注入主循环)
+    → 留给 P13 或独立 hook phase,施工单明确本期只落 runner
+  - OpenClaude `autoFixRunner` 跑 test 的能力 → v2
+  - `DelegateTaskTool` 真并发 → 保守串行,后续评估 LSP 竞争后再放开
+  - `LspRenameSymbolTool` 同一文件内多处 rename 并发 → 单独评估
+- 下一期: **P13 — MCP 工具集成**(背景读 `/mcp-server-patterns`)
+
+---

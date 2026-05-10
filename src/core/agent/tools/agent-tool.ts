@@ -56,6 +56,10 @@ export class DelegateTaskTool implements ITool {
         private providerFactory: DelegateProviderFactory = createLLMProvider,
     ) {}
 
+    isConcurrencySafe(): boolean {
+        return false;
+    }
+
     async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
         const task = args.task as string;
         const toolCallId = (args.toolCallId as string) ?? 'delegate';

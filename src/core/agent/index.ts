@@ -144,6 +144,17 @@ export {
     type OpenClawMemoryEntry,
 } from './openclaw.js';
 export { DelegateTaskTool } from './tools/agent-tool.js';
+export { partitionToolCalls, type ToolBatch, type PartitionOptions } from './tools/partition.js';
+export { runToolBatches, type ToolBatchExecutionContext } from './tools/streaming-executor.js';
+export {
+    createAutoFixRunner,
+    type AutoFixCheckResult,
+    type AutoFixExecutedTool,
+    type AutoFixOutcome,
+    type AutoFixRunner,
+    type AutoFixRunnerOptions,
+    type AutoFixRunInput,
+} from './tools/auto-fix-runner.js';
 export { LspFileWatcher, type LspWatcherOptions } from './lsp-watcher.js';
 export {
     runMigrations,

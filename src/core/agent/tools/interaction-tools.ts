@@ -21,6 +21,14 @@ interface TodoStatePayload {
 }
 
 export class SkillTool implements ITool {
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return false;
+    }
+
     readonly definition: ToolDefinition = {
         name: 'skill',
         description: 'Loads the content of project or user skill documents to help the agent perform tasks according to agreed processes.',
@@ -77,6 +85,10 @@ export class SkillTool implements ITool {
 }
 
 export class TodoWriteTool implements ITool {
+    isConcurrencySafe(): boolean {
+        return false;
+    }
+
     readonly definition: ToolDefinition = {
         name: 'todowrite',
         description: 'Write a structured task list to track the execution plan in the current session.',
@@ -125,6 +137,14 @@ export class TodoWriteTool implements ITool {
 }
 
 export class TodoReadTool implements ITool {
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return true;
+    }
+
     readonly definition: ToolDefinition = {
         name: 'todoread',
         description: 'Read the structured task list and return the last written todo state for the current session.',
@@ -194,6 +214,10 @@ export class TodoReadTool implements ITool {
 }
 
 export class QuestionTool implements ITool {
+    isConcurrencySafe(): boolean {
+        return false;
+    }
+
     readonly definition: ToolDefinition = {
         name: 'question',
         description: 'Ask structured questions. Automatically returns a recommended answer to continue execution when there is no interactive question channel.',

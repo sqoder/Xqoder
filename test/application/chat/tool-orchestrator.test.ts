@@ -621,4 +621,129 @@ describe('tool orchestrator', () => {
         });
         expect(result.results[0]?.outputForModel).toBe('custom-port:README.md');
     });
+
+    it('stops executing remaining serial tool calls when abortSignal aborts mid-turn', async () => {
+        const session = new AgentSession({ id: 'tool-orchestrator-abort', systemPrompt: 'system' });
+        const invokedIds: string[] = [];
+        const controller = new AbortController();
+
+        const port: ToolExecutionPort = {
+            async prepareToolCall(input) {
+                return {
+                    toolCall: input.toolCall,
+                    args: JSON.parse(input.toolCall.arguments),
+                    callbacks: input.callbacks,
+                    streamId: input.streamId,
+                    permissionMode: 'allow',
+                    blocked: false,
+                    canRunInParallel: false,
+                    preToolUseDetail: 'prepared serial call',
+                    permissionDetail: 'allowed serial call',
+                    state: undefined,
+                };
+            },
+            async invokePreparedToolCall(preparation) {
+                invokedIds.push(preparation.toolCall.id);
+                if (preparation.toolCall.id === 'serial-1') controller.abort();
+                return {
+                    toolCallId: preparation.toolCall.id,
+                    success: true,
+                    output: 'ok',
+                };
+            },
+            async finalizeToolCall(preparation, result) {
+                session.recordToolExecution({
+                    id: preparation.toolCall.id,
+                    name: preparation.toolCall.name,
+                    args: preparation.args,
+                    success: result?.success ?? false,
+                    output: result?.output ?? '',
+                    startedAt: new Date(),
+                    completedAt: new Date(),
+                });
+                session.addToolResult(preparation.toolCall.id, result?.output ?? '');
+                return result!;
+            },
+        };
+
+        const result = await runToolOrchestrator({
+            toolCalls: [
+                { id: 'serial-1', name: 'edit_file', arguments: '{"path":"a.ts"}' },
+                { id: 'serial-2', name: 'edit_file', arguments: '{"path":"b.ts"}' },
+                { id: 'serial-3', name: 'edit_file', arguments: '{"path":"c.ts"}' },
+            ],
+            streamId: 'stream-abort',
+            session,
+            toolExecutionPort: port,
+            executeToolCalls: async () => [],
+            abortSignal: controller.signal,
+        });
+
+        expect(invokedIds).toEqual(['serial-1']);
+        expect(result.results).toHaveLength(1);
+    });
+
+    it('falls back to fully serial execution when XQODER_DISABLE_TOOL_PARTITION=1', async () => {
+        const session = new AgentSession({ id: 'tool-orchestrator-no-partition', systemPrompt: 'system' });
+        let activeInvocations = 0;
+        let maxActiveInvocations = 0;
+
+        const port: ToolExecutionPort = {
+            async prepareToolCall(input) {
+                return {
+                    toolCall: input.toolCall,
+                    args: JSON.parse(input.toolCall.arguments),
+                    callbacks: input.callbacks,
+                    streamId: input.streamId,
+                    permissionMode: 'allow',
+                    blocked: false,
+                    canRunInParallel: true,
+                    preToolUseDetail: 'prepared',
+                    permissionDetail: 'allowed',
+                    state: undefined,
+                };
+            },
+            async invokePreparedToolCall(preparation) {
+                activeInvocations += 1;
+                maxActiveInvocations = Math.max(maxActiveInvocations, activeInvocations);
+                await new Promise((resolve) => setTimeout(resolve, 5));
+                activeInvocations -= 1;
+                return { toolCallId: preparation.toolCall.id, success: true, output: 'ok' };
+            },
+            async finalizeToolCall(preparation, result) {
+                session.recordToolExecution({
+                    id: preparation.toolCall.id,
+                    name: preparation.toolCall.name,
+                    args: preparation.args,
+                    success: true,
+                    output: 'ok',
+                    startedAt: new Date(),
+                    completedAt: new Date(),
+                });
+                session.addToolResult(preparation.toolCall.id, 'ok');
+                return result!;
+            },
+        };
+
+        const previous = process.env['XQODER_DISABLE_TOOL_PARTITION'];
+        process.env['XQODER_DISABLE_TOOL_PARTITION'] = '1';
+        try {
+            await runToolOrchestrator({
+                toolCalls: [
+                    { id: 'r1', name: 'read_file', arguments: '{"path":"a"}' },
+                    { id: 'r2', name: 'read_file', arguments: '{"path":"b"}' },
+                    { id: 'r3', name: 'read_file', arguments: '{"path":"c"}' },
+                ],
+                streamId: 'stream-no-partition',
+                session,
+                toolExecutionPort: port,
+                executeToolCalls: async () => [],
+            });
+        } finally {
+            if (previous === undefined) delete process.env['XQODER_DISABLE_TOOL_PARTITION'];
+            else process.env['XQODER_DISABLE_TOOL_PARTITION'] = previous;
+        }
+
+        expect(maxActiveInvocations).toBe(1);
+    });
 });
