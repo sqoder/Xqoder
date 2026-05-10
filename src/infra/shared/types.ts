@@ -511,7 +511,18 @@ export interface PermissionSettings {
     approvalPolicy?: ApprovalPolicy;
 }
 
-export const SUPPORTED_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'UserPromptSubmit'] as const;
+export const SUPPORTED_HOOK_EVENTS = [
+    'PreToolUse',
+    'PostToolUse',
+    'PostToolUseFailure',
+    'UserPromptSubmit',
+    'SessionStart',
+    'SessionEnd',
+    'Stop',
+    'SubagentStop',
+    'PreCompact',
+    'PostCompact',
+] as const;
 
 export type HookEventName = typeof SUPPORTED_HOOK_EVENTS[number];
 

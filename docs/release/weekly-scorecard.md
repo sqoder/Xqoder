@@ -714,3 +714,33 @@
 
 ---
 
+
+## P14a (2026-05-11) — 事件类型扩展 + lifecycle dispatcher
+
+- release:check: ✅ (1073 pass / 0 fail,coverage 68.75% PASS,e2e smoke 3 transport 全绿,security hygiene ✅,size guardrail ✅)
+- golden task pass: 未测量(本期只扩 hook 基础设施,未触及 live coding 链路)
+- /review 警告: 未跑(本期零触碰硬/软红线;改动仅扩 `SUPPORTED_HOOK_EVENTS` + 拆基类 + 新增 lifecycle-hooks.ts)
+- 本期关键决策(详见 ADR 0013):
+  - P14 拆 3 子期(a/b/c);本期只做事件扩展 + dispatcher,不 wiring 调用点,不加 CLI
+  - `SUPPORTED_HOOK_EVENTS` 从 4 → 10(新增 SessionStart/SessionEnd/Stop/SubagentStop/PreCompact/PostCompact)
+  - 泛化 `executeHookHandler` 签名:拆出 `HookPayloadBase` + `HookRunnerConfigBase`(不含 permissionMode);
+    工具热路径 `ToolHookRunnerConfig` / 三个工具 payload 改为 `extends ...`,源代码 0 改动
+  - `dispatchLifecycleHook` 阻塞版本(SessionStart 用) + `dispatchLifecycleHookFireAndForget`(超时 5s,Stop/SessionEnd/SubagentStop 用)
+  - `continue=false` / `decision=block` / `decision=deny` 在 lifecycle 路径统一视为 blocked(工具路径语义不变)
+- 新增文件:
+  - `src/core/agent/lifecycle-hooks.ts` (约 250L) — 6 事件 payload + builder + 阻塞/非阻塞 dispatcher
+- 修改文件:
+  - `src/infra/shared/types.ts` — `SUPPORTED_HOOK_EVENTS` 从 4 → 10
+  - `src/core/agent/hooks.ts` — 拆基类;工具 payload / runner config 改为 `extends`
+  - `src/core/agent/hook-handler-execution.ts` — 签名改用 `HookPayloadBase` + `HookRunnerConfigBase`
+  - `src/core/agent/index.ts` — barrel 扩展导出 lifecycle API
+- 新测试(18 条,远超 ≥15 要求):
+  - `test/core/lifecycle-hooks.test.ts`:事件常量(3)+ builder 形状(6)+ dispatcher 行为(7)+ fire-and-forget(2)
+- 本期 token 消耗: 未测量(主会话直接实施,未用 executor 子代理——继承 P13a 教训)
+- ADR: `docs/adr/0013-p14a-lifecycle-hook-dispatcher.md`
+- 不做 / 搁置:
+  - 生命周期事件挂载到 conversation-engine / auto-compact / subagent → **P14b**
+  - `xqoder hooks add/remove/list/test` CLI → **P14c**
+  - UserPromptSubmit deny 的 e2e 阻断用例 → **P14c**
+  - PostSamplingHooks(sampling 完成后)→ 施工单明确 v1 不纳入,留 P27 评估
+- 下一期: **P14b — 生命周期 hook 挂载到 conversation-engine / compact / subagent**

@@ -4,9 +4,9 @@ import { createLLMProvider } from './llm/factory.js';
 import { filterSensitiveEnv } from './tools/env-filter.js';
 import type {
     HookHandlerExecutionResult,
+    HookPayloadBase,
+    HookRunnerConfigBase,
     ToolHookEventName,
-    ToolHookPayload,
-    ToolHookRunnerConfig,
 } from './hooks.js';
 
 const HOOK_PROMPT_SYSTEM = [
@@ -26,8 +26,8 @@ export interface CommandHookShellSpec {
 
 export async function executeHookHandler(
     handler: HookHandlerConfig,
-    payload: ToolHookPayload,
-    config: ToolHookRunnerConfig,
+    payload: HookPayloadBase,
+    config: HookRunnerConfigBase,
     eventName: ToolHookEventName,
     logger: Logger,
 ): Promise<HookHandlerExecutionResult> {
@@ -51,8 +51,8 @@ export async function executeHookHandler(
 
 async function executeCommandHook(
     handler: Extract<HookHandlerConfig, { type: 'command' }>,
-    payload: ToolHookPayload,
-    config: ToolHookRunnerConfig,
+    payload: HookPayloadBase,
+    config: HookRunnerConfigBase,
     eventName: ToolHookEventName,
     logger: Logger,
 ): Promise<HookHandlerExecutionResult> {
@@ -107,8 +107,8 @@ async function executeCommandHook(
 
 async function runCommandHookProcess(
     shellSpec: CommandHookShellSpec,
-    payload: ToolHookPayload,
-    config: ToolHookRunnerConfig,
+    payload: HookPayloadBase,
+    config: HookRunnerConfigBase,
 ): Promise<string> {
     return await new Promise<string>((resolve, reject) => {
         const child = spawnHookProcess(shellSpec, payload, config, ['pipe', 'pipe', 'pipe']);
@@ -159,7 +159,7 @@ export function resolveCommandHookShellSpec(input: {
 
 async function executeHttpHook(
     handler: Extract<HookHandlerConfig, { type: 'http' }>,
-    payload: ToolHookPayload,
+    payload: HookPayloadBase,
     logger: Logger,
 ): Promise<HookHandlerExecutionResult> {
     const controller = new AbortController();
@@ -204,8 +204,8 @@ async function executePromptHook(
     prompt: string,
     model: string | undefined,
     agentName: string | undefined,
-    payload: ToolHookPayload,
-    config: ToolHookRunnerConfig,
+    payload: HookPayloadBase,
+    config: HookRunnerConfigBase,
     logger: Logger,
     type: 'prompt' | 'agent',
 ): Promise<HookHandlerExecutionResult> {
@@ -261,7 +261,7 @@ async function executePromptHook(
     }
 }
 
-function createHookEnvironment(config: ToolHookRunnerConfig, payload: ToolHookPayload): Record<string, string> {
+function createHookEnvironment(config: HookRunnerConfigBase, payload: HookPayloadBase): Record<string, string> {
     const explicit: Record<string, string> = {
         CLAUDE_PROJECT_DIR: config.projectRoot,
         CLAUDE_CWD: config.cwd,
@@ -275,8 +275,8 @@ function createHookEnvironment(config: ToolHookRunnerConfig, payload: ToolHookPa
 
 function spawnHookProcess(
     shellSpec: CommandHookShellSpec,
-    payload: ToolHookPayload,
-    config: ToolHookRunnerConfig,
+    payload: HookPayloadBase,
+    config: HookRunnerConfigBase,
     stdio: ['pipe', 'ignore', 'ignore'] | ['pipe', 'pipe', 'pipe'],
 ) {
     try {

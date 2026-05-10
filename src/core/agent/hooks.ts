@@ -24,33 +24,37 @@ export {
 export type ToolHookEventName = HookEventName;
 export type PreToolPermissionDecision = 'allow' | 'ask' | 'deny';
 
-export interface ToolHookRunnerConfig {
+export interface HookRunnerConfigBase {
     disableAllHooks?: boolean;
     hooks?: HooksSettings;
     llmConfig?: LLMProviderConfig;
     cwd: string;
     projectRoot: string;
     sessionId?: string;
-    permissionMode: AgentPermissionMode;
     logger?: Logger;
 }
 
-export interface PreToolUseHookPayload {
-    hook_event_name: 'PreToolUse';
+export interface ToolHookRunnerConfig extends HookRunnerConfigBase {
+    permissionMode: AgentPermissionMode;
+}
+
+export interface HookPayloadBase {
+    hook_event_name: HookEventName;
     session_id?: string;
     cwd: string;
     project_root: string;
+}
+
+export interface PreToolUseHookPayload extends HookPayloadBase {
+    hook_event_name: 'PreToolUse';
     permission_mode: AgentPermissionMode;
     tool_name: string;
     tool_input: Record<string, unknown>;
     tool_use_id: string;
 }
 
-export interface PostToolUseHookPayload {
+export interface PostToolUseHookPayload extends HookPayloadBase {
     hook_event_name: 'PostToolUse';
-    session_id?: string;
-    cwd: string;
-    project_root: string;
     permission_mode: AgentPermissionMode;
     tool_name: string;
     tool_input: Record<string, unknown>;
@@ -58,11 +62,8 @@ export interface PostToolUseHookPayload {
     tool_response: Record<string, unknown>;
 }
 
-export interface PostToolUseFailureHookPayload {
+export interface PostToolUseFailureHookPayload extends HookPayloadBase {
     hook_event_name: 'PostToolUseFailure';
-    session_id?: string;
-    cwd: string;
-    project_root: string;
     permission_mode: AgentPermissionMode;
     tool_name: string;
     tool_input: Record<string, unknown>;

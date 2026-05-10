@@ -101,11 +101,32 @@ export {
     buildPostToolUseHookPayload,
     buildPostToolUseFailureHookPayload,
     formatHookFeedbackSection,
+    type HookPayloadBase,
+    type HookRunnerConfigBase,
     type ToolHookEventName,
     type ToolHookPayload,
     type ToolHookRunnerConfig,
     type ToolHookExecutionResult,
 } from './hooks.js';
+export {
+    dispatchLifecycleHook,
+    dispatchLifecycleHookFireAndForget,
+    buildSessionStartPayload,
+    buildSessionEndPayload,
+    buildStopPayload,
+    buildSubagentStopPayload,
+    buildPreCompactPayload,
+    buildPostCompactPayload,
+    type LifecycleHookEventName,
+    type LifecycleHookPayload,
+    type LifecycleHookResult,
+    type SessionStartHookPayload,
+    type SessionEndHookPayload,
+    type StopHookPayload,
+    type SubagentStopHookPayload,
+    type PreCompactHookPayload,
+    type PostCompactHookPayload,
+} from './lifecycle-hooks.js';
 export { ReadFileTool, WriteFileTool, EditFileTool, PreviewDiffTool, SearchCodeTool } from './tools/file-tools.js';
 export {
     ReadAnyFileTool,
