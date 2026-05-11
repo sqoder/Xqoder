@@ -20,6 +20,11 @@ import {
     TaskStopTool,
     TaskUpdateTool,
 } from './tools/task-tools.js';
+import {
+    CronListTool,
+    CronRemoveTool,
+    ScheduleCronTool,
+} from './tools/cron-tools.js';
 import { DelegateTaskTool } from './tools/agent-tool.js';
 import type { ToolContext, ToolRegistry } from './tools/tool.js';
 
@@ -89,5 +94,8 @@ export function registerDefaultAgentTools(input: DefaultAgentToolRegistrationInp
     input.toolRegistry.register(new TaskOutputTool());
     input.toolRegistry.register(new TaskStopTool());
     input.toolRegistry.register(new TaskUpdateTool());
+    input.toolRegistry.register(new ScheduleCronTool());
+    input.toolRegistry.register(new CronListTool());
+    input.toolRegistry.register(new CronRemoveTool());
     input.toolRegistry.register(new DelegateTaskTool(input.llmConfig, input.toolRegistry));
 }

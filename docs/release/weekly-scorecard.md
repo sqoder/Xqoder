@@ -1198,3 +1198,43 @@
   - P17 follow-up `loadExtendedPlugin` runtime 接线(原计划 P22)
   - audit-4 周期审查(用户应已在独立会话并行跑,不在本期上下文)
 - 下一期: **P19b — Cron scheduler**
+
+## P19b (2026-05-11) — Cron scheduler + cron tools + cron CLI
+
+- release:check: ✅ (1520 pass / 0 fail,coverage 70.86% PASS,CLI smoke ✅,mcp:live-smoke 三 transport ✅,security hygiene ✅,size guardrail ✅)
+- golden task pass: 未测量
+- /review 警告: 未跑(纯新增 core/cron 模块 + 3 tools + CLI + 独立 DB 文件,零红线变更)
+- 本期关键决策(详见 ADR 0030):
+  - 零第三方 cron 库,`cron-expression.ts` 手写 5 字段解析 + `nextFireAt(expr, from)`,4 年迭代 fence;standard OR-semantics for 双 restricted DoM+DoW;local-time 语义匹配 `"每天 9 点"` 用例
+  - 新建 `src/core/cron/`:`cron-expression` + `cron-store`(`~/.xqoder/data/cron.sqlite` 独立 DB) + `cron-lock`(SQLite 唯一行 advisory lock,替代 flock,`minute_slot` 为 key 避 Docker bind-mount 坑) + `cron-scheduler`(pure `tick(now)` + `setTimeout` 外壳,timer `.unref`) + `cron-service`(单例 dispatch glue)
+  - 触发时 `taskService.store.create` + `startTask`,task metadata 带 `{cronJobId, cronFiredAt, cronExpression}`;non-shell 类型只落 pending 行留审计,等 P19d 补 runner
+  - 3 tools `schedule_cron` / `cron_list` / `cron_remove` 注册进 `agent-default-tools`
+  - CLI `xqoder cron create|list|get|remove|enable|disable`(`--json` + dep-injectable `writeOutput` 照 P19a 模版),挂在 `cli-core-shell` 内置插件
+  - `feature('CRON_TASKS')` 默认 false;scheduler **不** 自动启动,REPL bootstrap 接线留给 P19d(和 worker agent 一起做)
+  - 新增 `@xqoder/core-cron` 别名 + 新 guardrail 测试:`core/cron/*` 禁 import `infrastructure/*` 和 `domain/*`
+  - TS 踩坑:共享的 `DatabaseLike.run()` 返回 `void`,`purgeOlderThan` 改 count-then-delete(两查询,但不在热路径)
+  - Cron lock 踩坑:purge 首版用 `acquired_at` 对比注入的 `now`,clock drift 下不稳;改按 `minute_slot` 确定性
+- 新增文件:
+  - `src/core/cron/{cron-expression,cron-store,cron-lock,cron-scheduler,cron-service,index}.ts`(~900L)
+  - `src/core/agent/tools/cron-tools.ts`(~200L,3 tools)
+  - `src/commands/core/cron.ts`(~260L,6 子命令)
+  - `test/core/cron/{cron-expression,cron-store,cron-lock,cron-scheduler,cron-tools}.test.ts`(59 测试)
+  - `test/commands/core/cron.test.ts`(12 测试)
+  - `docs/adr/0030-p19b-cron-scheduler.md`
+  - 合计 +71 测试
+- 修改文件(非红线):
+  - `tsconfig.json`(新增 `@xqoder/core-cron` 别名)
+  - `test/architecture-guardrails.test.ts`(别名 + `core/cron` guardrail)
+  - `src/plugins/command-plugins.ts`(注册 `cronCommand`)
+  - `src/core/agent/agent-default-tools.ts`(注册 3 cron tools)
+- 本期 token 消耗: 未测量
+- ADR: `docs/adr/0030-p19b-cron-scheduler.md`
+- P19b Out of scope / 留给后续子期:
+  - P19c: worktree manager + `Enter/ExitWorktreeTool` + `xqoder worktree *`
+  - P19d: coordinator mode + worker agents + `cronService.scheduler.start()` REPL bootstrap 接线 + non-shell task dispatch(agent / remote-agent / monitor-mcp / dream)+ `TeamCreate/Delete/SendMessage` + `/reload-cron` 斜杠命令
+  - Future: cron 别名(`@daily` / `@hourly`)、秒级字段(按实际 LLM 使用反馈再加)
+- 本期挂起但不阻塞(继承自 P18/P19a):
+  - Live golden 3-task 还没真跑
+  - P17 follow-up `loadExtendedPlugin` runtime 接线
+  - audit-4 周期审查
+- 下一期: **P19c — Worktree manager**

@@ -44,6 +44,7 @@ const LAYER_ALIAS_PREFIXES: Array<{ prefix: string; layer: LayerName }> = [
     { prefix: '@xqoder/core-skills', layer: 'application' },
     { prefix: '@xqoder/core-output-styles', layer: 'application' },
     { prefix: '@xqoder/core-tasks', layer: 'application' },
+    { prefix: '@xqoder/core-cron', layer: 'application' },
     { prefix: '@xqoder/plugin-sdk', layer: 'domain' },
     { prefix: '@xqoder/provider-openai', layer: 'infrastructure' },
     { prefix: '@xqoder/provider-anthropic', layer: 'infrastructure' },
@@ -143,6 +144,11 @@ describe('architecture guardrails', () => {
         const violations = scopes.flatMap((scope) =>
             collectViolations(scope, ['commands', 'core', 'platform', 'infra', 'services']),
         );
+        expect(formatViolations(violations)).toBe('');
+    });
+
+    it('keeps the core-cron layer isolated from infrastructure and domain layers', () => {
+        const violations = collectViolations('core/cron', ['infrastructure', 'domain']);
         expect(formatViolations(violations)).toBe('');
     });
 });

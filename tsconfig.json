@@ -37,6 +37,7 @@
       "@xqoder/core-skills": ["./src/core/skills"],
       "@xqoder/core-output-styles": ["./src/core/output-styles"],
       "@xqoder/core-tasks": ["./src/core/tasks"],
+      "@xqoder/core-cron": ["./src/core/cron"],
       "@xqoder/plugin-sdk": ["./src/infra/plugin-sdk"],
       "@xqoder/provider-openai": ["./src/infra/llm/openai/provider"],
       "@xqoder/provider-anthropic": ["./src/infra/llm/anthropic"],
