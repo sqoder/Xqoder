@@ -62,7 +62,6 @@ export class ApplyPatchTool implements ITool {
                     metadata: {
                         filePaths,
                         changeType: 'patch',
-                        stopReason: 'permission_denied',
                     },
                 };
             }

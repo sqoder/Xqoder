@@ -520,7 +520,6 @@ export class WriteFileTool implements ITool {
                         path: filePath,
                         changeType: 'write',
                         existedBefore,
-                        stopReason: 'permission_denied',
                     },
                 };
             }
@@ -743,7 +742,6 @@ export class EditFileTool implements ITool {
                         changeType: 'write',
                         editTool: 'edit_file',
                         existedBefore: true,
-                        stopReason: 'permission_denied',
                     },
                 };
             }
