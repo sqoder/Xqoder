@@ -13,6 +13,12 @@ export interface MarkdownAgentDefinition {
     tools?: string[];
     disallowedTools?: string[];
     model?: string;
+    /** P16a — optional provider override (e.g. `dashscope`, `anthropic`). */
+    provider?: string;
+    /** P16a — optional base URL override for the agent's provider. */
+    baseUrl?: string;
+    /** P16a — optional color hint surfaced in TUI / logs (e.g. `cyan`). */
+    color?: string;
     permissionMode?: AgentPermissionMode;
     source: MarkdownAgentSource;
     filePath: string;
@@ -153,6 +159,9 @@ function parseMarkdownAgentFile(
     const tools = normalizeToolList(metadata.tools, metadata.allowedTools, metadata.allowed_tools);
     const disallowedTools = normalizeToolList(metadata.disallowedTools, metadata.disallowed_tools);
     const model = asTrimmedString(metadata.model);
+    const provider = asTrimmedString(metadata.provider);
+    const baseUrl = asTrimmedString(metadata.baseUrl, metadata.base_url);
+    const color = asTrimmedString(metadata.color);
     const permissionMode = normalizePermissionMode(
         asTrimmedString(metadata.permissionMode, metadata.permission_mode),
     );
@@ -165,6 +174,9 @@ function parseMarkdownAgentFile(
         ...(tools.length > 0 ? { tools } : {}),
         ...(disallowedTools.length > 0 ? { disallowedTools } : {}),
         ...(model ? { model } : {}),
+        ...(provider ? { provider } : {}),
+        ...(baseUrl ? { baseUrl } : {}),
+        ...(color ? { color } : {}),
         ...(permissionMode ? { permissionMode } : {}),
         source,
         filePath,

@@ -1022,3 +1022,28 @@
   - P21c factory hydration + CLI + 10 单测
   - 合计 +80 测试,S5(成本 + telemetry + 思考档位 + OAuth)全部完成
 - 下一期: **按施工单转入 S6**(待查下一期目录)
+
+## P16a (2026-05-11) — Built-in subagent registry + markdown frontmatter extension
+
+- release:check: ✅ (1298 pass / 0 fail,coverage 69.71% PASS,e2e smoke ✅,mcp:live-smoke 三 transport ✅,security hygiene ✅,size guardrail ✅;首次运行有一个不相关测试在 5s 超时中闪断,紧接着重跑全绿,非本期引入)
+- golden task pass: 未测量
+- /review 警告: 未跑(本期软红线仅 `markdown-agents.ts` 附加三字段)
+- 本期关键决策(详见 ADR 0024):
+  - 5 个 built-in 子 agent(explore / plan / general-purpose / verification / claude-code-guide)
+  - `allowedTools` 用精确匹配 + `lsp_*` 前缀通配;`['*']` 表整池
+  - `concurrencySafe` 标签驱动 P16c 的并发 fan-out 决策
+  - `Object.freeze(BUILT_IN_AGENTS)` 防止运行期被改
+  - markdown frontmatter 新增 `provider / baseUrl / color` 字段,保留 `base_url` snake-case 兼容
+- 新增文件:
+  - `src/core/agent/subagents/built-in.ts`(~150L)
+  - `src/core/agent/subagents/index.ts`(barrel)
+  - 2 个测试文件(15 条新测试)
+- 修改文件(软红线):
+  - `src/core/agent/markdown-agents.ts` — frontmatter 新增 provider / baseUrl / color
+- 本期 token 消耗: 未测量
+- ADR: `docs/adr/0024-p16a-builtin-subagents-registry.md`
+- 不做 / 搁置:
+  - forkSubagent(parent, spec) → **P16b**
+  - AgentMemory + snapshotSubagentMemory → **P16b**
+  - AgentTool 接入 + 并发上限 + e2e → **P16c**
+- 下一期: **P16b — forkSubagent + AgentMemory snapshot**
