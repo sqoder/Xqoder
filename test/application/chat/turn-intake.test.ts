@@ -534,6 +534,24 @@ describe('chat turn intake', () => {
             },
         )).toThrow('Session storage unavailable');
     });
+
+    it('Bug 2: maxTurns passed to prepareChatExecution flows into agentConfig.maxIterations', () => {
+        const cwd = createProjectDir();
+
+        const execution = prepareChatExecution(
+            buildConversationTurnInput({
+                prompt: 'fix the bug in src/utils.ts',
+                cwd,
+                entrypoint: 'headless',
+                maxTurns: 30,
+            }),
+            {
+                configManager: { load: () => createLoadedConfig('test-key') },
+            },
+        );
+
+        expect(execution.agentConfig.maxIterations).toBe(30);
+    });
 });
 
 function createLoadedConfig(

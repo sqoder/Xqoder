@@ -75,6 +75,7 @@ export interface ConversationTurnInput {
     agent?: string;
     sessionTitle?: string;
     autoApproveTools?: boolean;
+    maxTurns?: number;
     runtime: {
         commandRoute: ChatCommandRoute;
         interaction: ChatInteractionRoute;
@@ -101,6 +102,7 @@ export interface BuildConversationTurnInputOptions {
     agent?: string;
     sessionTitle?: string;
     autoApproveTools?: boolean;
+    maxTurns?: number;
     entrypoint?: ConversationTurnEntrypoint;
 }
 
@@ -171,6 +173,7 @@ export function buildConversationTurnInput(
                 : {}),
         ...(options.sessionTitle ? { sessionTitle: options.sessionTitle } : {}),
         ...(options.autoApproveTools !== undefined ? { autoApproveTools: options.autoApproveTools } : {}),
+        ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
         runtime: {
             commandRoute: turnRoute.commandRoute,
             interaction: turnRoute.interaction,
@@ -241,6 +244,7 @@ export function prepareChatExecution<TTurnInput extends ConversationTurnInput>(
         taskMode: permissionGate.taskMode,
         executionCapability: permissionGate.executionCapability,
         approvalPolicy: permissionGate.approvalPolicy,
+        ...(effectiveTurnInput.maxTurns !== undefined ? { maxIterations: effectiveTurnInput.maxTurns } : {}),
     });
 
     return {

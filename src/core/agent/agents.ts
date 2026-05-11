@@ -206,6 +206,7 @@ export function buildAgentConfigFromXQoderConfig(
         taskMode?: TaskMode;
         executionCapability?: ExecutionCapability;
         approvalPolicy?: ApprovalPolicy;
+        maxIterations?: number;
     } = {},
 ): AgentConfig {
     const runtime = resolveAgentRuntimeConfig(
@@ -249,6 +250,7 @@ export function buildAgentConfigFromXQoderConfig(
         ...(options.taskMode ? { taskMode: options.taskMode } : {}),
         ...(options.executionCapability ? { executionCapability: options.executionCapability } : {}),
         ...(options.approvalPolicy ? { approvalPolicy: options.approvalPolicy } : {}),
+        ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
     };
 }
 

@@ -72,6 +72,7 @@ export interface ChatRunOptions {
     format?: OutputFormat;
     attachments?: MessageAttachment[];
     title?: string;
+    maxTurns?: number;
 }
 
 export interface ChatServiceDependencies extends ChatTurnIntakeDependencies {
@@ -137,6 +138,7 @@ export async function runChatHeadless(
         outputFormat: options.format, model: options.model, agent: options.agent,
         sessionId: options.session, startNewSession: options.newSession ?? false,
         sessionTitle: options.title, requireSessionStore: true, entrypoint: 'headless',
+        ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
     });
     const execution = prepareChatExecution(turnInput, dependencies);
     return await runPreparedChatTurn(execution, dependencies, {

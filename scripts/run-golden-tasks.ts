@@ -112,6 +112,7 @@ async function main(): Promise<void> {
                         title: `golden:${task.id}:attempt:${attempt + 1}`,
                         ...(options.model ? { model: options.model } : {}),
                         ...(options.agent ? { agent: options.agent } : {}),
+                        ...(options.live ? { maxTurns: 30 } : {}),
                     }, {
                         sessionStore,
                     });
