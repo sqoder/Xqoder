@@ -1128,3 +1128,34 @@
 - 本期 token 消耗: 未测量
 - ADR: `docs/adr/0027-p17-skills-output-styles.md`
 - 下一期: **P18 — Plugin installer**
+
+## P18 (2026-05-11) — Plugin installer + loader
+
+- release:check: ✅ (1406 pass / 0 fail,coverage 70.26% PASS,e2e smoke ✅,mcp:live-smoke 三 transport ✅,security hygiene ✅,size guardrail ✅)
+- golden task pass: 未测量
+- /review 警告: 未跑(纯新增 infra 模块 + CLI 扩展,无软红线变更)
+- 本期关键决策(详见 ADR 0028):
+  - 新建 `src/infra/plugins/`:`manifest.ts` / `installer.ts` / `state.ts` / `loader.ts`,全部零第三方
+  - `parsePluginManifest` 返回 tagged `{ ok, manifest } | { ok: false, errors }`,校验 hook 事件名用 `SUPPORTED_HOOK_EVENTS`
+  - `installLocalPlugin(src, { force })` 拷贝本地目录到 `~/.xqoder/plugins/<name>/`(v1 不做 npm/tarball 包装,让 P18 保持零依赖)
+  - 支持 `XQODER_PLUGINS_HOME` 覆盖,测试用
+  - `loadExtendedPlugin(dir, registries)` 返回 `{ manifest, dir, unload }`;rollback stack + onActivate 失败时自动回滚;skills 复用 `@xqoder/core-skills` 的 `loadSkillsDir`(兑现 ADR 0027 follow-up)
+  - `state.json` 存 `disabled[]`,损坏时回退空列表 + 下一次写入自动修复
+  - CLI `xqoder plugin`:新增 `install` / `remove` (alias `uninstall`) / `enable` / `disable` / `home` 子命令;`list` 文本+JSON 输出都带上 installed plugins
+  - TS 收窄用 `parsed.ok !== true`(兼容 `--declaration` emit 在 `strict: false` 下的行为)
+- 新增文件:
+  - `src/infra/plugins/{manifest,installer,state,loader,index}.ts`(~500L)
+  - `test/infra/plugins/{manifest,installer,loader,state}.test.ts`(26 测试)
+  - `test/commands/system/plugins-install.test.ts`(7 测试)
+  - `docs/adr/0028-p18-plugin-installer.md`
+  - 合计 +33 测试
+- 修改文件(非红线):
+  - `src/commands/system/plugins.ts`(扩 install/remove/enable/disable/home 子命令 + list 输出)
+- 本期 token 消耗: 未测量
+- ADR: `docs/adr/0028-p18-plugin-installer.md`
+- P18 Out of scope / 留到后续:
+  - 把 `loadExtendedPlugin` 真正接进 runtime 启动(需要 ToolRegistry / SlashCommandRegistry / HookRegistry adapter)
+  - `fs.watch` 热重载(`/reload-plugins` 手动重载够用)
+  - npm / tarball 安装器(当前依赖用户自己 `npm install --prefix …` 后再指向目录)
+  - `XQODER_DISABLE_THIRD_PARTY_PLUGINS=1` 杀手开关(等 runtime 接线后顺手加)
+- 下一期: **P19 — (按施工单接续,见 `docs/openclaude-parity/phase-19-*.md`)**
