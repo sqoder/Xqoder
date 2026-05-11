@@ -4,15 +4,21 @@
 // injected `PluginRegistries` adapter. Side-effects are fully reversible through
 // the returned `unload()` handle — used by `/reload-plugins` and by tests.
 //
-// Skills are loaded through `loadSkillsDir` (core-skills), honouring the
-// ADR 0027 follow-up: plugin-bundled `skills.dir` entries reuse the same
-// directory scanner as the project/user skills search roots.
+// P19.0.x hardening:
+//   - All file/dir paths in the manifest are containment-checked against the
+//     plugin directory (no `..` escapes, no symlink traversal).
+//   - Hook commands require approval via the injected `approveHookCommand`
+//     callback before being registered (first-use interactive confirmation).
+//   - Skills are loaded through an injected `skillsLoader` function so that
+//     infra does not reverse-depend on @xqoder/core-skills (ADR 0030 fix).
+//   - unwind() logs each rollback failure instead of silently swallowing it.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { loadSkillsDir, type SkillFile } from '@xqoder/core-skills';
 import { parsePluginManifest, type PluginManifest } from './manifest.js';
+
+export type SkillFile = { name: string; filePath: string; body: string; description?: string };
 
 export interface PluginCommandRegistry {
     register(name: string, command: unknown): void;
@@ -54,14 +60,54 @@ export interface LoadedPlugin {
     unload(): Promise<void>;
 }
 
+export interface LoadPluginOptions {
+    /** Called before registering each hook command. Return false to skip the hook. */
+    approveHookCommand?: (event: string, command: string) => Promise<boolean>;
+    /** Directory scanner for skill provisions. Defaults to returning []. */
+    skillsLoader?: (dir: string) => SkillFile[];
+}
+
 interface PluginEntryModule {
     onActivate?: (ctx: Record<string, unknown>) => void | Promise<void>;
     onDeactivate?: (ctx: Record<string, unknown>) => void | Promise<void>;
 }
 
+/** Assert that `resolved` is strictly inside `pluginDir` (no traversal, no symlinks). */
+function assertContained(pluginDir: string, resolved: string, label: string): void {
+    const base = path.resolve(pluginDir) + path.sep;
+    if (!resolved.startsWith(base)) {
+        throw new Error(`Plugin path "${label}" resolves outside plugin directory: ${resolved}`);
+    }
+}
+
+/** Resolve a manifest-relative path and enforce containment + symlink rejection (all levels). */
+function resolveAndCheck(pluginDir: string, relPath: string, label: string): string {
+    const joined = path.resolve(pluginDir, relPath);
+    // String-level containment check first (fast path, no I/O).
+    assertContained(pluginDir, joined, label);
+    // Follow ALL symlinks (including intermediate directories) and re-assert containment.
+    // Use realpathSync on pluginDir too so OS-level symlinks (e.g. macOS /tmp → /private/tmp)
+    // don't cause false positives.
+    try {
+        const real = fs.realpathSync(joined);
+        const realBase = fs.realpathSync(path.resolve(pluginDir)) + path.sep;
+        if (!real.startsWith(realBase)) {
+            throw new Error(`Plugin path "${label}" resolves outside plugin directory: ${real}`);
+        }
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+            // File doesn't exist yet — string-level check is sufficient.
+            return joined;
+        }
+        throw err;
+    }
+    return joined;
+}
+
 export async function loadExtendedPlugin(
     dir: string,
     registries: PluginRegistries,
+    options: LoadPluginOptions = {},
 ): Promise<LoadedPlugin> {
     const manifestPath = path.join(dir, 'xqoder.plugin.json');
     if (!fs.existsSync(manifestPath)) {
@@ -81,55 +127,64 @@ export async function loadExtendedPlugin(
         throw new Error(`Invalid xqoder.plugin.json (${manifestPath}): ${messages}`);
     }
     const { manifest } = parsed;
+    const pluginName = manifest.name;
 
-    const rollback: Array<() => void | Promise<void>> = [];
+    const rollback: Array<{ label: string; fn: () => void | Promise<void> }> = [];
 
     // Commands
     for (const spec of manifest.provides?.commands ?? []) {
-        const mod = await importPluginModule(path.join(dir, spec.file));
+        const resolved = resolveAndCheck(dir, spec.file, `commands[${spec.name}].file`);
+        const mod = await importPluginModule(resolved);
         const command = pickDefault(mod);
         registries.commands.register(spec.name, command);
-        rollback.push(() => registries.commands.unregister(spec.name));
+        rollback.push({ label: `unregister command ${spec.name}`, fn: () => registries.commands.unregister(spec.name) });
     }
 
     // Tools
     for (const spec of manifest.provides?.tools ?? []) {
-        const mod = await importPluginModule(path.join(dir, spec.file));
+        const resolved = resolveAndCheck(dir, spec.file, `tools[${spec.name}].file`);
+        const mod = await importPluginModule(resolved);
         const tool = instantiateTool(mod);
         registries.tools.register(tool);
-        rollback.push(() => registries.tools.unregister(spec.name));
+        rollback.push({ label: `unregister tool ${spec.name}`, fn: () => registries.tools.unregister(spec.name) });
     }
 
-    // Skills — reuse the core-skills loader so frontmatter validation,
-    // name derivation, and bundled-folder semantics stay identical to the
-    // project-local / user-level search roots (ADR 0027 follow-up).
+    // Skills — loaded via injected skillsLoader to avoid infra→core reverse dep.
+    const skillsLoader = options.skillsLoader ?? (() => []);
     for (const spec of manifest.provides?.skills ?? []) {
-        const skills = resolveSkillProvision(dir, spec);
+        const skills = resolveSkillProvision(dir, spec, skillsLoader);
         for (const skill of skills) {
             registries.skills.register(skill);
-            rollback.push(() => registries.skills.unregister(skill.name));
+            rollback.push({ label: `unregister skill ${skill.name}`, fn: () => registries.skills.unregister(skill.name) });
         }
     }
 
-    // Hooks — plugin-level hook handlers are recorded verbatim; the runtime
-    // hook engine remains the source of truth for execution semantics.
+    // Hooks — each shell command requires approval before registration.
+    // Default: deny-all when no approveHookCommand is injected, to prevent
+    // callers that forget to wire the DI from silently registering shell hooks.
+    const approveHook = options.approveHookCommand ?? (async () => false);
     for (const [event, handlers] of Object.entries(manifest.provides?.hooks ?? {})) {
         for (const handler of handlers ?? []) {
+            if (handler.command) {
+                const allowed = await approveHook(event, handler.command);
+                if (!allowed) continue;
+            }
             registries.hooks.register(event, handler);
-            rollback.push(() => registries.hooks.unregister(event, handler));
+            rollback.push({ label: `unregister hook ${event}`, fn: () => registries.hooks.unregister(event, handler) });
         }
     }
 
     // onActivate / onDeactivate lifecycle
     let entryModule: PluginEntryModule | undefined;
     if (manifest.entry) {
-        const loaded = await importPluginModule(path.join(dir, manifest.entry));
+        const resolved = resolveAndCheck(dir, manifest.entry, 'entry');
+        const loaded = await importPluginModule(resolved);
         entryModule = (loaded.default ?? loaded) as PluginEntryModule;
         try {
             await entryModule?.onActivate?.(registries.ctx);
         } catch (error) {
-            await unwind(rollback);
-            throw new Error(`Plugin "${manifest.name}" onActivate failed: ${error instanceof Error ? error.message : String(error)}`);
+            await unwind(pluginName, rollback);
+            throw new Error(`Plugin "${pluginName}" onActivate failed: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
 
@@ -140,25 +195,26 @@ export async function loadExtendedPlugin(
             try {
                 await entryModule?.onDeactivate?.(registries.ctx);
             } finally {
-                await unwind(rollback);
+                await unwind(pluginName, rollback);
             }
         },
     };
 }
 
-function resolveSkillProvision(pluginDir: string, spec: { file?: string; dir?: string }): SkillFile[] {
+function resolveSkillProvision(
+    pluginDir: string,
+    spec: { file?: string; dir?: string },
+    skillsLoader: (dir: string) => SkillFile[],
+): SkillFile[] {
     if (spec.dir) {
         const abs = path.resolve(pluginDir, spec.dir);
-        return loadSkillsDir(abs);
+        assertContained(pluginDir, abs, `skills.dir "${spec.dir}"`);
+        return skillsLoader(abs);
     }
     if (spec.file) {
-        const abs = path.resolve(pluginDir, spec.file);
-        // loadSkillsDir expects a directory, so we point it at the file's
-        // parent. Because parseSkillAt derives the name from filename/
-        // SKILL.md convention, the sibling files could also leak in —
-        // guard by isolating the file to a single entry.
+        const abs = resolveAndCheck(pluginDir, spec.file, `skills.file "${spec.file}"`);
         const parent = path.dirname(abs);
-        const skills = loadSkillsDir(parent);
+        const skills = skillsLoader(parent);
         return skills.filter((skill) => skill.filePath === abs);
     }
     return [];
@@ -181,14 +237,20 @@ function instantiateTool(mod: Record<string, unknown>): unknown {
     return Ctor;
 }
 
-async function unwind(rollback: Array<() => void | Promise<void>>): Promise<void> {
+async function unwind(
+    pluginName: string,
+    rollback: Array<{ label: string; fn: () => void | Promise<void> }>,
+): Promise<void> {
     while (rollback.length > 0) {
         const step = rollback.pop();
         if (!step) continue;
         try {
-            await step();
-        } catch {
-            // Continue unwinding even if a single rollback step throws.
+            await step.fn();
+        } catch (err) {
+            // Log but continue unwinding — partial rollback is better than none.
+            console.warn(
+                `[plugin:${pluginName}] rollback step "${step.label}" failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
         }
     }
 }

@@ -147,6 +147,11 @@ describe('architecture guardrails', () => {
         expect(formatViolations(violations)).toBe('');
     });
 
+    it('keeps the infra/plugins layer free of reverse dependencies on core-* aliases', () => {
+        const violations = collectViolations('infra/plugins', ['application']);
+        expect(formatViolations(violations)).toBe('');
+    });
+
     it('keeps the core-cron layer isolated from infrastructure and domain layers', () => {
         const violations = collectViolations('core/cron', ['infrastructure', 'domain']);
         expect(formatViolations(violations)).toBe('');

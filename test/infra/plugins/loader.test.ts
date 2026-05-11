@@ -5,7 +5,10 @@ import { describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { loadSkillsDir } from '@xqoder/core-skills';
 import { loadExtendedPlugin, type PluginRegistries } from '../../../src/infra/plugins/loader.js';
+
+const skillsLoader = loadSkillsDir;
 
 function createPluginFixture(): string {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-plugin-'));
@@ -112,7 +115,10 @@ describe('loadExtendedPlugin', () => {
         const dir = createPluginFixture();
         const { registries, commands, tools, skills, hooks, ctx } = createRegistries();
 
-        const loaded = await loadExtendedPlugin(dir, registries);
+        const loaded = await loadExtendedPlugin(dir, registries, {
+            skillsLoader,
+            approveHookCommand: async () => true,
+        });
 
         expect(loaded.manifest.name).toBe('fixture-plugin');
         expect(commands.has('/hello')).toBe(true);
@@ -126,7 +132,10 @@ describe('loadExtendedPlugin', () => {
         const dir = createPluginFixture();
         const { registries, commands, tools, skills, hooks, ctx } = createRegistries();
 
-        const loaded = await loadExtendedPlugin(dir, registries);
+        const loaded = await loadExtendedPlugin(dir, registries, {
+            skillsLoader,
+            approveHookCommand: async () => true,
+        });
         await loaded.unload();
 
         expect(commands.size).toBe(0);
@@ -141,6 +150,96 @@ describe('loadExtendedPlugin', () => {
         const { registries } = createRegistries();
 
         await expect(loadExtendedPlugin(dir, registries)).rejects.toThrow(/xqoder\.plugin\.json/);
+    });
+
+    it('rejects path traversal in command spec.file', async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-plugin-'));
+        fs.writeFileSync(
+            path.join(dir, 'xqoder.plugin.json'),
+            JSON.stringify({
+                name: 'traversal-cmd',
+                version: '0.1.0',
+                provides: { commands: [{ name: '/evil', file: '../../../etc/passwd' }] },
+            }),
+        );
+        const { registries } = createRegistries();
+        await expect(loadExtendedPlugin(dir, registries)).rejects.toThrow(/outside plugin directory/i);
+    });
+
+    it('rejects path traversal in tool spec.file', async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-plugin-'));
+        fs.writeFileSync(
+            path.join(dir, 'xqoder.plugin.json'),
+            JSON.stringify({
+                name: 'traversal-tool',
+                version: '0.1.0',
+                provides: { tools: [{ name: 'evil_tool', file: '../../evil.js' }] },
+            }),
+        );
+        const { registries } = createRegistries();
+        await expect(loadExtendedPlugin(dir, registries)).rejects.toThrow(/outside plugin directory/i);
+    });
+
+    it('rejects path traversal in skills spec.dir', async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-plugin-'));
+        fs.writeFileSync(
+            path.join(dir, 'xqoder.plugin.json'),
+            JSON.stringify({
+                name: 'traversal-skills',
+                version: '0.1.0',
+                provides: { skills: [{ dir: '../../.ssh' }] },
+            }),
+        );
+        const { registries } = createRegistries();
+        await expect(loadExtendedPlugin(dir, registries)).rejects.toThrow(/outside plugin directory/i);
+    });
+
+    it('rejects path traversal in entry', async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-plugin-'));
+        fs.writeFileSync(
+            path.join(dir, 'xqoder.plugin.json'),
+            JSON.stringify({
+                name: 'traversal-entry',
+                version: '0.1.0',
+                entry: '../../../tmp/payload.mjs',
+            }),
+        );
+        const { registries } = createRegistries();
+        await expect(loadExtendedPlugin(dir, registries)).rejects.toThrow(/outside plugin directory/i);
+    });
+
+    it('rejects symlink entry point', async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-plugin-'));
+        const target = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-target-'));
+        fs.writeFileSync(path.join(target, 'evil.js'), 'export default {};');
+        fs.symlinkSync(path.join(target, 'evil.js'), path.join(dir, 'entry.js'));
+        fs.writeFileSync(
+            path.join(dir, 'xqoder.plugin.json'),
+            JSON.stringify({ name: 'symlink-entry', version: '0.1.0', entry: './entry.js' }),
+        );
+        const { registries } = createRegistries();
+        await expect(loadExtendedPlugin(dir, registries)).rejects.toThrow(/outside plugin directory|symlink/i);
+    });
+
+    it('rejects hook registration when approveHookCommand returns false', async () => {
+        const dir = createPluginFixture();
+        const { registries, hooks } = createRegistries();
+        await loadExtendedPlugin(dir, registries, { approveHookCommand: async () => false });
+        expect(hooks.length).toBe(0);
+    });
+
+    it('registers hooks when approveHookCommand returns true', async () => {
+        const dir = createPluginFixture();
+        const { registries, hooks } = createRegistries();
+        await loadExtendedPlugin(dir, registries, { approveHookCommand: async () => true });
+        expect(hooks.length).toBe(1);
+    });
+
+    it('denies hook registration when no approveHookCommand is provided (secure default)', async () => {
+        const dir = createPluginFixture();
+        const { registries, hooks } = createRegistries();
+        await loadExtendedPlugin(dir, registries);
+        expect(hooks.length).toBe(0);
     });
 
     it('supports skills.dir entries by scanning the directory', async () => {
@@ -166,7 +265,7 @@ describe('loadExtendedPlugin', () => {
         );
 
         const { registries, skills } = createRegistries();
-        await loadExtendedPlugin(dir, registries);
+        await loadExtendedPlugin(dir, registries, { skillsLoader });
         expect(skills.map((s) => s.name).sort()).toEqual(['a', 'b']);
     });
 });

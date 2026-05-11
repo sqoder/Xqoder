@@ -1258,3 +1258,21 @@
 - Bug 3: read-before-write guard 不再设 `stopReason: 'permission_denied'`，agent 可自恢复
 - Bug 4: `buildGoldenTaskPrompt` 加强制 final-answer 指令，防止模型静默退出 tool loop
 - 下一期: **P19c — Worktree manager**（或重跑 live acceptance 验证 bug fix 效果）
+
+---
+
+## P19.0.x hotfix (2026-05-12) — Security hardening (audit-4 §4.1)
+
+- release:check: ✅
+- golden task pass: 未重跑
+- /review 警告: 0 条
+- 本期 token 消耗: 约 5 万
+- ADR: docs/adr/0030-p19a-shell-task-plugin-hardening.md (待补)
+- 修复项:
+  1. plugin loader/installer 路径 containment + symlink 拒绝 + hook 权限门 (C1+C2+H3)
+  2. TaskCreateTool.buildApprovalRequest 接 PermissionGate (C3)
+  3. local-shell-task buildSanitizedEnv 自动剥离 KEY/TOKEN/SECRET/PASSWORD (H2)
+  4. task_stop signal 白名单 {SIGTERM,SIGINT,SIGKILL} + handle 优先 + crypto.randomUUID (H4)
+  5. architecture-guardrails 扩展到 infra/plugins 层 + loader.ts 改依赖注入 (H1)
+  6. loader.unwind 日志 + plugins enable/disable try-catch (E1+E2)
+- 下一期: P19b

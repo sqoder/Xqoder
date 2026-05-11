@@ -5,7 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createTaskStore, type TaskStore } from '../../../src/core/tasks/task-store.js';
-import { runLocalShellTask, startLocalShellTask } from '../../../src/core/tasks/local-shell-task.js';
+import { buildSanitizedEnv, runLocalShellTask, startLocalShellTask } from '../../../src/core/tasks/local-shell-task.js';
 
 function tmpDir(prefix: string): string {
     return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -162,5 +162,55 @@ describe('startLocalShellTask (background)', () => {
 
         const final = store.get(task.id)!;
         expect(final.status).toBe('stopped');
+    });
+});
+
+// Item 3: env sanitizer
+describe('buildSanitizedEnv', () => {
+    it('strips API keys and tokens', () => {
+        const raw: NodeJS.ProcessEnv = {
+            PATH: '/usr/bin',
+            HOME: '/home/user',
+            ANTHROPIC_API_KEY: 'sk-secret',
+            GH_TOKEN: 'ghp_secret',
+            OPENAI_API_KEY: 'sk-openai',
+            DASHSCOPE_API_KEY: 'ds-secret',
+            MY_PASSWORD: 'hunter2',
+            MY_SECRET: 'topsecret',
+            LANG: 'en_US.UTF-8',
+            TERM: 'xterm',
+            CUSTOM_VAR: 'keep-me',
+        };
+        const sanitized = buildSanitizedEnv(raw);
+        expect(sanitized['PATH']).toBe('/usr/bin');
+        expect(sanitized['HOME']).toBe('/home/user');
+        expect(sanitized['LANG']).toBe('en_US.UTF-8');
+        expect(sanitized['TERM']).toBe('xterm');
+        expect(sanitized['ANTHROPIC_API_KEY']).toBeUndefined();
+        expect(sanitized['GH_TOKEN']).toBeUndefined();
+        expect(sanitized['OPENAI_API_KEY']).toBeUndefined();
+        expect(sanitized['DASHSCOPE_API_KEY']).toBeUndefined();
+        expect(sanitized['MY_PASSWORD']).toBeUndefined();
+        expect(sanitized['MY_SECRET']).toBeUndefined();
+        expect(sanitized['CUSTOM_VAR']).toBe('keep-me');
+    });
+
+    it('does not leak API keys when used in startLocalShellTask', async () => {
+        const store2 = createTaskStore(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'xq-env-')), 'tasks.sqlite'));
+        const workspace2 = fs.mkdtempSync(path.join(os.tmpdir(), 'xq-env-ws-'));
+        const task = store2.create({ title: 'env-check', type: 'shell', command: 'printf "%s" "$ANTHROPIC_API_KEY$GH_TOKEN"' });
+        const handle = startLocalShellTask({
+            task,
+            store: store2,
+            cwd: workspace2,
+            logDir: path.join(workspace2, 'logs'),
+            env: buildSanitizedEnv({ ...process.env, ANTHROPIC_API_KEY: 'sk-leaked', GH_TOKEN: 'ghp-leaked' }),
+        });
+        const result = await handle.done;
+        expect(result.status).toBe('completed');
+        const log = fs.readFileSync(result.logPath, 'utf8');
+        expect(log).not.toContain('sk-leaked');
+        expect(log).not.toContain('ghp-leaked');
+        store2.close();
     });
 });

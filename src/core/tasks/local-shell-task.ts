@@ -4,12 +4,30 @@
 // Two entry points:
 //   - runLocalShellTask(opts): awaits completion (foreground).
 //   - startLocalShellTask(opts): returns { pid, done, stop } for background use.
+//
+// P19.0.x: buildSanitizedEnv() strips sensitive keys (API keys, tokens,
+// passwords, secrets) before passing env to the child process.
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Task } from './task-types.js';
 import type { TaskStore } from './task-store.js';
+
+const SENSITIVE_KEY_PATTERN = /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|PASSWD|AUTH/i;
+const ALLOWED_ENV_KEYS = new Set(['PATH', 'LANG', 'HOME', 'TERM', 'USER', 'SHELL', 'TMPDIR', 'TMP', 'TEMP', 'PWD', 'LOGNAME']);
+
+/** Strip sensitive env vars (API keys, tokens, secrets) before passing to child processes. */
+export function buildSanitizedEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+    const result: NodeJS.ProcessEnv = {};
+    for (const [key, value] of Object.entries(source)) {
+        if (value === undefined) continue;
+        if (ALLOWED_ENV_KEYS.has(key) || !SENSITIVE_KEY_PATTERN.test(key)) {
+            result[key] = value;
+        }
+    }
+    return result;
+}
 
 export interface LocalShellTaskInput {
     task: Task;
@@ -56,7 +74,7 @@ export function startLocalShellTask(input: LocalShellTaskInput): LocalShellTaskH
     const shell = input.shell ?? '/bin/sh';
     const child: ChildProcess = spawn(shell, ['-c', task.command], {
         cwd,
-        env: input.env ?? process.env,
+        env: buildSanitizedEnv(input.env ?? process.env),
         stdio: ['ignore', 'pipe', 'pipe'],
     });
 

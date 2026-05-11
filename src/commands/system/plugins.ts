@@ -211,7 +211,12 @@ export function createPluginsCommand(dependencies: PluginsCommandDependencies = 
         .description('Enable an installed plugin')
         .option('--json', 'Output the state change as JSON')
         .action((name: string, options: { json?: boolean }) => {
-            runSetPluginEnabledCommand({ name, enabled: true, ...options }, dependencies);
+            try {
+                runSetPluginEnabledCommand({ name, enabled: true, ...options }, dependencies);
+            } catch (error) {
+                writeError(error instanceof Error ? error.message : String(error), dependencies);
+                process.exitCode = 1;
+            }
         });
 
     command
@@ -219,7 +224,12 @@ export function createPluginsCommand(dependencies: PluginsCommandDependencies = 
         .description('Disable an installed plugin without removing it')
         .option('--json', 'Output the state change as JSON')
         .action((name: string, options: { json?: boolean }) => {
-            runSetPluginEnabledCommand({ name, enabled: false, ...options }, dependencies);
+            try {
+                runSetPluginEnabledCommand({ name, enabled: false, ...options }, dependencies);
+            } catch (error) {
+                writeError(error instanceof Error ? error.message : String(error), dependencies);
+                process.exitCode = 1;
+            }
         });
 
     command

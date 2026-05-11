@@ -79,6 +79,20 @@ export class TaskCreateTool implements ITool {
         ],
     };
 
+    buildApprovalRequest(args: Record<string, unknown>): import('./tool.js').ToolApprovalRequest | undefined {
+        const typeArg = typeof args['type'] === 'string' ? args['type'].trim() : 'shell';
+        if (typeArg !== 'shell') return undefined;
+        const command = typeof args['command'] === 'string' ? args['command'] : '(no command)';
+        return {
+            toolCallId: '',
+            toolName: 'task_create',
+            summary: `Create shell task: ${command}`,
+            reason: 'task_create with type=shell will spawn a shell command.',
+            preview: command,
+            risk: 'high',
+        };
+    }
+
     async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
         const toolCallId = (args['toolCallId'] as string) ?? '';
         const title = typeof args['title'] === 'string' ? args['title'].trim() : '';
@@ -313,7 +327,12 @@ export class TaskStopTool implements ITool {
             });
         }
 
-        const signal = (typeof args['signal'] === 'string' ? args['signal'] : 'SIGTERM') as NodeJS.Signals;
+        const rawSignal = typeof args['signal'] === 'string' ? args['signal'] : 'SIGTERM';
+        const ALLOWED_SIGNALS = new Set(['SIGTERM', 'SIGINT', 'SIGKILL']);
+        if (!ALLOWED_SIGNALS.has(rawSignal)) {
+            return fail(toolCallId, `invalid signal: ${rawSignal}. Allowed: SIGTERM, SIGINT, SIGKILL`);
+        }
+        const signal = rawSignal as NodeJS.Signals;
 
         let signalled = false;
         const handle = service.getHandle(id);

@@ -103,6 +103,18 @@ describe('listInstalledPlugins', () => {
     });
 });
 
+describe('installLocalPlugin symlink rejection', () => {
+    it('rejects a source directory containing a symlink', async () => {
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-home-'));
+        const src = createFixturePlugin('symlink-plugin', '0.1.0');
+        const target = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-target-'));
+        fs.writeFileSync(path.join(target, 'secret.txt'), 'secret');
+        fs.symlinkSync(path.join(target, 'secret.txt'), path.join(src, 'link.txt'));
+
+        await expect(installLocalPlugin(src, { homeDir: home })).rejects.toThrow(/symlink/i);
+    });
+});
+
 describe('removeInstalledPlugin', () => {
     it('deletes the plugin directory', async () => {
         const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-home-'));

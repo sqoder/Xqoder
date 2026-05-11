@@ -196,4 +196,52 @@ describe('task tools', () => {
         expect(result.success).toBe(false);
         expect(result.error).toContain('invalid status');
     });
+
+    // Item 2: TaskCreateTool must expose buildApprovalRequest for shell tasks
+    it('TaskCreateTool.buildApprovalRequest returns an approval request for shell type', async () => {
+        const tool = new TaskCreateTool({ service });
+        const req = await tool.buildApprovalRequest?.(
+            { title: 'test', type: 'shell', command: 'rm -rf /' },
+            makeContext(workspace),
+        );
+        expect(req).toBeDefined();
+        expect(req?.toolName).toBe('task_create');
+        expect(req?.preview).toContain('rm -rf /');
+    });
+
+    it('TaskCreateTool.buildApprovalRequest returns undefined for non-shell types', async () => {
+        const tool = new TaskCreateTool({ service });
+        const req = await tool.buildApprovalRequest?.(
+            { title: 'test', type: 'agent' },
+            makeContext(workspace),
+        );
+        expect(req).toBeUndefined();
+    });
+
+    // Item 4: task_stop signal whitelist
+    it('TaskStopTool rejects unknown signals', async () => {
+        const task = service.store.create({ title: 'x', type: 'shell', command: 'sleep 5' });
+        service.store.update(task.id, { status: 'running', pid: 99999 });
+        const tool = new TaskStopTool({ service });
+        const result = await tool.execute(
+            { toolCallId: 's3', id: task.id, signal: 'SIGUSR1' },
+            makeContext(workspace),
+        );
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/invalid signal/i);
+    });
+
+    it('TaskStopTool accepts SIGTERM, SIGINT, SIGKILL', async () => {
+        for (const signal of ['SIGTERM', 'SIGINT', 'SIGKILL']) {
+            const task = service.store.create({ title: 'x', type: 'shell', command: 'sleep 5' });
+            service.store.update(task.id, { status: 'running', pid: 1 });
+            const tool = new TaskStopTool({ service });
+            const result = await tool.execute(
+                { toolCallId: `s-${signal}`, id: task.id, signal },
+                makeContext(workspace),
+            );
+            // May fail to kill pid 1 (init) but should not fail on signal validation
+            expect(result.error).not.toMatch(/invalid signal/i);
+        }
+    });
 });

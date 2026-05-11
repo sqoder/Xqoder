@@ -115,11 +115,12 @@ function copyDirRecursive(source: string, target: string): void {
     for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
         const from = path.join(source, entry.name);
         const to = path.join(target, entry.name);
-        if (entry.isDirectory()) {
+        if (entry.isSymbolicLink()) {
+            throw new Error(
+                `Plugin source contains a symlink at "${from}", which is not allowed during installation.`,
+            );
+        } else if (entry.isDirectory()) {
             copyDirRecursive(from, to);
-        } else if (entry.isSymbolicLink()) {
-            const target = fs.readlinkSync(from);
-            fs.symlinkSync(target, to);
         } else {
             fs.copyFileSync(from, to);
         }
