@@ -414,11 +414,21 @@ export function resolveConfigWithEnvOverrides(
     const resolvedDefaultDeployTarget = defaultDeployTarget ?? baseConfig.defaultDeployTarget;
     const resolvedDebug = debugOverride ?? baseConfig.debug;
 
+    // When the provider changes, the old provider's baseUrl must not bleed into
+    // the new provider's config. Clear it so normalizeLLMConfig falls back to
+    // getDefaultBaseUrlForProvider(newProvider). An explicit XQODER_LLM_BASE_URL
+    // still wins because it is captured in llmOverrides.baseUrl.
+    const providerChanged = provider !== undefined && provider !== baseConfig.llm.provider;
+    const { baseUrl: _oldBaseUrl, ...baseLlmWithoutUrl } = baseConfig.llm;
+    const baseLlmForMerge = (providerChanged && !env['XQODER_LLM_BASE_URL'])
+        ? baseLlmWithoutUrl
+        : baseConfig.llm;
+
     return {
         config: normalizeXQoderConfig({
             ...baseConfig,
             llm: normalizeLLMConfig({
-                ...baseConfig.llm,
+                ...baseLlmForMerge,
                 ...llmOverrides,
             }),
             providers: nextProviders,
