@@ -990,3 +990,35 @@
   - `provider-bootstrap.ts` hydrate credentials → P21c
   - withRetry oauth401 接入 → P21c
 - 下一期: **P21c — wire OAuth 到 provider-bootstrap + CLI**
+
+## P21c (2026-05-11) — Wire OAuth credentials into factory + `xqoder auth` CLI
+
+- release:check: ✅ (1283 pass / 0 fail,coverage 69.66% PASS,e2e smoke ✅,mcp:live-smoke 三 transport ✅,security hygiene ✅,size guardrail ✅)
+- golden task pass: 未测量(本期是 runtime + CLI wiring,未跑 golden set)
+- /review 警告: 未跑(本期动软红线 `core/agent/llm/factory.ts`,按 CLAUDE.md 规则留 ADR)
+- 本期关键决策(详见 ADR 0023):
+  - `createLLMProvider` 在 apiKey 缺失时延迟 import credentials 模块,尝试从 `~/.xqoder/credentials/` 注入 access token
+  - 任何 hydration 异常都被吞掉,保证 provider 在 OAuth 未登录时仍然走传统 apiKey 通路
+  - 支持 `XQODER_DISABLE_OAUTH_HYDRATION=1` 一键关闭自动 hydration
+  - 命令放在新 namespace `xqoder auth login|logout|status`,不复用老 `xqoder login`
+  - `getSharedCredentialsManager()` 单例保证全进程只解一次 master.key
+  - withRetry 的 `refreshOauthToken` 接入推迟:每次 provider 创建都走 5min 窗口 refresh,实际 runtime 期间 401 概率极低,复杂度留给 P21d
+- 新增文件:
+  - `src/application/config/credentials.ts`(~55L)
+  - `src/application/config/hydrate-credentials.ts`(~45L)
+  - `src/commands/auth/{login,logout,index}.ts`(三个,共 ~220L)
+  - `test/application/config/credentials-hydration.test.ts`(6 条)
+  - `test/commands/auth/logout-status.test.ts`(4 条)
+- 修改文件(软红线):
+  - `src/core/agent/llm/factory.ts` — hydrateFromCredentials 钩子(在 apiKey 缺失时动态注入)
+- 修改文件(非红线):
+  - `src/infra/shared/paths.ts` — 加 credentialsDir / masterKeyFile
+  - `src/plugins/command-plugins.ts` — 注册 authCommand
+- 本期 token 消耗: 未测量
+- ADR: `docs/adr/0023-p21c-wire-oauth-into-factory-cli.md`
+- P21 收官:
+  - P21a 纯模块 + 42 单测
+  - P21b provider 流程 + callback server + openBrowser + 28 单测
+  - P21c factory hydration + CLI + 10 单测
+  - 合计 +80 测试,S5(成本 + telemetry + 思考档位 + OAuth)全部完成
+- 下一期: **按施工单转入 S6**(待查下一期目录)
