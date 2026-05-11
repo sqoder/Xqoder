@@ -966,3 +966,27 @@
   - CLI + provider-bootstrap wiring → P21c
   - withRetry oauth401 接入 → P21c
 - 下一期: **P21b — provider-specific OAuth flows**
+
+## P21b (2026-05-11) — Provider-specific OAuth flows + callback server + openBrowser
+
+- release:check: ✅ (1273 pass / 0 fail,coverage 69.70% PASS,e2e smoke ✅,mcp:live-smoke 三 transport ✅,security hygiene ✅,size guardrail ✅)
+- golden task pass: 未测量(本期 pure flow modules,未跑 golden set)
+- /review 警告: 未跑(本期零红线触碰)
+- 本期关键决策(详见 ADR 0022):
+  - 4 个 provider 模块:Anthropic Console / Codex / GitHub Device Flow / Gemini
+  - Client ID 全部来自 env(`XQODER_<PROVIDER>_OAUTH_CLIENT_ID`),不硬编码
+  - Anthropic 支持 `XQODER_ANTHROPIC_OAUTH_BASE` 覆盖端点(方便测试/代理)
+  - `startCallbackServer` 只监听 127.0.0.1,不支持 0.0.0.0
+  - `openBrowser` 三平台分支;win32 转义 `&` 为 `^&`
+  - Codex refresh 时保留上次登录的 `metadata.account_id`
+  - `refreshForProvider(provider, tokens, env)` 作为 CredentialsManager refresh callback 的入口(provider-agnostic dispatch)
+- 新增文件(src/shared/auth/):callback-server / open-browser / providers/{anthropic-console,codex,github-device,gemini,index}
+- 新增测试:28 条(callback-server 6 / open-browser 4 / providers 18)
+- 本期 token 消耗: 未测量
+- ADR: `docs/adr/0022-p21b-provider-oauth-flows.md`
+- 不做 / 搁置:
+  - Keychain / libsecret / DPAPI 平台绑定 → P21c 或独立期
+  - CLI `xqoder login|logout|auth status` → P21c
+  - `provider-bootstrap.ts` hydrate credentials → P21c
+  - withRetry oauth401 接入 → P21c
+- 下一期: **P21c — wire OAuth 到 provider-bootstrap + CLI**
