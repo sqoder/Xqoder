@@ -1159,3 +1159,42 @@
   - npm / tarball 安装器(当前依赖用户自己 `npm install --prefix …` 后再指向目录)
   - `XQODER_DISABLE_THIRD_PARTY_PLUGINS=1` 杀手开关(等 runtime 接线后顺手加)
 - 下一期: **P19 — (按施工单接续,见 `docs/openclaude-parity/phase-19-*.md`)**
+
+## P19a (2026-05-11) — Task V2 core (store + runner + shell + tools + CLI)
+
+- release:check: ✅ (1448 pass / 0 fail,coverage 70.54% PASS,CLI smoke ✅,mcp:live-smoke 三 transport ✅,security hygiene ✅,size guardrail ✅)
+- golden task pass: 未测量
+- /review 警告: 未跑(纯新增 infra + application 模块,零红线变更)
+- 本期关键决策(详见 ADR 0029):
+  - P19 施工单超单期预算,拆为 a/b/c/d 四子期;本期只做 P19a(Task V2 核心)
+  - 新建 `src/core/tasks/`:`task-types` + `task-store` (SQLite) + `task-runner` (dispatcher) + `local-shell-task` (fg/bg) + `task-service`(进程内 handle 登记簿)
+  - tasks 独立 DB 文件 `~/.xqoder/data/tasks.sqlite`,与 sessions.sqlite 解耦,便于迁移/reset 不碰对话
+  - 新增 `@xqoder/core-tasks` 别名(application 层),沿用 P17 的 `@xqoder/core-*` 命名
+  - 6 个 tools:`task_create` / `task_list` / `task_get` / `task_output` / `task_stop` / `task_update`,全部注册进 `agent-default-tools`
+  - CLI 组 `xqoder task create|list|get|output|stop|update`(文本 + --json 双输出),挂在 `cli-core-shell` 内置插件
+  - `runTask`/`startTask` 的非 shell 分支 throw `not-yet-implemented-in-P19a`,exhaustive `never` 守护,P19b/P19d 加类型会强制更新 runner
+  - `task_stop` 优先用进程内 handle,其次 `process.kill(pid, signal)`,已终态幂等
+- 新增文件:
+  - `src/core/tasks/{task-types,task-store,local-shell-task,task-runner,task-service,index}.ts`(~700L)
+  - `src/core/agent/tools/task-tools.ts`(~380L)
+  - `src/commands/core/task.ts`(~320L)
+  - `test/core/tasks/{task-store,local-shell-task,task-runner,task-tools}.test.ts`(33 测试)
+  - `test/commands/core/task.test.ts`(9 测试)
+  - `docs/adr/0029-p19a-task-v2-core.md`
+  - 合计 +42 测试
+- 修改文件(非红线):
+  - `tsconfig.json`(新增 `@xqoder/core-tasks` 别名)
+  - `test/architecture-guardrails.test.ts`(别名识别)
+  - `src/plugins/command-plugins.ts`(注册 task 命令)
+  - `src/core/agent/agent-default-tools.ts`(注册 6 tools)
+- 本期 token 消耗: 未测量
+- ADR: `docs/adr/0029-p19a-task-v2-core.md`
+- P19a Out of scope / 留给后续子期:
+  - P19b: cron scheduler + `ScheduleCronTool` + `xqoder cron *`(cron lock 走 SQLite advisory)
+  - P19c: worktree manager + `Enter/ExitWorktreeTool`
+  - P19d: coordinator mode + worker agents + 其余 task 类型(`agent` / `remote-agent` / `monitor-mcp` / `dream`)+ `TeamCreate/Delete/SendMessage`
+- 本期挂起但不阻塞(继承自 P18):
+  - Live golden 3-task 还没真跑(proxy/model 不匹配,待用户本地改 LIVE_PROVIDER_CANDIDATES)
+  - P17 follow-up `loadExtendedPlugin` runtime 接线(原计划 P22)
+  - audit-4 周期审查(用户应已在独立会话并行跑,不在本期上下文)
+- 下一期: **P19b — Cron scheduler**

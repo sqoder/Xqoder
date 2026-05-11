@@ -43,6 +43,7 @@ const LAYER_ALIAS_PREFIXES: Array<{ prefix: string; layer: LayerName }> = [
     { prefix: '@xqoder/core-runtime', layer: 'application' },
     { prefix: '@xqoder/core-skills', layer: 'application' },
     { prefix: '@xqoder/core-output-styles', layer: 'application' },
+    { prefix: '@xqoder/core-tasks', layer: 'application' },
     { prefix: '@xqoder/plugin-sdk', layer: 'domain' },
     { prefix: '@xqoder/provider-openai', layer: 'infrastructure' },
     { prefix: '@xqoder/provider-anthropic', layer: 'infrastructure' },
