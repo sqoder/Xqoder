@@ -404,7 +404,7 @@ describe('SQLiteSessionStore usage persistence', () => {
             conversationEvents: restored?.getConversationEvents(),
         })).toEqual([
             { type: 'user', content: 'fresh envelope user' },
-            { type: 'assistant', content: 'fresh envelope assistant' },
+            { type: 'assistant', content: 'fresh envelope assistant', response: 'fresh envelope assistant' },
         ]);
     });
 });

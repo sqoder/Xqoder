@@ -45,7 +45,7 @@ function createRuntime() {
 
 function createRemoteRuntime() {
     const messages = [{ role: 'assistant', content: 'remote-hi' }];
-    const conversationSignals = [{ type: 'assistant', content: 'remote-hi' }];
+    const conversationSignals = [{ type: 'assistant', content: 'remote-hi', response: 'remote-hi' }];
     const remoteService = {
         isBusy: false,
         cancel() {},
@@ -121,7 +121,7 @@ describe('restoreTerminalAgentSession', () => {
         expect(restored).toEqual({
             sessionId: 'remote-session',
             messages: [{ role: 'assistant', content: 'remote-hi' }],
-            conversationSignals: [{ type: 'assistant', content: 'remote-hi' }],
+            conversationSignals: [{ type: 'assistant', content: 'remote-hi', response: 'remote-hi' }],
         });
     });
 
@@ -133,7 +133,7 @@ describe('restoreTerminalAgentSession', () => {
         expect(restored).toEqual({
             sessionId: 'remote-session',
             messages: [{ role: 'assistant', content: 'remote-hi' }],
-            conversationSignals: [{ type: 'assistant', content: 'remote-hi' }],
+            conversationSignals: [{ type: 'assistant', content: 'remote-hi', response: 'remote-hi' }],
         });
     });
 });
@@ -172,7 +172,7 @@ describe('terminal runtime helpers', () => {
         expect(remote).toEqual({
             sessionId: 'remote-session',
             messages: [{ role: 'assistant', content: 'remote-hi' }],
-            conversationSignals: [{ type: 'assistant', content: 'remote-hi' }],
+            conversationSignals: [{ type: 'assistant', content: 'remote-hi', response: 'remote-hi' }],
         });
     });
 
@@ -295,7 +295,7 @@ describe('terminal runtime helpers', () => {
                     blocked: false,
                     summary: 'Verification passed: local envelope resume visible',
                 },
-                { type: 'assistant', content: 'local envelope session restored' },
+                { type: 'assistant', content: 'local envelope session restored', response: 'local envelope session restored' },
             ],
         });
     });

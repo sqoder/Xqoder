@@ -94,6 +94,7 @@ describe('session asset export usage visibility', () => {
             {
                 type: 'assistant',
                 content: 'usage is visible in exported assets',
+                response: 'usage is visible in exported assets',
             },
         ]));
     });

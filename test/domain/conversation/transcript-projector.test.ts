@@ -185,7 +185,7 @@ describe('transcript projector', () => {
                 blocked: false,
                 summary: 'Verification passed: envelope replay parity',
             },
-            { type: 'assistant', content: 'envelope replay parity verified' },
+            { type: 'assistant', content: 'envelope replay parity verified', response: 'envelope replay parity verified' },
         ]);
     });
 
@@ -242,7 +242,7 @@ describe('transcript projector', () => {
 
         expect(projected).toEqual([
             { type: 'user', content: 'fresh envelope user' },
-            { type: 'assistant', content: 'fresh envelope assistant' },
+            { type: 'assistant', content: 'fresh envelope assistant', response: 'fresh envelope assistant' },
         ]);
     });
 });

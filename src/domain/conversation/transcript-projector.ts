@@ -183,6 +183,7 @@ function projectConversationEventRecord(
             return [{
                 type: 'assistant',
                 content: record.content,
+                response: record.content,
             }];
         case 'tool_result':
             return [{
@@ -221,10 +222,12 @@ function projectTranscriptFromEnvelopeStore(
                     continue;
                 }
 
+                const text = String(record.payload.message.content ?? '');
                 transcript.push({
                     type: record.payload.message.role === 'user' ? 'user' : 'assistant',
-                    content: String(record.payload.message.content ?? ''),
-                });
+                    content: text,
+                    ...(record.payload.message.role === 'assistant' ? { response: text } : {}),
+                } as ConversationTranscriptEntry);
                 continue;
             }
             case 'tool.output': {
