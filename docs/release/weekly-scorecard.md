@@ -1099,3 +1099,32 @@
   - P16c batch coordinator + concurrency cap(10 测试)
   - 合计 +45 测试,纯模块层完整;DelegateTaskTool rewrite 依赖 P24 持久化,推迟到 **P16d 或 P24 合并期**
 - 下一期: **按施工单进入 P17 — Skills + Output Styles**
+
+## P17 (2026-05-11) — Skills + Output Styles
+
+- release:check: ✅ (1373 pass / 0 fail,coverage 70.06% PASS,e2e smoke ✅,mcp:live-smoke 三 transport ✅,security hygiene ✅,size guardrail ✅)
+- golden task pass: 未测量
+- /review 警告: 未跑(软红线变更留 ADR)
+- 本期关键决策(详见 ADR 0027):
+  - skills 核心层 `src/core/skills/`(frontmatter/load-dir/registry/activator),纯模块 + 零第三方
+  - output-styles 核心层 `src/core/output-styles/`(load-dir/registry/inject/selection/resolve-active)
+  - `SkillTool` 升级:`action: 'list' | 'activate'`,legacy `{name}` / `{filePath}` 完全兼容;activate 结果附带 `metadata.activatedSkill` + `metadata.allowedTools`(advisory,permission-gate 联动推迟)
+  - output-style 选择 → `.xqoder/state/output-style.json`(per-project,不耦合 P24 session 持久化)
+  - prompt-composer 注入:`applyOutputStyleTail` 在动态尾巴追加 `[OutputStyle=<name>]`,保留 prompt-cache 前缀
+  - 架构守护:`@xqoder/core-skills` / `@xqoder/core-output-styles` 注册为 application 层别名,application 不直接 import `../../core/*`
+  - CLI:`xqoder skills ls/info`、`xqoder output-style ls/use/show/clear`
+- 新增文件:
+  - `src/core/skills/{frontmatter,load-dir,registry,activator,index}.ts`(~280L)
+  - `src/core/output-styles/{load-dir,registry,inject,selection,resolve-active,index}.ts`(~190L)
+  - `src/commands/core/{skills,output-style}.ts`(~230L)
+  - `docs/adr/0027-p17-skills-output-styles.md`
+  - 10 个测试文件,+44 测试
+- 修改文件(非红线):
+  - `src/core/agent/tools/interaction-tools.ts`(软红线,SkillTool list/activate)
+  - `src/application/chat/turn-intake.ts`(软红线,applyOutputStyleTail hook)
+  - `src/plugins/command-plugins.ts`(注册 skills/output-style 命令)
+  - `tsconfig.json`(新增 2 个包别名)
+  - `test/architecture-guardrails.test.ts`(别名识别)
+- 本期 token 消耗: 未测量
+- ADR: `docs/adr/0027-p17-skills-output-styles.md`
+- 下一期: **P18 — Plugin installer**

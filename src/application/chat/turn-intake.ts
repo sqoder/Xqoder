@@ -34,6 +34,10 @@ import { buildTurnPermissionGate } from './permission-gate.js';
 import { resolveTurnAttachments } from './turn-intake/attachment-resolver.js';
 import { loadMemdirContextSync } from '../memory/memdir.js';
 import { renderMemoryAppendix } from './turn-intake/memory-loader.js';
+import {
+    appendOutputStyleTail,
+    resolveActiveOutputStyleTail,
+} from '@xqoder/core-output-styles';
 
 const DEFAULT_SANDBOX = {
     mode: 'project',
@@ -216,15 +220,18 @@ export function prepareChatExecution<TTurnInput extends ConversationTurnInput>(
         cwd: effectiveTurnInput.cwd,
         projectRoot: effectiveTurnInput.cwd,
         modelOverride: effectiveTurnInput.model,
-        promptAppendix: joinPromptAppendices(
-            buildChatPromptAppendixFromRoute(
-                effectiveTurnInput.runtime.interaction,
-                sandbox,
-                effectiveTurnInput.cwd,
-                resolveChatRuntimeIdentity(effectiveConfig, effectiveTurnInput.agent, effectiveTurnInput.model),
+        promptAppendix: applyOutputStyleTail(
+            joinPromptAppendices(
+                buildChatPromptAppendixFromRoute(
+                    effectiveTurnInput.runtime.interaction,
+                    sandbox,
+                    effectiveTurnInput.cwd,
+                    resolveChatRuntimeIdentity(effectiveConfig, effectiveTurnInput.agent, effectiveTurnInput.model),
+                ),
+                instructionAppendix,
+                memoryAppendix,
             ),
-            instructionAppendix,
-            memoryAppendix,
+            effectiveTurnInput.cwd,
         ),
         session,
         sessionTitle: effectiveTurnInput.sessionTitle,
@@ -286,6 +293,14 @@ export function normalizeWorkflowGoal(input: string): string {
 
 function joinPromptAppendices(...appendices: Array<string | undefined>): string {
     return appendices.filter((entry): entry is string => Boolean(entry?.trim())).join('\n\n');
+}
+
+// Kept as a dynamic tail so the style append does not break the static
+// prompt-cache prefix built by `buildChatPromptAppendixFromRoute`. Selection
+// is persisted per-project via `.xqoder/state/output-style.json`.
+function applyOutputStyleTail(prompt: string, projectRoot: string): string {
+    const style = resolveActiveOutputStyleTail(projectRoot);
+    return appendOutputStyleTail(prompt, style);
 }
 
 function buildResolvedInstructionAppendix(

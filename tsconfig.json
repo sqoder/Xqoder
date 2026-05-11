@@ -34,6 +34,8 @@
       "@xqoder/permissions": ["./src/infra/permissions"],
       "@xqoder/agent": ["./src/core/agent"],
       "@xqoder/core-runtime": ["./src/core/runtime"],
+      "@xqoder/core-skills": ["./src/core/skills"],
+      "@xqoder/core-output-styles": ["./src/core/output-styles"],
       "@xqoder/plugin-sdk": ["./src/infra/plugin-sdk"],
       "@xqoder/provider-openai": ["./src/infra/llm/openai/provider"],
       "@xqoder/provider-anthropic": ["./src/infra/llm/anthropic"],

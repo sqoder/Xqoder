@@ -10,6 +10,8 @@ import { authCommand as loginCommand } from '../commands/core/auth.js';
 import { chatCommand } from '../commands/core/chat.js';
 import { configCommand } from '../commands/core/config.js';
 import { costCommand } from '../commands/core/cost.js';
+import { outputStyleCommand } from '../commands/core/output-style.js';
+import { skillsCommand } from '../commands/core/skills.js';
 import { effortCommand, fastCommand, thinkCommand } from '../commands/core/thinking.js';
 import { authCommand } from '../commands/auth/index.js';
 import { fixCommand } from '../commands/fix.js';
@@ -104,6 +106,8 @@ function createBuiltInCommandPlugins(options: CommandPluginFactoryOptions = {}):
                     importCommand,
                     shareCommand,
                     permissionsCommand,
+                    skillsCommand,
+                    outputStyleCommand,
                     options.chatCommand ?? chatCommand,
                     options.tuiCommand ?? tuiCommand,
                 ].forEach((command) => api.registerCommand(defineCommanderCommand(command)));
