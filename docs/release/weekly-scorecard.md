@@ -1047,3 +1047,28 @@
   - AgentMemory + snapshotSubagentMemory → **P16b**
   - AgentTool 接入 + 并发上限 + e2e → **P16c**
 - 下一期: **P16b — forkSubagent + AgentMemory snapshot**
+
+## P16b (2026-05-11) — forkSubagent + AgentMemory snapshot pure module
+
+- release:check: ✅ (1318 pass / 0 fail,coverage 69.77% PASS,e2e smoke ✅,mcp:live-smoke 三 transport ✅,security hygiene ✅,size guardrail ✅)
+- golden task pass: 未测量
+- /review 警告: 未跑(本期零红线触碰)
+- 本期关键决策(详见 ADR 0025):
+  - `ForkableSessionView` 最小 session 读接口(4 个可选方法),配合 inject 保证 P16b 是纯模块
+  - `snapshotSubagentMemory` 输出 `AgentMemorySnapshot`:readFiles 去重保序 + finalResponse + notes + usage
+  - `buildSubagentSystemPrompt` 把 subagent prompt 前置,父 baseSystem 以 "Parent context:" 追加
+  - `forkSubagent(parent, spec, { createChildSession, runChild })` 用 DI 封装,纯逻辑可测
+  - `renderAgentMemorySnapshot` 固定 tool_result 字符串格式
+  - `assertToolsAllowed` + `findFinalAssistantContent` 提给 P16c 复用
+- 新增文件:
+  - `src/core/agent/subagents/fork.ts`(~130L)
+  - `src/core/agent/subagents/memory.ts`(~115L)
+  - 2 个测试文件(20 条新测试)
+- 修改文件(非红线):
+  - `src/core/agent/subagents/index.ts`(扩充 barrel)
+- 本期 token 消耗: 未测量
+- ADR: `docs/adr/0025-p16b-fork-subagent-and-memory.md`
+- 不做 / 搁置:
+  - AgentTool 接入 + 并发上限 + e2e → **P16c**
+  - resumeAgent 跨进程恢复 → P24 session lifecycle
+- 下一期: **P16c — 把 forkSubagent 接入 AgentTool**
