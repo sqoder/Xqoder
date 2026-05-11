@@ -1072,3 +1072,30 @@
   - AgentTool 接入 + 并发上限 + e2e → **P16c**
   - resumeAgent 跨进程恢复 → P24 session lifecycle
 - 下一期: **P16c — 把 forkSubagent 接入 AgentTool**
+
+## P16c (2026-05-11) — Fork batch coordinator (concurrency cap) + AgentTool rewrite deferred
+
+- release:check: ✅ (1328 pass / 0 fail,coverage 69.79% PASS,e2e smoke ✅,mcp:live-smoke 三 transport ✅,security hygiene ✅,size guardrail ✅)
+- golden task pass: 未测量
+- /review 警告: 未跑(本期零红线触碰)
+- 本期关键决策(详见 ADR 0026):
+  - `forkSubagentsBatch(parent, specs, deps, { maxConcurrency, signal })` 默认 4 路
+  - 工作池模式:N 个 worker 共享游标,保证峰值 ≤ cap
+  - 结果保序:`outcomes[i]` 对应 `specs[i]` 不管完成顺序
+  - 单 fork 出错产出 `{ status: 'error' }` entry,不污染整批
+  - AbortSignal 停止调度新 fork,不中断已在飞的
+  - `areAllConcurrencySafe(specs)` 谓词给 AgentTool 选 batch vs serial
+  - **DelegateTaskTool 的完整改写推迟**:rewrite 会改变 tool 返回线格式 + 依赖 P24 session 持久化(子 session 当前 in-memory),做一半不如一起做。ADR 里给出完整 integration recipe。
+- 新增文件:
+  - `src/core/agent/subagents/batch.ts`(~70L)
+  - `test/core/agent/subagents/batch.test.ts`(10 条)
+- 修改文件(非红线):
+  - `src/core/agent/subagents/index.ts`(扩充 barrel)
+- 本期 token 消耗: 未测量
+- ADR: `docs/adr/0026-p16c-fork-batch-coordinator.md`
+- P16 小结:
+  - P16a 内置 agent 注册表 + markdown frontmatter(15 测试)
+  - P16b forkSubagent + AgentMemory snapshot(20 测试)
+  - P16c batch coordinator + concurrency cap(10 测试)
+  - 合计 +45 测试,纯模块层完整;DelegateTaskTool rewrite 依赖 P24 持久化,推迟到 **P16d 或 P24 合并期**
+- 下一期: **按施工单进入 P17 — Skills + Output Styles**

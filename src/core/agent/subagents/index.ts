@@ -26,3 +26,10 @@ export {
     type ForkSubagentDependencies,
     type ParentForkContext,
 } from './fork.js';
+export {
+    DEFAULT_FORK_CONCURRENCY,
+    areAllConcurrencySafe,
+    forkSubagentsBatch,
+    type BatchForkOptions,
+    type BatchForkOutcome,
+} from './batch.js';
