@@ -1238,3 +1238,23 @@
   - P17 follow-up `loadExtendedPlugin` runtime 接线
   - audit-4 周期审查
 - 下一期: **P19c — Worktree manager**
+
+---
+
+## Bug-fix session (2026-05-12) — Live golden 4 bugs
+
+- release:check: ✅
+- golden task pass: 未重跑(需真实 API key)
+- /review 警告: 0 条
+- 本期 token 消耗: 约 15 万
+- commits:
+  - `fix(tools): Bug 3` — 434e843
+  - `fix(config): Bug 1` — 2cc98b1
+  - `fix(agent): Bug 2` — 548d63d
+  - `fix(harness): Bug 4` — 2ddbb60
+- ADR: `docs/adr/0031-bug3-read-before-write-guard-no-stop-reason.md`
+- Bug 1: `resolveConfigWithEnvOverrides` 切 provider 时清除旧 baseUrl
+- Bug 2: `maxTurns` 打通 ChatRunOptions → AgentConfig.maxIterations；live 模式固定 30 轮
+- Bug 3: read-before-write guard 不再设 `stopReason: 'permission_denied'`，agent 可自恢复
+- Bug 4: `buildGoldenTaskPrompt` 加强制 final-answer 指令，防止模型静默退出 tool loop
+- 下一期: **P19c — Worktree manager**（或重跑 live acceptance 验证 bug fix 效果）
