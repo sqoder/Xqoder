@@ -32,6 +32,12 @@ export interface PersistedSessionSummary {
     compactionCount: number;
     commandCount: number;
     fileChangeCount: number;
+    /** P24 — permission mode at time of save */
+    permissionMode?: string;
+    /** P24 — activated skill names */
+    activatedSkills: string[];
+    /** P24 — parent session id when this is a rewind branch */
+    parentSessionId?: string;
 }
 
 export interface SaveSessionOptions {
@@ -46,6 +52,12 @@ export interface SaveSessionInput {
     model: string;
     title?: string;
     options?: SaveSessionOptions;
+    /** P24 — permission mode to persist */
+    permissionMode?: string;
+    /** P24 — activated skill names to persist */
+    activatedSkills?: string[];
+    /** P24 — parent session id for rewind branches */
+    parentSessionId?: string;
 }
 
 export interface AgentSessionStore {
@@ -177,8 +189,11 @@ export class SQLiteSessionStore implements AgentSessionStore {
                     completion_tokens,
                     total_tokens,
                     last_user_message,
-                    session_metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    session_metadata_json,
+                    permission_mode,
+                    activated_skills,
+                    parent_session_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     project_root = excluded.project_root,
                     cwd = excluded.cwd,
@@ -191,7 +206,10 @@ export class SQLiteSessionStore implements AgentSessionStore {
                     completion_tokens = excluded.completion_tokens,
                     total_tokens = excluded.total_tokens,
                     last_user_message = excluded.last_user_message,
-                    session_metadata_json = excluded.session_metadata_json
+                    session_metadata_json = excluded.session_metadata_json,
+                    permission_mode = excluded.permission_mode,
+                    activated_skills = excluded.activated_skills,
+                    parent_session_id = excluded.parent_session_id
             `).run(
                 snapshot.id,
                 projectRoot,
@@ -210,6 +228,9 @@ export class SQLiteSessionStore implements AgentSessionStore {
                     ...snapshot.metadata,
                     usage: serializeOptionalSessionUsage(snapshot.usage),
                 }),
+                input.permissionMode ?? null,
+                JSON.stringify(input.activatedSkills ?? []),
+                input.parentSessionId ?? null,
             );
 
             this.db.prepare('DELETE FROM session_messages WHERE session_id = ?').run(snapshot.id);
@@ -294,6 +315,7 @@ export class SQLiteSessionStore implements AgentSessionStore {
             compactionCount: 0,
             commandCount: 0,
             fileChangeCount: 0,
+            activatedSkills: [],
         };
     }
 
@@ -331,6 +353,10 @@ interface SessionRow {
     total_tokens: number;
     last_user_message: string | null;
     session_metadata_json: string;
+    /** P24 */
+    permission_mode: string | null;
+    activated_skills: string | null;
+    parent_session_id: string | null;
 }
 
 function ensureSessionSchema(db: SqliteDatabase): void {
@@ -358,6 +384,10 @@ function ensureSessionSchema(db: SqliteDatabase): void {
         'session_metadata_json',
         `TEXT NOT NULL DEFAULT '{}'`,
     );
+    // P24 columns — added via migration v4; ensureColumn guards for existing DBs
+    ensureColumn(db, 'sessions', 'permission_mode', 'TEXT');
+    ensureColumn(db, 'sessions', 'activated_skills', `TEXT DEFAULT '[]'`);
+    ensureColumn(db, 'sessions', 'parent_session_id', 'TEXT');
     db.exec(`
         CREATE TABLE IF NOT EXISTS session_messages (
             session_id TEXT NOT NULL,
@@ -421,6 +451,10 @@ function parseSessionRow(row: SessionRow): {
             compactionCount: metadata.compactions.length,
             commandCount: metadata.commandHistory.length,
             fileChangeCount: metadata.fileChanges.length,
+            // P24 fields
+            ...(row.permission_mode ? { permissionMode: row.permission_mode } : {}),
+            activatedSkills: safeParseSkills(row.activated_skills),
+            ...(row.parent_session_id ? { parentSessionId: row.parent_session_id } : {}),
         },
         metadata,
     };
@@ -431,6 +465,16 @@ function safeParseJson(raw: string): unknown {
         return JSON.parse(raw);
     } catch {
         return undefined;
+    }
+}
+
+function safeParseSkills(raw: string | null): string[] {
+    if (!raw) return [];
+    try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === 'string') : [];
+    } catch {
+        return [];
     }
 }
 

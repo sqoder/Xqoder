@@ -1312,3 +1312,21 @@
   5. 38 新测试 (coordinator-mode 20, coordinator-tools 18) — 全绿
   6. architecture-guardrail: core/coordinator 不得 import infrastructure/domain
 - 下一期: P20 — Thinking effort + fast mode
+
+---
+
+## P24 (2026-05-12) — Session lifecycle (arc / rewind / schema migration)
+
+- release:check: ✅
+- golden task pass: 未重跑
+- /review 警告: 0 条
+- 本期 token 消耗: 约 7 万
+- ADR: docs/adr/0034-p24-session-lifecycle.md
+- 新增:
+  1. DB migration v4: `permission_mode / activated_skills / parent_session_id` 列
+  2. `PersistedSessionSummary` + `SessionSummary` + `SaveSessionInput` 扩展 P24 字段
+  3. `src/core/agent/session/arc.ts` — ConversationArc 关键词启发式分段
+  4. `src/core/agent/session/rewind.ts` — 分支 session（永不覆盖原 session）
+  5. `xqoder session arc` + `xqoder session rewind` CLI 子命令
+  6. 15 新测试 (arc 10, rewind 5) — 全绿
+- 下一期: P25 — Bridge / Remote / Daemon
