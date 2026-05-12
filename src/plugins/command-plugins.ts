@@ -9,6 +9,14 @@ import { agentCommand } from '../commands/core/agent.js';
 import { authCommand as loginCommand } from '../commands/core/auth.js';
 import { chatCommand } from '../commands/core/chat.js';
 import { configCommand } from '../commands/core/config.js';
+import { costCommand } from '../commands/core/cost.js';
+import { outputStyleCommand } from '../commands/core/output-style.js';
+import { skillsCommand } from '../commands/core/skills.js';
+import { taskCommand } from '../commands/core/task.js';
+import { cronCommand } from '../commands/core/cron.js';
+import { worktreeCommand } from '../commands/core/worktree.js';
+import { effortCommand, fastCommand, thinkCommand } from '../commands/core/thinking.js';
+import { authCommand } from '../commands/auth/index.js';
 import { fixCommand } from '../commands/fix.js';
 import { runCommand } from '../commands/workflows/run.js';
 import { startCommand } from '../commands/workflows/start.js';
@@ -31,6 +39,7 @@ import { tuiInterfaceCommand as tuiCommand } from '../interfaces/tui/index.js';
 import { githubCommandExport } from '../commands/tools/github.js';
 import { createMemoryCommand } from '../commands/system/memory.js';
 import { createHooksCommand } from '../commands/system/hooks.js';
+import { createFeaturesCommand } from '../commands/system/features.js';
 import { createMcpCommand } from '../commands/integrations/mcp.js';
 import { createServeCommand } from '../commands/remote/serve.js';
 import { teamCommand } from '../commands/workflows/team.js';
@@ -86,6 +95,11 @@ function createBuiltInCommandPlugins(options: CommandPluginFactoryOptions = {}):
             setup(api) {
                 [
                     configCommand,
+                    costCommand,
+                    thinkCommand,
+                    effortCommand,
+                    fastCommand,
+                    authCommand,
                     loginCommand,
                     modelsCommand,
                     agentCommand,
@@ -95,6 +109,11 @@ function createBuiltInCommandPlugins(options: CommandPluginFactoryOptions = {}):
                     importCommand,
                     shareCommand,
                     permissionsCommand,
+                    skillsCommand,
+                    outputStyleCommand,
+                    taskCommand,
+                    cronCommand,
+                    worktreeCommand,
                     options.chatCommand ?? chatCommand,
                     options.tuiCommand ?? tuiCommand,
                 ].forEach((command) => api.registerCommand(defineCommanderCommand(command)));
@@ -144,6 +163,7 @@ function createBuiltInCommandPlugins(options: CommandPluginFactoryOptions = {}):
                     upgradeCommand,
                     createMemoryCommand(),
                     createHooksCommand(),
+                    createFeaturesCommand(),
                     ideCommand,
                     createServeCommand(),
                 ].forEach((command) => api.registerCommand(defineCommanderCommand(command)));

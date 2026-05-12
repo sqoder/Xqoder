@@ -1,5 +1,5 @@
-import type { LLMProviderConfig } from '@xqoder/shared';
-import { AgentError } from '@xqoder/shared';
+import type { LLMProviderConfig, LLMProviderName } from '@xqoder/shared';
+import { AgentError, normalizeLLMConfig, getDefaultBaseUrlForProvider, getDefaultModelForProvider } from '@xqoder/shared';
 import type { ILLMProvider } from './provider.js';
 
 /**
@@ -7,6 +7,14 @@ import type { ILLMProvider } from './provider.js';
  * Uses dynamic imports (Lazy Loading) to reduce initial bundle size and decouple dependencies
  */
 export async function createLLMProvider(config: LLMProviderConfig): Promise<ILLMProvider> {
+    if (shouldUseCodexShim(config)) {
+        const { CodexShimProvider } = await import('../../../infra/llm/openai/shim/index.js');
+        return new CodexShimProvider(normalizeCompatConfig(config));
+    }
+    if (shouldUseOpenAIShim(config.provider)) {
+        const { OpenAIShimProvider } = await import('../../../infra/llm/openai/shim/index.js');
+        return new OpenAIShimProvider(normalizeCompatConfig(config));
+    }
     switch (config.provider) {
         case 'openai':
         case 'openai-compatible': {
@@ -60,4 +68,40 @@ export async function createLLMProvider(config: LLMProviderConfig): Promise<ILLM
         default:
             throw new AgentError(`Unsupported LLM Provider: ${String(config.provider)}`);
     }
+}
+
+const SHIM_ELIGIBLE_PROVIDERS: ReadonlySet<LLMProviderName> = new Set([
+    'openai',
+    'openai-compatible',
+    'dashscope',
+    'groq',
+    'openrouter',
+    'xai',
+    'local',
+]);
+
+function shouldUseOpenAIShim(provider: LLMProviderName): boolean {
+    if (!SHIM_ELIGIBLE_PROVIDERS.has(provider)) return false;
+    const flag = process.env.XQODER_USE_OPENAI_SHIM;
+    return flag === '1' || flag === 'true';
+}
+
+const CODEX_MODEL_PATTERN = /^(?:codexplan|gpt-5(?:\.\d+)?(?:-codex)?|o\d+-codex)(?:[-._].*)?$/i;
+
+function shouldUseCodexShim(config: LLMProviderConfig): boolean {
+    const flag = process.env.XQODER_FEATURE_CODEX_SHIM;
+    if (flag !== '1' && flag !== 'true') return false;
+    if (config.provider !== 'openai' && config.provider !== 'openai-compatible') return false;
+    const model = (config.model ?? '').trim();
+    if (!model) return false;
+    return CODEX_MODEL_PATTERN.test(model);
+}
+
+function normalizeCompatConfig(config: LLMProviderConfig): LLMProviderConfig {
+    return normalizeLLMConfig({
+        ...config,
+        model: config.model || getDefaultModelForProvider(config.provider),
+        baseUrl: config.baseUrl || getDefaultBaseUrlForProvider(config.provider),
+        apiKey: config.apiKey || (config.provider === 'local' ? 'dummy' : ''),
+    });
 }

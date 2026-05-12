@@ -4,6 +4,7 @@ import type { OutputFormat } from '@xqoder/shared';
 import { runNonInteractivePrompt, type ChatServiceDependencies } from '../application/chat/index.js';
 import { createDefaultChatSessionStore } from '../infrastructure/storage/index.js';
 import { runTuiInterface as runTuiCommand } from '../interfaces/tui/index.js';
+import { readNdjsonStdin } from './structured-io.js';
 
 export interface RootShellOptions {
     prompt?: string;
@@ -24,6 +25,8 @@ export interface RootShellOptions {
     noSessionPersistence?: boolean;
     allowedTools?: string;
     disallowedTools?: string;
+    /** P26 — ndjson input mode */
+    inputFormat?: string;
 }
 
 export interface RootShellDependencies {
@@ -46,6 +49,8 @@ export interface RootShellDependencies {
         disallowedTools?: string[];
     }) => Promise<void>;
     chatDependencies?: ChatServiceDependencies;
+    /** P26 — injectable ndjson stdin reader for testing */
+    ndjsonReader?: () => AsyncGenerator<import('./structured-io.js').NdjsonInputMessage>;
 }
 
 export function applyRootShellOptions(program: Command): void {
@@ -53,7 +58,7 @@ export function applyRootShellOptions(program: Command): void {
         .option('-p, --prompt <text>', 'Non-interactive mode: send a single prompt and output the result')
         .option('--print <text>', 'Alias for --prompt')
         .option('-c, --cwd <dir>', 'Specify working directory')
-        .option('-f, --output-format <format>', 'Output format: text, json, or stream-json', 'text')
+        .option('-f, --output-format <format>', 'Output format: text, json, stream-json, or ndjson', 'text')
         .option('--json', 'Output results in JSON format')
         .option('-q, --quiet', 'Disable additional output in non-interactive mode')
         .option('-m, --model <model>', 'Specify LLM model')
@@ -67,7 +72,8 @@ export function applyRootShellOptions(program: Command): void {
         .option('--max-turns <n>', 'Maximum number of turns in non-interactive mode', parseInt)
         .option('--no-session-persistence', 'Disable session persistence')
         .option('--allowedTools <tools>', 'Comma-separated list of allowed tools')
-        .option('--disallowedTools <tools>', 'Comma-separated list of disallowed tools');
+        .option('--disallowedTools <tools>', 'Comma-separated list of disallowed tools')
+        .option('--input-format <format>', 'Input format: text or ndjson (reads user messages from stdin)', 'text');
 }
 
 export function resolveRootShellOutputFormat(rawValue: unknown, jsonFlag: boolean): OutputFormat {
@@ -76,7 +82,7 @@ export function resolveRootShellOutputFormat(rawValue: unknown, jsonFlag: boolea
     }
 
     const format = String(rawValue).toLowerCase();
-    if (format === 'json' || format === 'stream-json') {
+    if (format === 'json' || format === 'stream-json' || format === 'ndjson') {
         return format as OutputFormat;
     }
 
@@ -84,7 +90,7 @@ export function resolveRootShellOutputFormat(rawValue: unknown, jsonFlag: boolea
         return 'text';
     }
 
-    throw new Error(`invalid format option: ${String(rawValue)}\nValid formats: text, json, stream-json`);
+    throw new Error(`invalid format option: ${String(rawValue)}\nValid formats: text, json, stream-json, ndjson`);
 }
 
 export function canLaunchInteractiveTui(): boolean {
@@ -96,6 +102,49 @@ export async function runRootShellAction(
     dependencies: RootShellDependencies = {},
 ): Promise<'handled' | 'show-help'> {
     const prompt = options.prompt || options.print;
+    const inputFormat = options.inputFormat ?? 'text';
+    const isNdjsonInput = inputFormat === 'ndjson';
+
+    // P26 — ndjson input mode: read user messages from stdin, no -p required
+    if (isNdjsonInput) {
+        const cwd = options.cwd ? path.resolve(String(options.cwd)) : process.cwd();
+        const outputFormat = resolveRootShellOutputFormat(options.outputFormat ?? 'ndjson', Boolean(options.json));
+        const allowedTools = options.allowedTools ? options.allowedTools.split(',').map(t => t.trim()) : undefined;
+        const disallowedTools = options.disallowedTools ? options.disallowedTools.split(',').map(t => t.trim()) : undefined;
+        const promptRunner = dependencies.promptRunner ?? ((promptOptions) => runNonInteractivePrompt(promptOptions, {
+            createSessionStore: createDefaultChatSessionStore,
+            ...dependencies.chatDependencies,
+        }));
+        const reader = dependencies.ndjsonReader ?? readNdjsonStdin;
+
+        for await (const msg of reader()) {
+            if (msg.type === 'control') {
+                if (msg.control?.type === 'control.interrupt') break;
+                continue;
+            }
+            if (msg.text) {
+                await promptRunner({
+                    prompt: msg.text,
+                    cwd,
+                    outputFormat,
+                    quiet: Boolean(options.quiet),
+                    model: options.model,
+                    agent: options.agent,
+                    resume: options.resume,
+                    continue: options.continue,
+                    forkSession: options.forkSession,
+                    permissionMode: options.permissionMode,
+                    approvalPolicy: options.approvalPolicy,
+                    effort: options.effort,
+                    maxTurns: options.maxTurns,
+                    noSessionPersistence: options.noSessionPersistence,
+                    allowedTools,
+                    disallowedTools,
+                });
+            }
+        }
+        return 'handled';
+    }
 
     if (prompt) {
         const cwd = options.cwd ? path.resolve(String(options.cwd)) : process.cwd();

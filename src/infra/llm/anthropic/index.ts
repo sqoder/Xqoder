@@ -15,6 +15,14 @@ import type {
 } from '@xqoder/shared';
 import { LLMError, resolveLLMProviderCapabilities } from '@xqoder/shared';
 import { BaseLLMProvider, type CompletionRequest, type CompletionResponse } from '@xqoder/llm-api';
+import {
+  toAnthropicThinkingParams,
+  triggerFastModeCooldownOnRejection,
+} from '../../../shared/thinking/index.js';
+// Clean-room retry wrapper inspired by Claude Code / OpenClaude behavior.
+// Absorbs 429 / 529 / OAuth401 / socket hiccups before they reach the
+// application layer, surfacing only classified LLM errors.
+import { withRetry, createIdleWatchdog, isClassifiedLLMError } from '../retry/index.js';
 
 function buildFileAttachmentContext(attachments: MessageAttachment[] | undefined): string {
   const fileAttachments = (attachments ?? []).filter((a) => a.type === 'file');
@@ -64,6 +72,99 @@ function buildAnthropicAttachmentBlocks(
     .filter((block): block is AnthropicAttachmentBlock => block !== undefined);
 }
 
+// Prompt-cache kill switch. Set XQODER_DISABLE_PROMPT_CACHE=1 to restore the
+// pre-P03 plain-string `system` payload and stop tagging tail blocks.
+function isPromptCacheDisabled(): boolean {
+  return process.env.XQODER_DISABLE_PROMPT_CACHE === '1';
+}
+
+// Anthropic caches request prefixes byte-for-byte up to each cache_control
+// breakpoint. We place one at the end of the system prompt (so identity/tools
+// stay hot across turns) and optionally one at the tail of the last user/tool
+// message (so the turn that just closed can be reused as a prefix next turn).
+// Cap: ≤2 breakpoints per request — more would splinter the prefix.
+function buildSystemParamWithCacheBreakpoint(
+  systemText: string | undefined,
+): string | Anthropic.TextBlockParam[] | undefined {
+  if (systemText === undefined || systemText.length === 0) {
+    return undefined;
+  }
+  if (isPromptCacheDisabled()) {
+    return systemText;
+  }
+  return [
+    {
+      type: 'text',
+      text: systemText,
+      cache_control: { type: 'ephemeral' },
+    },
+  ];
+}
+
+// Tag the final content block of the final user/tool message with
+// cache_control so the recently-sent turn becomes a cache prefix for the next
+// call. Normalizes string content into a single text block before tagging.
+function injectTailCacheBreakpoint(
+  messages: Anthropic.MessageParam[],
+): Anthropic.MessageParam[] {
+  if (isPromptCacheDisabled() || messages.length === 0) {
+    return messages;
+  }
+  const tailIndex = messages.length - 1;
+  const tail = messages[tailIndex];
+  if (tail.role !== 'user') {
+    return messages;
+  }
+
+  const blocks: Anthropic.ContentBlockParam[] = typeof tail.content === 'string'
+    ? [{ type: 'text', text: tail.content }]
+    : [...tail.content];
+  if (blocks.length === 0) {
+    return messages;
+  }
+
+  const last = blocks[blocks.length - 1];
+  // Anthropic's TextBlock / ToolResultBlock / ImageBlock / DocumentBlock all
+  // accept cache_control; we set it without rewriting the block shape.
+  blocks[blocks.length - 1] = {
+    ...last,
+    cache_control: { type: 'ephemeral' },
+  } as Anthropic.ContentBlockParam;
+
+  const next = [...messages];
+  next[tailIndex] = { ...tail, content: blocks };
+  return next;
+}
+
+// Anthropic reports input_tokens EXCLUSIVE of cache_read / cache_creation.
+// Fold the cache buckets back into promptTokens so downstream consumers
+// (calculateCost's regularInput = promptTokens - cacheRead, session usage
+// totals, cost telemetry) see a single consistent "what the API billed for".
+function buildUsageFromAnthropic(raw: {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+}): {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+} {
+  const cacheReadTokens = raw.cache_read_input_tokens ?? 0;
+  const cacheCreationTokens = raw.cache_creation_input_tokens ?? 0;
+  const promptTokens = raw.input_tokens + cacheReadTokens + cacheCreationTokens;
+  const completionTokens = raw.output_tokens;
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+  };
+}
+
 function buildAnthropicToolResultContent(
   text: string,
   attachments: MessageAttachment[] | undefined,
@@ -98,25 +199,35 @@ export class AnthropicProvider extends BaseLLMProvider {
     try {
       const systemMessage = request.messages.find((m) => m.role === 'system');
       const otherMessages = request.messages.filter((m) => m.role !== 'system');
-      const response = await this.client.messages.create({
+      const thinkingParams = toAnthropicThinkingParams(request.thinking);
+      const baseParams = {
         model: this.model,
-        system: systemMessage?.content,
-        messages: this.formatMessages(otherMessages),
+        system: buildSystemParamWithCacheBreakpoint(systemMessage?.content),
+        messages: injectTailCacheBreakpoint(this.formatMessages(otherMessages)),
         tools: request.tools ? (this.formatTools(request.tools) as Anthropic.Tool[]) : undefined,
         max_tokens: request.maxTokens ?? this.maxTokens,
-        temperature: request.temperature ?? this.temperature,
-      });
+      };
+      const extraParams: Record<string, unknown> = {};
+      if (!thinkingParams.dropTemperature) {
+        extraParams['temperature'] = request.temperature ?? this.temperature;
+      }
+      if (thinkingParams.thinking) extraParams['thinking'] = thinkingParams.thinking;
+      if (thinkingParams.speed) extraParams['speed'] = thinkingParams.speed;
+      const response = await withRetry(
+        { providerName: 'anthropic', foreground: true },
+        () => this.client.messages.create({ ...baseParams, ...extraParams } as unknown as Anthropic.MessageCreateParamsNonStreaming),
+      );
       const message = this.parseResponse(response);
       return {
         message,
-        usage: {
-          promptTokens: response.usage.input_tokens,
-          completionTokens: response.usage.output_tokens,
-          totalTokens: response.usage.input_tokens + response.usage.output_tokens,
-        },
+        usage: buildUsageFromAnthropic(response.usage),
         finishReason: this.mapStopReason(response.stop_reason),
       };
     } catch (err) {
+      triggerFastModeCooldownOnRejection(err);
+      if (isClassifiedLLMError(err)) {
+        throw err;
+      }
       throw new LLMError(
         `Anthropic API call failed: ${err instanceof Error ? err.message : String(err)}`,
         'anthropic',
@@ -129,21 +240,42 @@ export class AnthropicProvider extends BaseLLMProvider {
     try {
       const systemMessage = request.messages.find((m) => m.role === 'system');
       const otherMessages = request.messages.filter((m) => m.role !== 'system');
-      const stream = this.client.messages.stream({
+      const thinkingParams = toAnthropicThinkingParams(request.thinking);
+      const baseParams = {
         model: this.model,
-        system: systemMessage?.content,
-        messages: this.formatMessages(otherMessages),
+        system: buildSystemParamWithCacheBreakpoint(systemMessage?.content),
+        messages: injectTailCacheBreakpoint(this.formatMessages(otherMessages)),
         tools: request.tools ? (this.formatTools(request.tools) as Anthropic.Tool[]) : undefined,
         max_tokens: request.maxTokens ?? this.maxTokens,
-        temperature: request.temperature ?? this.temperature,
-      });
+      };
+      const extraParams: Record<string, unknown> = {};
+      if (!thinkingParams.dropTemperature) {
+        extraParams['temperature'] = request.temperature ?? this.temperature;
+      }
+      if (thinkingParams.thinking) extraParams['thinking'] = thinkingParams.thinking;
+      if (thinkingParams.speed) extraParams['speed'] = thinkingParams.speed;
+      // withRetry only guards the handshake here. Once the SSE stream opens,
+      // socket errors mid-flight surface directly — there's no idempotent way
+      // to re-splice a partially-consumed stream at this layer.
+      const stream = await withRetry(
+        { providerName: 'anthropic', foreground: true },
+        async () => this.client.messages.stream({ ...baseParams, ...extraParams } as unknown as Anthropic.MessageStreamParams),
+      );
       let content = '';
       const toolCalls: ToolCall[] = [];
+      // Anthropic's MessageStream is event-emitter based, not an AsyncIterable,
+      // so wrapStream() (which races iterator.next()) does not apply here.
+      // We attach a watchdog that resets on each text / contentBlock event and
+      // race its waitForIdle() against finalMessage(). On idle, StreamIdleError
+      // beats finalMessage() and we abort the SDK stream in the catch below.
+      const watchdog = createIdleWatchdog({ providerName: 'anthropic' });
       stream.on('text', (text) => {
+        watchdog.tick();
         content += text;
         callbacks.onToken?.(text);
       });
       stream.on('contentBlock', (block) => {
+        watchdog.tick();
         if (block.type === 'tool_use') {
           toolCalls.push({
             id: block.id,
@@ -153,7 +285,26 @@ export class AnthropicProvider extends BaseLLMProvider {
           callbacks.onToolCall?.({ id: block.id, name: block.name, arguments: JSON.stringify(block.input) });
         }
       });
-      const finalMessage = await stream.finalMessage();
+      let finalMessage: Anthropic.Message;
+      try {
+        finalMessage = await Promise.race([
+          stream.finalMessage(),
+          watchdog.waitForIdle(),
+        ]);
+      } catch (raceErr) {
+        // If the watchdog won, abort the still-running SDK stream so we don't
+        // leak the underlying HTTP connection after rethrowing StreamIdleError.
+        if (isClassifiedLLMError(raceErr) && raceErr.kind === 'stream_idle') {
+          try {
+            stream.abort();
+          } catch {
+            /* best-effort; SDK may already be closed */
+          }
+        }
+        throw raceErr;
+      } finally {
+        watchdog.stop();
+      }
       const message: LLMMessage = {
         role: 'assistant',
         content,
@@ -162,16 +313,15 @@ export class AnthropicProvider extends BaseLLMProvider {
       callbacks.onComplete?.(message);
       return {
         message,
-        usage: {
-          promptTokens: finalMessage.usage.input_tokens,
-          completionTokens: finalMessage.usage.output_tokens,
-          totalTokens: finalMessage.usage.input_tokens + finalMessage.usage.output_tokens,
-        },
+        usage: buildUsageFromAnthropic(finalMessage.usage),
         finishReason: this.mapStopReason(finalMessage.stop_reason),
       };
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       callbacks.onError?.(error);
+      if (isClassifiedLLMError(err)) {
+        throw err;
+      }
       throw new LLMError(`Anthropic streaming call failed: ${error.message}`, 'anthropic');
     }
   }

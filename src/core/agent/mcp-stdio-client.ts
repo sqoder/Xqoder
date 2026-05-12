@@ -7,6 +7,8 @@ import {
     hasCapability,
     resolveServerCwd,
 } from './mcp-utils.js';
+import { filterSensitiveEnv } from './tools/env-filter.js';
+import { handleElicitation, type ElicitationRequest } from './mcp-elicitation.js';
 import {
     MCP_CLIENT_INFO,
     MCP_REQUEST_PROTOCOL_VERSION,
@@ -229,10 +231,7 @@ export class McpStdioClient implements McpClientAdapter {
 
         const child = spawn(this.config.command, this.config.args ?? [], {
             cwd: resolveServerCwd(this.config.cwd, this.options.projectRoot, this.options.cwd),
-            env: {
-                ...process.env,
-                ...(this.config.env ?? {}),
-            },
+            env: filterSensitiveEnv(process.env, this.config.env),
             stdio: 'pipe',
         });
         this.child = child;
@@ -396,7 +395,7 @@ export class McpStdioClient implements McpClientAdapter {
         }
     }
 
-    private async handleServerRequest(method: string, _params: unknown): Promise<unknown> {
+    private async handleServerRequest(method: string, params: unknown): Promise<unknown> {
         if (method === 'roots/list') {
             return {
                 roots: buildRoots(this.options.projectRoot, this.options.allowedPaths),
@@ -405,6 +404,10 @@ export class McpStdioClient implements McpClientAdapter {
 
         if (method === 'ping') {
             return {};
+        }
+
+        if (method === 'elicitation/create') {
+            return handleElicitation(params as ElicitationRequest, this.options.elicit);
         }
 
         throw new Error(`Unsupported MCP request: ${method}`);

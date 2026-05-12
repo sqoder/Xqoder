@@ -42,6 +42,8 @@ export async function resolveDirectChatCommandResponse(
             return await buildToolsResponse(execution, dependencies);
         case 'compact':
             return await buildCompactResponse(execution, dependencies);
+        case 'help':
+            return buildHelpResponse();
         case 'usage':
             return commandRoute.response;
         default:
@@ -296,4 +298,21 @@ async function listVisibleToolsFromAgent(
     } finally {
         await agent.dispose();
     }
+}
+
+function buildHelpResponse(): string {
+    return [
+        'XQoder slash commands:',
+        '  /help, /?              Show this help',
+        '  /status, /stats        Show runtime status',
+        '  /permissions, /auth    Show permission snapshot',
+        '  /tools                 List visible tools for this turn',
+        '  /compact, /compress    Compact the current session history',
+        '  /plan <goal>           Run the plan workflow',
+        '  /review <scope>        Run the review workflow',
+        '  /implement <goal>      Implement an approved plan',
+        '  /skill <name> [goal]   Load a skill and follow it',
+        '',
+        'Reference @path/to/file.ext in your message to auto-attach the file.',
+    ].join('\n');
 }

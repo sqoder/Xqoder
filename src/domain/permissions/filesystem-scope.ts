@@ -8,13 +8,13 @@ export type WritePathScope = 'workspace' | 'internal' | 'outside';
 export interface ReadPathScopeContext {
     cwd: string;
     projectRoot: string;
-    allowedPaths?: string[];
+    allowedPaths?: string[] | undefined;
 }
 
 export interface WritePathScopeContext {
     cwd: string;
     projectRoot: string;
-    allowedPaths?: string[];
+    allowedPaths?: string[] | undefined;
 }
 
 export function resolveReadPath(inputPath: string, context: ReadPathScopeContext): string {

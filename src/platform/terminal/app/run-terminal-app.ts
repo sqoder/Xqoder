@@ -532,9 +532,21 @@ export async function runTerminalApp(
             session: options.session,
         });
 
-        // Terminal TUI now runs as an append-only scrollback shell.
+        // Terminal TUI: use Ink REPL when in interactive mode (unless XQODER_TUI=classic).
         try {
-            await runTerminalScrollbackShell(runtime, settings, restoredSession, options, { stdin, stdout, stderr });
+            if (process.env.XQODER_TUI !== 'classic') {
+                const { renderInkApp } = await import('../ink/index.js');
+                await renderInkApp({
+                    runtime,
+                    settings,
+                    initialSessionId: restoredSession?.sessionId,
+                    stdin,
+                    stdout,
+                    stderr,
+                });
+            } else {
+                await runTerminalScrollbackShell(runtime, settings, restoredSession, options, { stdin, stdout, stderr });
+            }
         } finally {
             await disposeTerminalAgentRuntime(runtime);
         }

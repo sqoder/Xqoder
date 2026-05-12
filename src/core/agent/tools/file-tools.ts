@@ -346,7 +346,7 @@ export class ReadFileTool implements ITool {
     persistLargeResult = false;
 
     async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
-        let filePath: string;
+        let filePath = '';
         const toolCallId = (args['toolCallId'] as string) ?? '';
 
         try {
@@ -520,7 +520,6 @@ export class WriteFileTool implements ITool {
                         path: filePath,
                         changeType: 'write',
                         existedBefore,
-                        stopReason: 'permission_denied',
                     },
                 };
             }
@@ -743,7 +742,6 @@ export class EditFileTool implements ITool {
                         changeType: 'write',
                         editTool: 'edit_file',
                         existedBefore: true,
-                        stopReason: 'permission_denied',
                     },
                 };
             }

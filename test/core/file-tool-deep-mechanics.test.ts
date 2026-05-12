@@ -222,6 +222,27 @@ describe('file tool deep mechanics', () => {
         expect(result.error).toContain('Requested line range is too large');
     });
 
+    it('read-before-write guard errors do not carry stopReason=permission_denied', async () => {
+        // Bug 3: guard errors were halting the agent instead of feeding back to the model.
+        // They must NOT set stopReason so the model can self-recover by reading first.
+        const cwd = createTempDir();
+        const target = path.join(cwd, 'guarded.ts');
+        fs.writeFileSync(target, 'const x = 1;\n', 'utf-8');
+        const context = createToolContext(cwd);
+        const writeFile = new WriteFileTool();
+
+        const result = await writeFile.execute({
+            path: 'guarded.ts',
+            content: 'const x = 2;\n',
+            toolCallId: 'write-no-read',
+        }, context);
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('must be read fully');
+        // Must NOT carry stopReason — that would halt the agent loop
+        expect((result.metadata as Record<string, unknown> | undefined)?.['stopReason']).toBeUndefined();
+    });
+
     it('extracts plain text from docx files on full reads', async () => {
         const cwd = createTempDir();
         writeDocxFixture(path.join(cwd, 'report.docx'));

@@ -47,6 +47,7 @@ describe('conversation transcript projection', () => {
             {
                 type: 'assistant',
                 content: 'The test is fixed now.',
+                response: 'The test is fixed now.',
             },
         ]);
     });

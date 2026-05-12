@@ -6,7 +6,7 @@ import {
     logger,
 } from '@xqoder/shared';
 
-const SHARE_URL_PATTERN = /^https?:\/\//i;
+const MAX_IMPORT_SIZE_BYTES = 5 * 1024 * 1024;
 import {
     SQLiteSessionStore,
     type AgentSessionStore,
@@ -16,6 +16,7 @@ import {
     createImportedSession,
     parseSessionExportDocument,
 } from '../../features/sessions/assets.js';
+import { checkUrlSafety } from '../../core/agent/tools/url-safety.js';
 
 interface ImportCommandDependencies {
     sessionStore?: Pick<AgentSessionStore, 'getSession' | 'saveSession'>;
@@ -84,17 +85,65 @@ function createDefaultSessionStore(): AgentSessionStore {
     return new SQLiteSessionStore(getXQoderPaths().sessionDbFile);
 }
 
-async function loadImportSource(source: string): Promise<unknown> {
-    if (SHARE_URL_PATTERN.test(source.trim())) {
-        const res = await fetch(source.trim(), {
-            headers: { Accept: 'application/json' },
-        });
-        if (!res.ok) {
-            throw new Error(`Failed to import from URL: ${res.status} ${res.statusText}`);
-        }
-        return res.json() as Promise<unknown>;
+export interface LoadImportSourceOptions {
+    fetchImpl?: typeof fetch;
+    resolveIps?: (hostname: string) => Promise<string[]>;
+}
+
+export async function loadImportSource(
+    source: string,
+    options: LoadImportSourceOptions = {},
+): Promise<unknown> {
+    const trimmed = source.trim();
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) {
+        return loadImportSourceFromUrl(trimmed, options);
     }
     return JSON.parse(fs.readFileSync(path.resolve(source), 'utf-8')) as unknown;
+}
+
+async function loadImportSourceFromUrl(
+    url: string,
+    options: LoadImportSourceOptions,
+): Promise<unknown> {
+    const safetyOpts: { allowHttp: false } & Pick<LoadImportSourceOptions, 'resolveIps'> = {
+        allowHttp: false,
+        ...(options.resolveIps ? { resolveIps: options.resolveIps } : {}),
+    };
+    const safety = await checkUrlSafety(url, safetyOpts);
+    if (safety.allowed === false) {
+        throw new Error(`Refusing to import from URL: ${safety.reason}`);
+    }
+
+    const fetchImpl = options.fetchImpl ?? fetch;
+    const res = await fetchImpl(url, {
+        headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) {
+        throw new Error(`Failed to import from URL: ${res.status} ${res.statusText}`);
+    }
+
+    const contentType = res.headers.get('content-type') ?? '';
+    if (!/^application\/json\b/i.test(contentType)) {
+        throw new Error(`Refusing import: expected application/json content-type, got "${contentType || '<none>'}"`);
+    }
+
+    const contentLengthRaw = res.headers.get('content-length');
+    if (contentLengthRaw !== null) {
+        const contentLength = Number(contentLengthRaw);
+        if (Number.isFinite(contentLength) && contentLength > MAX_IMPORT_SIZE_BYTES) {
+            throw new Error(
+                `Refusing import: response size ${contentLength} bytes exceeds cap ${MAX_IMPORT_SIZE_BYTES} bytes`,
+            );
+        }
+    }
+
+    const body = await res.text();
+    if (body.length > MAX_IMPORT_SIZE_BYTES) {
+        throw new Error(
+            `Refusing import: response body ${body.length} bytes exceeds cap ${MAX_IMPORT_SIZE_BYTES} bytes`,
+        );
+    }
+    return JSON.parse(body) as unknown;
 }
 
 function resolveImportedSessionId(

@@ -9,6 +9,10 @@ import {
     type ConversationProviderUsage,
 } from '@xqoder/llm-api';
 import { buildLocalFallbackGuidance } from '../../shared/local-fallback.js';
+import {
+    buildNormalizedUsageFromProviderUsage,
+    emitTelemetry,
+} from '../../shared/telemetry/index.js';
 import { ConversationEngineStopError } from './turn-stop.js';
 
 export interface ProviderTurnResult {
@@ -37,6 +41,7 @@ interface ProviderTurnState {
     lastError?: Error;
     message?: ProviderTurnResult['message'];
     usage?: ConversationProviderUsage;
+    costUsd?: number;
     finishReason?: ConversationProviderFinishReason;
 }
 
@@ -44,6 +49,7 @@ export async function runProviderTurn(
     dependencies: ProviderTurnDependencies,
 ): Promise<ProviderTurnResult> {
     const state: ProviderTurnState = {};
+    const turnStartedAt = Date.now();
     const providerTurn = streamProviderEvents({
         provider: dependencies.provider,
         request: dependencies.request,
@@ -64,6 +70,20 @@ export async function runProviderTurn(
             dependencies,
         );
     }
+
+    const durationMs = Date.now() - turnStartedAt;
+    const normalizedUsage = buildNormalizedUsageFromProviderUsage({
+        usage: state.usage,
+        provider: dependencies.llmConfig.provider,
+        model: dependencies.llmConfig.model,
+        ...(typeof state.costUsd === 'number' ? { costUsd: state.costUsd } : {}),
+    });
+    emitTelemetry({
+        type: 'model.completed',
+        usage: normalizedUsage,
+        durationMs,
+        ...(dependencies.session.id ? { sessionId: dependencies.session.id } : {}),
+    });
 
     return {
         message: state.message,
@@ -93,7 +113,7 @@ function applyProviderEvent(
             try { dependencies.callbacks?.onToolCall?.(event.toolCall); } catch { /* noop */ }
             return;
         case 'usage':
-            recordUsage(event.usage, dependencies);
+            state.costUsd = recordUsage(event.usage, dependencies);
             state.usage = event.usage;
             return;
         case 'stop':
@@ -114,7 +134,7 @@ function applyProviderEvent(
 function recordUsage(
     usage: ConversationProviderUsage,
     dependencies: ProviderTurnDependencies,
-): void {
+): number {
     const cost = calculateCost(dependencies.llmConfig.model, usage);
     dependencies.session.recordUsage({ ...usage, cost });
     dependencies.emit('usage', {
@@ -124,6 +144,7 @@ function recordUsage(
         totalTokens: usage.totalTokens,
         cost,
     }, dependencies.streamId);
+    return cost;
 }
 
 async function buildProviderCallError(

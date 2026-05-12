@@ -1,0 +1,5 @@
+[2026-05-12T09:41:02Z] user prompt: Count how many TODO comments live under src/.
+[2026-05-12T09:41:03Z] tool.call  run_shell cmd="grep -rn 'TODO' /Users/me/project/src"
+[2026-05-12T09:41:03Z] permission denied: shell_access_outside_workspace
+[2026-05-12T09:41:03Z] decision   tool aborted; no write occurred; marked as unauthorized attempt
+[2026-05-12T09:41:03Z] next       agent switched to read-only alternative: list_dir src/ then read_file + client-side count

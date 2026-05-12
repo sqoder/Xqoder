@@ -14,26 +14,50 @@ import {
 
 describe('DelegateTaskTool', () => {
     it('defaults to the explore subagent and keeps delegated tools read-only', async () => {
-        const registry = createRegistryWithWritableAndReadonlyTools();
-        const requests: CompletionRequest[] = [];
-        const tool = new DelegateTaskTool(createLlmConfig(), registry, async () => createProvider(requests));
+        const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-delegate-explore-'));
+        try {
+            // Provide a hermetic project-level explore subagent so the test
+            // does not depend on whatever the developer (or CI runner) has
+            // in `~/.claude/agents/explore.md`. Project-level agents win the
+            // dedup in `listMarkdownAgents`.
+            fs.mkdirSync(path.join(cwd, '.claude', 'agents'), { recursive: true });
+            fs.writeFileSync(
+                path.join(cwd, '.claude', 'agents', 'explore.md'),
+                [
+                    '---',
+                    'name: explore',
+                    'tools:',
+                    '  - read_file',
+                    '  - grep_content',
+                    '---',
+                    'You are Explorer. Read-only exploration of the codebase.',
+                ].join('\n'),
+                'utf-8',
+            );
 
-        const result = await tool.execute({
-            task: 'Find the session store implementation',
-            toolCallId: 'delegate-explore-1',
-        }, {
-            cwd: '/workspace/project',
-            projectRoot: '/workspace/project',
-        });
+            const registry = createRegistryWithWritableAndReadonlyTools();
+            const requests: CompletionRequest[] = [];
+            const tool = new DelegateTaskTool(createLlmConfig(), registry, async () => createProvider(requests));
 
-        expect(result.success).toBe(true);
-        expect(result.output).toContain('agent: explore');
-        expect(requests[0]?.messages[0]?.content).toContain('You are Explorer');
-        expect(requests[0]?.messages[0]?.content).toContain('Read-only');
-        expect(requests[0]?.tools?.map((entry) => entry.name).sort()).toEqual([
-            'grep_content',
-            'read_file',
-        ]);
+            const result = await tool.execute({
+                task: 'Find the session store implementation',
+                toolCallId: 'delegate-explore-1',
+            }, {
+                cwd,
+                projectRoot: cwd,
+            });
+
+            expect(result.success).toBe(true);
+            expect(result.output).toContain('agent: explore');
+            expect(requests[0]?.messages[0]?.content).toContain('You are Explorer');
+            expect(requests[0]?.messages[0]?.content).toContain('Read-only');
+            expect(requests[0]?.tools?.map((entry) => entry.name).sort()).toEqual([
+                'grep_content',
+                'read_file',
+            ]);
+        } finally {
+            fs.rmSync(cwd, { recursive: true, force: true });
+        }
     });
 
     it('can route to the built-in plan subagent without exposing write or bash tools', async () => {
@@ -53,7 +77,8 @@ describe('DelegateTaskTool', () => {
 
         expect(result.success).toBe(true);
         expect(result.output).toContain('agent: plan');
-        expect(requests[0]?.messages[0]?.content).toContain('task planning agent');
+        // P16d: system prompt now comes from subagents/built-in.ts ("planning subagent")
+        expect(requests[0]?.messages[0]?.content).toContain('planning subagent');
         expect(requests[0]?.tools?.some((entry) => entry.name === 'write_file')).toBe(false);
         expect(requests[0]?.tools?.some((entry) => entry.name === 'run_shell')).toBe(false);
     });
@@ -115,7 +140,10 @@ describe('DelegateTaskTool', () => {
         });
 
         expect(result.success).toBe(true);
-        expect(result.output).toContain('safe read output');
+        // P16d: output is now a memory snapshot — tool evidence is not included verbatim.
+        // The final assistant response and tracked read files appear instead.
+        expect(result.output).toContain('delegated final answer');
+        expect(result.output).toContain('Files read: .env');
         expect(approvals).toHaveLength(1);
         expect(approvals[0]).toMatchObject({
             toolName: 'read_file',

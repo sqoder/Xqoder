@@ -203,7 +203,7 @@ describe('HTTP session routes', () => {
                     blocked: false,
                     summary: 'Verification passed: inspect payload includes transcript signals',
                 },
-                { type: 'assistant', content: 'session detail now exposes transcript and signals' },
+                { type: 'assistant', content: 'session detail now exposes transcript and signals', response: 'session detail now exposes transcript and signals' },
             ],
             pendingApprovals: [],
             approvalHistory: [],
@@ -266,7 +266,7 @@ describe('HTTP session routes', () => {
                     blocked: false,
                     summary: 'Verification passed: envelope replay parity',
                 },
-                { type: 'assistant', content: 'fresh envelope assistant' },
+                { type: 'assistant', content: 'fresh envelope assistant', response: 'fresh envelope assistant' },
             ],
         });
     });
@@ -316,7 +316,7 @@ describe('HTTP message routes', () => {
                     blocked: false,
                     summary: 'Verification passed: inspect payload includes transcript signals',
                 },
-                { type: 'assistant', content: 'session detail now exposes transcript and signals' },
+                { type: 'assistant', content: 'session detail now exposes transcript and signals', response: 'session detail now exposes transcript and signals' },
             ],
         });
     });

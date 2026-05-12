@@ -15,7 +15,15 @@ export type ApprovalPolicy =
     | 'full_auto'
     | 'dangerous_full_access';
 
-export type AgentPermissionMode = 'allow' | 'ask' | 'deny' | 'auto' | 'plan' | 'default' | 'bypassPermissions';
+export type AgentPermissionMode =
+    | 'allow'
+    | 'ask'
+    | 'deny'
+    | 'auto'
+    | 'plan'
+    | 'default'
+    | 'bypassPermissions'
+    | 'acceptEdits';
 
 export interface PermissionSettings {
     defaultMode?: AgentPermissionMode;

@@ -1,5 +1,6 @@
 import type {
     CompactionConfig,
+    HooksSettings,
     LLMProviderConfig,
     Logger,
     MessageAttachment,
@@ -8,7 +9,6 @@ import type {
     ToolDefinition,
     ToolResult,
 } from '@xqoder/shared';
-import { getContextWindow } from '@xqoder/shared';
 import {
     createConversationEventEnvelopeEmitter,
     type ConversationEventEnvelope,
@@ -22,30 +22,33 @@ import type {
     AgentSession,
     ToolApprovalRequest,
 } from '@xqoder/agent';
+import {
+    buildSessionStartPayload,
+    buildStopPayload,
+    dispatchLifecycleHook,
+    dispatchLifecycleHookFireAndForget,
+} from '@xqoder/agent';
 import type {
     CompletionRequest,
     ILLMProvider,
 } from '@xqoder/llm-api';
+import type { ThinkingConfig } from '../../shared/thinking/index.js';
 import {
-    handleToolFollowUp,
     type ToolFollowUpResult,
 } from './tool-follow-up.js';
-import {
-    runProviderTurn,
-    type ProviderTurnResult,
-} from './provider-turn.js';
 import {
     ConversationEngineResult,
     ConversationEngineStopError,
     ConversationStopReason,
 } from './turn-stop.js';
-import {
-    compactIntermediateResponse,
-    removeRepeatedAssistantSections,
-} from './response-cleanup.js';
 import type { VerificationGateResult } from './verification-gate.js';
 import type { ConversationTurnInput } from './turn-intake.js';
 import type { ToolExecutionPort } from '../../domain/conversation/tool-execution-port.js';
+import {
+    detectNoProgressOnBlocker,
+    resolvePermissionDeniedStopMessage,
+} from './query-stop-hooks.js';
+import { runQueryLoop } from './query-loop.js';
 export {
     ConversationEngineStopError,
     type ConversationEngineResult,
@@ -91,6 +94,8 @@ export interface ConversationEngineDependencies {
     logger: Logger;
     llmConfig: LLMProviderConfig;
     agentName?: string;
+    /** P20 — resolved thinking config for this turn. Optional; absent keeps legacy behavior. */
+    thinking?: ThinkingConfig;
     runtimeProfile: AgentRuntimeProfile;
     maxTurns?: number;
     // Legacy caller alias; the engine protocol reports max_turns.
@@ -99,6 +104,9 @@ export interface ConversationEngineDependencies {
     maxWallTimeMs?: number;
     compaction?: CompactionConfig;
     cwd?: string;
+    projectRoot?: string;
+    hooks?: HooksSettings;
+    disableAllHooks?: boolean;
     sessionResumed?: boolean;
     emit: ConversationEventEmitter;
     getToolDefinitions: () => ToolDefinition[];
@@ -165,261 +173,25 @@ class AsyncEventQueue<T> implements AsyncIterable<T> {
  * - is the execution path behind XQoderAgent.run() compatibility calls
  * - provider raw stream details stay behind the provider-turn adapter seam
  * - tool execution and verifier follow-up stay behind dedicated application seams
+ *
+ * The iteration body lives in query-loop.ts. This wrapper injects the hooks
+ * that still need session/event-emitter access.
  */
 async function executeConversationTurn(
     dependencies: ConversationEngineDependencies,
 ): Promise<ConversationEngineResult> {
-    dependencies.session.addUserMessage(
-        dependencies.userMessage,
-        dependencies.attachments ?? [],
-    );
-    const toolHistoryBaseline = dependencies.session.getToolHistory().length;
-    dependencies.logger.info(`User request: ${dependencies.userMessage.slice(0, 100)}...`);
-    const runtime = dependencies.createRuntime?.();
-    const now = dependencies.now ?? Date.now;
-    const startedAt = now();
-    const maxTurns = resolveMaxTurns(dependencies);
-
-    let iteration = 0;
-    let toolCallCount = 0;
-    let lastToolCallBatchFingerprint: string | undefined;
-    let lastBlockedContinuationFingerprint: string | undefined;
-    let activeVerificationBlocker: string | undefined;
-
-    while (iteration < maxTurns) {
-        if (dependencies.abortSignal.aborted) {
-            dependencies.logger.warn('Agent cancelled by user');
-            emitAgentEnd(dependencies, 'aborted', 'user_cancelled');
-            return {
-                response: '[cancelled by user]',
-                stopReason: 'user_cancelled',
-                iterations: iteration,
-                toolCallCount,
-            };
-        }
-
-        if (isWallTimeExceeded(startedAt, now(), dependencies.maxWallTimeMs)) {
-            throw createStopError(
-                `Maximum wall time reached (${dependencies.maxWallTimeMs}ms)`,
-                {
-                    stopReason: 'max_wall_time',
-                    agentEndReason: 'failed',
-                },
-                dependencies,
-            );
-        }
-
-        iteration += 1;
-        try { dependencies.callbacks?.onIteration?.(iteration); } catch { /* noop */ }
-        dependencies.logger.debug(`Iteration ${iteration}/${maxTurns}`);
-
-        if (dependencies.runtimeProfile !== 'mvp') {
-            try { await dependencies.syncMcpTools?.(); } catch { /* MCP sync failure is non-fatal */ }
-        }
-
-        const forcedStopDirective = resolveForcedStopDirective(runtime);
-        if (forcedStopDirective) {
-            dependencies.logger.warn(`MVP runtime forced stop: ${forcedStopDirective.message}`);
-            emitAgentEnd(dependencies, 'completed', forcedStopDirective.stopReason);
-            return {
-                response: forcedStopDirective.message,
-                stopReason: forcedStopDirective.stopReason,
-                iterations: iteration,
-                toolCallCount,
-            };
-        }
-
-        const toolUsedBeforeProviderTurn = dependencies.session.getToolHistory().length > toolHistoryBaseline;
-        const response = await requestAssistantTurn(dependencies, runtime, toolUsedBeforeProviderTurn);
-        await maybeAutoCompact(response.usage, dependencies);
-
-        const completionBlocker = response.finishReason === 'tool_calls'
-            ? undefined
-            : activeVerificationBlocker ?? runtime?.getCompletionBlocker();
-
-        if (response.finishReason === 'tool_calls' && response.message.toolCalls) {
-            dependencies.session.addAssistantMessage({
-                ...response.message,
-                content: compactIntermediateResponse(response.message.content),
-            });
-            const toolCallBatchFingerprint = createToolCallBatchFingerprint(response.message.toolCalls);
-            if (toolCallBatchFingerprint === lastToolCallBatchFingerprint) {
-                throw createStopError(
-                    `Duplicate tool call batch detected: ${describeToolCallBatch(response.message.toolCalls)}`,
-                    {
-                        stopReason: 'duplicate_tool_call',
-                        agentEndReason: 'failed',
-                    },
-                    dependencies,
-                );
-            }
-
-            lastToolCallBatchFingerprint = toolCallBatchFingerprint;
-            lastBlockedContinuationFingerprint = undefined;
-            const nextToolCallCount = toolCallCount + response.message.toolCalls.length;
-            if (dependencies.maxToolCalls !== undefined && nextToolCallCount > dependencies.maxToolCalls) {
-                throw createStopError(
-                    `Maximum tool calls reached (${dependencies.maxToolCalls})`,
-                    {
-                        stopReason: 'max_tool_calls',
-                        agentEndReason: 'failed',
-                    },
-                    dependencies,
-                );
-            }
-            toolCallCount = nextToolCallCount;
-            const followUp = await handleToolFollowUp({
-                toolCalls: response.message.toolCalls,
-                callbacks: dependencies.callbacks,
-                streamId: dependencies.streamId,
-                session: dependencies.session,
-                runtime,
-                taskMode: dependencies.taskMode,
-                toolExecutionPort: dependencies.toolExecutionPort,
-                executeToolCalls: dependencies.executeToolCalls,
-            });
-            activeVerificationBlocker = followUp.verification.completionBlocker;
-            const permissionDeniedMessage = recordToolFollowUpResult(followUp, dependencies);
-            if (permissionDeniedMessage) {
-                throw createStopError(
-                    permissionDeniedMessage,
-                    {
-                        stopReason: 'permission_denied',
-                        agentEndReason: 'failed',
-                    },
-                    dependencies,
-                );
-            }
-            continue;
-        }
-
-        const toolUsedInCurrentRun = dependencies.session.getToolHistory().length > toolHistoryBaseline;
-        const noToolCompletionBlocker = completionBlocker
-            ? undefined
-            : runtime?.getNoToolCompletionBlocker(toolUsedInCurrentRun);
-
-        if (completionBlocker) {
-            assertProgressOnBlockedContinuation({
-                blocker: completionBlocker,
-                assistantContent: response.message.content,
-                dependencies,
-                lastFingerprint: lastBlockedContinuationFingerprint,
-                stopReason: activeVerificationBlocker
-                    ? 'verification_failed'
-                    : 'no_progress',
-            });
-            lastBlockedContinuationFingerprint = createBlockedContinuationFingerprint(
-                completionBlocker,
-                response.message.content,
-            );
-            dependencies.session.addMessage({
-                role: 'system',
-                content: completionBlocker,
-            });
-            continue;
-        }
-
-        if (noToolCompletionBlocker) {
-            assertProgressOnBlockedContinuation({
-                blocker: noToolCompletionBlocker,
-                assistantContent: response.message.content,
-                dependencies,
-                lastFingerprint: lastBlockedContinuationFingerprint,
-                stopReason: 'no_progress',
-            });
-            lastBlockedContinuationFingerprint = createBlockedContinuationFingerprint(
-                noToolCompletionBlocker,
-                response.message.content,
-            );
-            dependencies.session.addMessage({
-                role: 'system',
-                content: noToolCompletionBlocker,
-            });
-
-            const recoveryToolCall = createReadOnlyRecoveryToolCall({
-                blocker: noToolCompletionBlocker,
-                dependencies,
-                iteration,
-            });
-            if (recoveryToolCall) {
-                const toolCallBatchFingerprint = createToolCallBatchFingerprint([recoveryToolCall]);
-                if (toolCallBatchFingerprint === lastToolCallBatchFingerprint) {
-                    throw createStopError(
-                        `Duplicate tool call batch detected: ${describeToolCallBatch([recoveryToolCall])}`,
-                        {
-                            stopReason: 'duplicate_tool_call',
-                            agentEndReason: 'failed',
-                        },
-                        dependencies,
-                    );
-                }
-
-                const nextToolCallCount = toolCallCount + 1;
-                if (dependencies.maxToolCalls !== undefined && nextToolCallCount > dependencies.maxToolCalls) {
-                    throw createStopError(
-                        `Maximum tool calls reached (${dependencies.maxToolCalls})`,
-                        {
-                            stopReason: 'max_tool_calls',
-                            agentEndReason: 'failed',
-                        },
-                        dependencies,
-                    );
-                }
-
-                lastToolCallBatchFingerprint = toolCallBatchFingerprint;
-                lastBlockedContinuationFingerprint = undefined;
-                toolCallCount = nextToolCallCount;
-                const followUp = await handleToolFollowUp({
-                    toolCalls: [recoveryToolCall],
-                    callbacks: dependencies.callbacks,
-                    streamId: dependencies.streamId,
-                    session: dependencies.session,
-                    runtime,
-                    taskMode: dependencies.taskMode,
-                    toolExecutionPort: dependencies.toolExecutionPort,
-                    executeToolCalls: dependencies.executeToolCalls,
-                });
-                activeVerificationBlocker = followUp.verification.completionBlocker;
-                const permissionDeniedMessage = recordToolFollowUpResult(followUp, dependencies);
-                if (permissionDeniedMessage) {
-                    throw createStopError(
-                        permissionDeniedMessage,
-                        {
-                            stopReason: 'permission_denied',
-                            agentEndReason: 'failed',
-                        },
-                        dependencies,
-                    );
-                }
-            }
-            continue;
-        }
-
-        const finalContent = removeRepeatedAssistantSections(
-            runtime?.finalizeAssistantResponse(response.message.content) ?? response.message.content,
-        );
-        dependencies.session.addAssistantMessage({
-            ...response.message,
-            content: finalContent,
-        });
-        dependencies.logger.success(`Agent completed in ${iteration} iterations`);
-        emitAgentEnd(dependencies, 'completed', 'completed');
-        return {
-            response: finalContent,
-            stopReason: 'completed',
-            iterations: iteration,
-            toolCallCount,
-        };
-    }
-
-    throw createStopError(
-        `Maximum turns reached (${maxTurns})`,
-        {
-            stopReason: 'max_turns',
-            agentEndReason: 'failed',
-        },
-        dependencies,
-    );
+    return await runQueryLoop(dependencies, {
+        createStopError: (message, options) => createStopError(message, options, dependencies),
+        emitAgentEnd: (reason, stopReason) => emitAgentEnd(dependencies, reason, stopReason),
+        recordToolFollowUpResult: (followUp) => recordToolFollowUpResult(followUp, dependencies),
+        assertProgressOnBlockedContinuation: (input) => assertProgressOnBlockedContinuation({
+            blocker: input.blocker,
+            assistantContent: input.assistantContent,
+            dependencies,
+            lastFingerprint: input.lastFingerprint,
+            stopReason: input.stopReason,
+        }),
+    });
 }
 
 export function streamConversationTurn(
@@ -502,11 +274,10 @@ function createConversationTurnStream(
     };
 
     const completed = (async () => {
+        const resumedSession = dependencies.sessionResumed === true || initialMessageCount > 1;
         emitRecord(
-            dependencies.sessionResumed === true || initialMessageCount > 1
-                ? 'session.resumed'
-                : 'session.started',
-            dependencies.sessionResumed === true || initialMessageCount > 1
+            resumedSession ? 'session.resumed' : 'session.started',
+            resumedSession
                 ? {
                     source: 'agent',
                     messageCount: initialMessageCount,
@@ -516,6 +287,49 @@ function createConversationTurnStream(
                     cwd: dependencies.cwd ?? process.cwd(),
                 },
         );
+
+        const lifecycleCwd = dependencies.cwd ?? process.cwd();
+        const lifecycleProjectRoot = dependencies.projectRoot ?? lifecycleCwd;
+        const lifecycleConfig = {
+            cwd: lifecycleCwd,
+            projectRoot: lifecycleProjectRoot,
+            sessionId,
+            logger: dependencies.logger,
+            ...(dependencies.hooks ? { hooks: dependencies.hooks } : {}),
+            ...(dependencies.disableAllHooks ? { disableAllHooks: dependencies.disableAllHooks } : {}),
+        };
+
+        const sessionStartResult = await dispatchLifecycleHook(
+            'SessionStart',
+            buildSessionStartPayload({
+                sessionId,
+                cwd: lifecycleCwd,
+                projectRoot: lifecycleProjectRoot,
+                source: resumedSession ? 'resume' : 'startup',
+            }),
+            lifecycleConfig,
+        );
+        if (sessionStartResult.blocked) {
+            const reason = sessionStartResult.reason ?? 'SessionStart hook blocked the conversation turn';
+            emitRecord('error', {
+                source: 'agent',
+                message: reason,
+                recoverable: false,
+                stopReason: 'provider_error',
+            });
+            emitRecord('status.changed', {
+                source: 'agent',
+                status: 'error',
+                stopReason: 'provider_error',
+                message: reason,
+            });
+            eventQueue.close();
+            throw new ConversationEngineStopError(reason, {
+                stopReason: 'provider_error',
+                agentEndReason: 'error',
+            });
+        }
+
         emitRecord('message.started', {
             source: 'agent',
             message: {
@@ -782,6 +596,16 @@ function createConversationTurnStream(
             });
             throw normalizedError;
         } finally {
+            dispatchLifecycleHookFireAndForget(
+                'Stop',
+                buildStopPayload({
+                    sessionId,
+                    cwd: lifecycleCwd,
+                    projectRoot: lifecycleProjectRoot,
+                    stopHookActive: true,
+                }),
+                lifecycleConfig,
+            );
             eventQueue.close();
         }
     })();
@@ -838,271 +662,22 @@ function assertProgressOnBlockedContinuation(input: {
     assistantContent: string;
     dependencies: ConversationEngineDependencies;
     lastFingerprint: string | undefined;
-    stopReason: ConversationEngineStopError['stopReason'];
+    stopReason: Extract<ConversationStopReason, 'no_progress' | 'verification_failed'>;
 }): void {
-    const continuationFingerprint = createBlockedContinuationFingerprint(
-        input.blocker,
-        input.assistantContent,
-    );
-    if (continuationFingerprint !== input.lastFingerprint) {
+    const directive = detectNoProgressOnBlocker({
+        blocker: input.blocker,
+        assistantContent: input.assistantContent,
+        lastFingerprint: input.lastFingerprint,
+        stopReason: input.stopReason,
+    });
+    if (!directive) {
         return;
     }
-
     throw createStopError(
-        `No progress detected while waiting on blocker: ${input.blocker}`,
-        {
-            stopReason: input.stopReason,
-            agentEndReason: 'failed',
-        },
+        directive.message,
+        { stopReason: directive.stopReason, agentEndReason: directive.agentEndReason },
         input.dependencies,
     );
-}
-
-function resolvePermissionDeniedStopMessage(
-    executions: Array<{ name: string; stopReason?: ConversationStopReason; toolHistoryEntry?: { error?: string } }>,
-): string | undefined {
-    const deniedExecution = executions.find((execution) => execution.stopReason === 'permission_denied');
-    if (!deniedExecution) {
-        return undefined;
-    }
-
-    return deniedExecution.toolHistoryEntry?.error
-        ?? `Tool "${deniedExecution.name}" was denied by the active permission policy`;
-}
-
-function createBlockedContinuationFingerprint(
-    blocker: string,
-    assistantContent: string,
-): string {
-    return `${normalizeContinuationField(blocker)}::${normalizeContinuationField(assistantContent)}`;
-}
-
-function resolveForcedStopDirective(
-    runtime: ConversationRuntimeLike | undefined,
-): ConversationForcedStopDirective | undefined {
-    if (!runtime) {
-        return undefined;
-    }
-
-    const directive = runtime.getForcedStopDirective?.();
-    if (directive) {
-        return directive;
-    }
-
-    const legacyMessage = runtime.getForcedStopMessage?.();
-    if (!legacyMessage) {
-        return undefined;
-    }
-
-    return {
-        stopReason: legacyMessage.includes('timeout') ? 'max_wall_time' : 'max_turns',
-        message: legacyMessage,
-    };
-}
-
-function createToolCallBatchFingerprint(toolCalls: ToolCall[]): string {
-    return toolCalls
-        .map((toolCall) => `${toolCall.name}:${normalizeToolArguments(toolCall.arguments)}`)
-        .join('|');
-}
-
-function describeToolCallBatch(toolCalls: ToolCall[]): string {
-    return toolCalls
-        .map((toolCall) => `${toolCall.name}(${normalizeToolArguments(toolCall.arguments)})`)
-        .join(', ');
-}
-
-function createReadOnlyRecoveryToolCall(input: {
-    blocker: string;
-    dependencies: ConversationEngineDependencies;
-    iteration: number;
-}): ToolCall | undefined {
-    const toolNames = new Set(input.dependencies.getToolDefinitions().map((definition) => definition.name));
-
-    if (toolNames.has('read_file')) {
-        const readFileCall = createRecoveryToolCallFromExactInstruction({
-            blocker: input.blocker,
-            toolName: 'read_file',
-            id: `runtime-recovery-read-file-${input.iteration}`,
-            isValidArguments: isReadFileRecoveryArguments,
-        });
-        if (readFileCall) {
-            return readFileCall;
-        }
-    }
-
-    if (toolNames.has('inspect_github_repo')) {
-        const inspectGitHubRepoCall = createRecoveryToolCallFromExactInstruction({
-            blocker: input.blocker,
-            toolName: 'inspect_github_repo',
-            id: `runtime-recovery-inspect-github-repo-${input.iteration}`,
-            isValidArguments: isInspectGitHubRepoRecoveryArguments,
-        });
-        if (inspectGitHubRepoCall) {
-            return inspectGitHubRepoCall;
-        }
-    }
-
-    if (toolNames.has('fetch_url')) {
-        return createRecoveryToolCallFromExactInstruction({
-            blocker: input.blocker,
-            toolName: 'fetch_url',
-            id: `runtime-recovery-fetch-url-${input.iteration}`,
-            isValidArguments: isFetchUrlRecoveryArguments,
-        });
-    }
-
-    return undefined;
-}
-
-function createRecoveryToolCallFromExactInstruction(input: {
-    blocker: string;
-    toolName: 'read_file' | 'inspect_github_repo' | 'fetch_url';
-    id: string;
-    isValidArguments: (value: unknown) => value is Record<string, unknown>;
-}): ToolCall | undefined {
-    const line = input.blocker
-        .split(/\r?\n/)
-        .find((entry) => entry.includes(`Prefer this exact call: ${input.toolName}`));
-    const match = line?.match(new RegExp(`Prefer this exact call:\\s*${input.toolName}\\s+(.+)$`));
-    if (!match) {
-        return undefined;
-    }
-
-    let parsed: unknown;
-    try {
-        parsed = JSON.parse(match[1]!.trim());
-    } catch {
-        return undefined;
-    }
-    if (!input.isValidArguments(parsed)) {
-        return undefined;
-    }
-
-    return {
-        id: input.id,
-        name: input.toolName,
-        arguments: JSON.stringify(parsed),
-    };
-}
-
-function isReadFileRecoveryArguments(value: unknown): value is Record<string, unknown> {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        return false;
-    }
-
-    const args = value as Record<string, unknown>;
-    return typeof args.path === 'string'
-        && (args.startLine === undefined || typeof args.startLine === 'number')
-        && (args.endLine === undefined || typeof args.endLine === 'number');
-}
-
-function isInspectGitHubRepoRecoveryArguments(value: unknown): value is Record<string, unknown> {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        return false;
-    }
-
-    const args = value as Record<string, unknown>;
-    return typeof args.url === 'string'
-        && /^https:\/\/(?:www\.)?github\.com\/[^/\s]+\/[^/\s]+/i.test(args.url)
-        && (args.ref === undefined || typeof args.ref === 'string')
-        && (args.maxFiles === undefined || typeof args.maxFiles === 'number');
-}
-
-function isFetchUrlRecoveryArguments(value: unknown): value is Record<string, unknown> {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        return false;
-    }
-
-    const args = value as Record<string, unknown>;
-    return typeof args.url === 'string'
-        && /^https?:\/\//i.test(args.url)
-        && (args.format === undefined || ['text', 'markdown', 'html'].includes(String(args.format)))
-        && (args.timeout === undefined || typeof args.timeout === 'number');
-}
-
-function normalizeToolArguments(argumentsText: string | undefined): string {
-    if (!argumentsText?.trim()) {
-        return '{}';
-    }
-
-    try {
-        return stableStringify(JSON.parse(argumentsText) as unknown);
-    } catch {
-        return argumentsText.trim();
-    }
-}
-
-function stableStringify(value: unknown): string {
-    if (Array.isArray(value)) {
-        return `[${value.map((entry) => stableStringify(entry)).join(',')}]`;
-    }
-
-    if (value && typeof value === 'object') {
-        return `{${Object.entries(value as Record<string, unknown>)
-            .sort(([left], [right]) => left.localeCompare(right))
-            .map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`)
-            .join(',')}}`;
-    }
-
-    return JSON.stringify(value);
-}
-
-function normalizeContinuationField(value: string | undefined): string {
-    return String(value ?? '').replace(/\s+/g, ' ').trim();
-}
-
-async function requestAssistantTurn(
-    dependencies: ConversationEngineDependencies,
-    runtime: ConversationRuntimeLike | undefined,
-    toolUsedInCurrentRun: boolean,
-): Promise<ProviderTurnResult> {
-    const messages = runtime ? runtime.prepareMessages() : dependencies.session.getMessages();
-    const request: CompletionRequest = {
-        messages,
-        tools: dependencies.getToolDefinitions(),
-    };
-    const suppressAssistantMessages = runtime?.shouldDeferAssistantOutput?.(toolUsedInCurrentRun) ?? false;
-
-    return await runProviderTurn({
-        provider: dependencies.provider,
-        request,
-        session: dependencies.session,
-        llmConfig: dependencies.llmConfig,
-        agentName: dependencies.agentName,
-        streamId: dependencies.streamId,
-        callbacks: dependencies.callbacks,
-        suppressAssistantMessages,
-        emit: dependencies.emit,
-    });
-}
-
-async function maybeAutoCompact(
-    usage: ProviderTurnResult['usage'],
-    dependencies: ConversationEngineDependencies,
-): Promise<void> {
-    const ctxWindow = getContextWindow(dependencies.llmConfig.model);
-    if (
-        dependencies.runtimeProfile === 'mvp'
-        || dependencies.compaction?.auto === false
-        || !ctxWindow
-        || usage.promptTokens < ctxWindow * 0.85
-    ) {
-        return;
-    }
-
-    dependencies.logger.warn(`Context usage at ${Math.round(usage.promptTokens / ctxWindow * 100)}%, triggering auto-compact`);
-    try {
-        const messages = dependencies.session.getMessages().filter((message) => message.role !== 'system');
-        const { SummarizerAgent } = await import('@xqoder/agent');
-        const summaryAgent = new SummarizerAgent(dependencies.llmConfig);
-        const summary = await summaryAgent.summarize(messages);
-        dependencies.session.performCompaction(summary);
-        dependencies.emit('message', { role: 'system', content: `[Auto-compacted context summary]: ${summary}` }, dependencies.streamId);
-        try { dependencies.callbacks?.onToolEnd?.('auto_compact', summary, true); } catch { /* noop */ }
-    } catch (err) {
-        dependencies.logger.error(`Auto-compact failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
 }
 
 function createStopError(
@@ -1131,20 +706,4 @@ function emitAgentEnd(
         },
         dependencies.streamId,
     );
-}
-
-function isWallTimeExceeded(
-    startedAt: number,
-    now: number,
-    maxWallTimeMs: number | undefined,
-): boolean {
-    return maxWallTimeMs !== undefined
-        && maxWallTimeMs >= 0
-        && now - startedAt > maxWallTimeMs;
-}
-
-function resolveMaxTurns(
-    dependencies: Pick<ConversationEngineDependencies, 'maxTurns' | 'maxIterations'>,
-): number {
-    return dependencies.maxTurns ?? dependencies.maxIterations ?? 20;
 }

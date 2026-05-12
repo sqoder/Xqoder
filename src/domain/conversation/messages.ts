@@ -20,6 +20,7 @@ export type ConversationTranscriptEntry =
     | {
         type: 'assistant';
         content: string;
+        response: string;
     }
     | {
         type: 'tool';
@@ -65,9 +66,11 @@ export function buildConversationTranscript(input: {
         }
 
         if (message.role === 'assistant') {
+            const text = String(message.content ?? '');
             transcript.push({
                 type: 'assistant',
-                content: String(message.content ?? ''),
+                content: text,
+                response: text,
             });
             continue;
         }

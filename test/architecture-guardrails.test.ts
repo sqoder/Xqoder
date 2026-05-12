@@ -41,6 +41,10 @@ const LAYER_ALIAS_PREFIXES: Array<{ prefix: string; layer: LayerName }> = [
     { prefix: '@xqoder/permissions', layer: 'infrastructure' },
     { prefix: '@xqoder/agent', layer: 'domain' },
     { prefix: '@xqoder/core-runtime', layer: 'application' },
+    { prefix: '@xqoder/core-skills', layer: 'application' },
+    { prefix: '@xqoder/core-output-styles', layer: 'application' },
+    { prefix: '@xqoder/core-tasks', layer: 'application' },
+    { prefix: '@xqoder/core-cron', layer: 'application' },
     { prefix: '@xqoder/plugin-sdk', layer: 'domain' },
     { prefix: '@xqoder/provider-openai', layer: 'infrastructure' },
     { prefix: '@xqoder/provider-anthropic', layer: 'infrastructure' },
@@ -140,6 +144,41 @@ describe('architecture guardrails', () => {
         const violations = scopes.flatMap((scope) =>
             collectViolations(scope, ['commands', 'core', 'platform', 'infra', 'services']),
         );
+        expect(formatViolations(violations)).toBe('');
+    });
+
+    it('keeps the infra/plugins layer free of reverse dependencies on core-* aliases', () => {
+        const violations = collectViolations('infra/plugins', ['application']);
+        expect(formatViolations(violations)).toBe('');
+    });
+
+    it('keeps the core-cron layer isolated from infrastructure and domain layers', () => {
+        const violations = collectViolations('core/cron', ['infrastructure', 'domain']);
+        expect(formatViolations(violations)).toBe('');
+    });
+
+    it('keeps the core-worktree layer isolated from infrastructure and domain layers', () => {
+        const violations = collectViolations('core/worktree', ['infrastructure', 'domain']);
+        expect(formatViolations(violations)).toBe('');
+    });
+
+    it('keeps the core-coordinator layer isolated from infrastructure and domain layers', () => {
+        const violations = collectViolations('core/coordinator', ['infrastructure', 'domain']);
+        expect(formatViolations(violations)).toBe('');
+    });
+
+    it('keeps the core-daemon layer isolated from infrastructure and domain layers', () => {
+        const violations = collectViolations('core/daemon', ['infrastructure', 'domain']);
+        expect(formatViolations(violations)).toBe('');
+    });
+
+    it('keeps the core-bridge layer isolated from infrastructure and domain layers', () => {
+        const violations = collectViolations('core/bridge', ['infrastructure', 'domain']);
+        expect(formatViolations(violations)).toBe('');
+    });
+
+    it('keeps the core-remote layer isolated from infrastructure and domain layers', () => {
+        const violations = collectViolations('core/remote', ['infrastructure', 'domain']);
         expect(formatViolations(violations)).toBe('');
     });
 });

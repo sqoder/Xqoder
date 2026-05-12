@@ -8,6 +8,7 @@ import type {
     ToolCall,
     ToolResult,
 } from '@xqoder/shared';
+import { emitTelemetry } from '../../shared/telemetry/index.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createToolApprovalHandler } from '../../application/permissions/index.js';
@@ -42,6 +43,9 @@ import {
     mergeToolApprovalPatches,
     resolveToolPermissionDecision,
 } from '../../domain/permissions/index.js';
+import { decideShellPolicy } from '../../domain/permissions/classifier/index.js';
+import { createClassifierProviderFactory } from '../../infra/permissions/classifier-provider.js';
+import { feature } from '../../shared/feature-flags.js';
 
 export type AgentEventEmitter = <K extends keyof AgentEvents>(
     type: K,
@@ -179,7 +183,7 @@ export async function prepareAgentToolCall(
     }
 
     const hasPriorRead = hasRequiredFileReadStateForTool(toolCall.name, args, dependencies.toolContext);
-    const permissionMode = resolveToolPermissionDecision({
+    let permissionMode = resolveToolPermissionDecision({
         toolName: toolCall.name,
         args,
         permissions: dependencies.permissions,
@@ -190,6 +194,27 @@ export async function prepareAgentToolCall(
         approvedReadPaths: dependencies.toolContext.approvedReadPaths,
         securityContext,
     });
+
+    // When the sync classifier returns 'ask' for a shell tool in auto mode and the
+    // LLM classifier feature flag is on, run the two-stage async classifier to get
+    // a more precise allow/deny decision without prompting the user.
+    if (
+        permissionMode === 'ask'
+        && (toolCall.name === 'run_command' || toolCall.name === 'run_shell')
+        && feature('PERMISSION_YOLO_CLASSIFIER')
+    ) {
+        const command = typeof args['command'] === 'string' ? args['command'] : '';
+        const classifierResult = await decideShellPolicy({
+            command,
+            sessionId: dependencies.session.id,
+            transcriptTail: dependencies.session.getMessages().slice(-4),
+            llmEnabled: true,
+            makeProvider: createClassifierProviderFactory(),
+        });
+        if (classifierResult.decision === 'allow') permissionMode = 'allow';
+        else if (classifierResult.decision === 'deny') permissionMode = 'deny';
+        // 'ask' stays as 'ask' (denial-tracked or llm-unavailable fallback)
+    }
     const policyApprovalPatch = createToolPolicyApprovalPatch({
         toolName: toolCall.name,
         args,
@@ -353,6 +378,14 @@ export async function finalizePreparedAgentToolCall(
         try { state.callbacks?.onToolStart?.(state.toolCall.name, state.args); } catch { /* noop */ }
     }
     try { state.callbacks?.onToolEnd?.(state.toolCall.name, resultContent, projectedResult.success); } catch { /* noop */ }
+
+    emitTelemetry({
+        type: 'tool.completed',
+        name: state.toolCall.name,
+        success: projectedResult.success,
+        durationMs: Math.max(completedAt.getTime() - startedAt.getTime(), 0),
+        ...(state.dependencies.session.id ? { sessionId: state.dependencies.session.id } : {}),
+    });
 
     state.dependencies.session.recordToolExecution({
         id: state.toolCall.id,

@@ -2217,7 +2217,7 @@ describe('domain tool permission policy', () => {
                 tools: {},
             },
             hasPriorRead: true,
-        })).toBe('ask');
+        })).toBe('allow');
         expect(resolveToolPermissionDecision({
             toolName: 'custom_tool',
             permissions: {

@@ -443,7 +443,15 @@ export type ApprovalPolicy =
     | 'dangerous_full_access';
 
 /** Agent permission mode */
-export type AgentPermissionMode = 'allow' | 'ask' | 'deny' | 'auto' | 'plan' | 'default' | 'bypassPermissions';
+export type AgentPermissionMode =
+    | 'allow'
+    | 'ask'
+    | 'deny'
+    | 'auto'
+    | 'plan'
+    | 'default'
+    | 'bypassPermissions'
+    | 'acceptEdits';
 
 /** Agent model reference */
 export interface LLMModelReference {
@@ -503,7 +511,18 @@ export interface PermissionSettings {
     approvalPolicy?: ApprovalPolicy;
 }
 
-export const SUPPORTED_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'] as const;
+export const SUPPORTED_HOOK_EVENTS = [
+    'PreToolUse',
+    'PostToolUse',
+    'PostToolUseFailure',
+    'UserPromptSubmit',
+    'SessionStart',
+    'SessionEnd',
+    'Stop',
+    'SubagentStop',
+    'PreCompact',
+    'PostCompact',
+] as const;
 
 export type HookEventName = typeof SUPPORTED_HOOK_EVENTS[number];
 
@@ -613,6 +632,24 @@ export interface MCPServerConfig {
     enabled?: boolean;
     /** Timeout for a single request in milliseconds */
     timeoutMs?: number;
+    /** Optional OAuth 2.1 config for http/sse transports */
+    oauth?: MCPServerOAuthConfig;
+}
+
+/** OAuth 2.1 Authorization Code + PKCE configuration for an MCP server */
+export interface MCPServerOAuthConfig {
+    /** Authorization endpoint (e.g. https://auth.example.com/authorize) */
+    authorizationUrl: string;
+    /** Token endpoint (e.g. https://auth.example.com/token) */
+    tokenUrl: string;
+    /** Pre-registered public client id */
+    clientId: string;
+    /** Optional client secret for confidential clients (omit for public/PKCE-only) */
+    clientSecret?: string;
+    /** Space-delimited scopes requested */
+    scopes?: string[];
+    /** Optional audience claim */
+    audience?: string;
 }
 
 /** MCP configuration */
@@ -746,6 +783,15 @@ export interface XQoderConfig {
     shell?: ShellConfig;
     /** Plugin configuration */
     plugins?: PluginPreferences;
+    /** Environment variables to apply at startup (merged into process.env by `enableConfigs`). */
+    env?: Record<string, string>;
+    /** P20 — thinking/effort/fastMode runtime preference (persisted across invocations). */
+    thinking?: {
+        mode?: 'disabled' | 'adaptive' | 'enabled';
+        effort?: 'low' | 'medium' | 'high' | 'xhigh';
+        fastMode?: 'standard' | 'fast';
+        budgetTokens?: number;
+    };
 }
 /** Formatter configuration */
 export interface FormatterConfig {

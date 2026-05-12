@@ -4,6 +4,7 @@ import type { ToolDefinition, ToolResult } from '@xqoder/shared';
 import type { ITool, QuestionPrompt, ToolContext } from './tool.js';
 import { resolvePathWithinProject } from './sandbox.js';
 import { resolveSkillDocumentPath } from './skill-paths.js';
+import { detectSkillCandidates, loadSkillRegistry, type SkillFile } from '../../skills/index.js';
 
 const TODO_STATUSES = new Set(['pending', 'in_progress', 'completed', 'cancelled']);
 const TODO_PRIORITIES = new Set(['high', 'medium', 'low']);
@@ -21,62 +22,193 @@ interface TodoStatePayload {
 }
 
 export class SkillTool implements ITool {
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return false;
+    }
+
     readonly definition: ToolDefinition = {
         name: 'skill',
-        description: 'Loads the content of project or user skill documents to help the agent perform tasks according to agreed processes.',
+        description: 'Query or activate a skill. Use action:"list" to see available skills (optionally ranked by a prompt); use action:"activate" (default) with {name} or {filePath} to load the full skill body. Activating a skill with a `tools` frontmatter field surfaces those tool names as advisory metadata.',
         parameters: [
+            { name: 'action', type: 'string', description: 'Either "list" or "activate" (default: activate)', required: false },
             { name: 'name', type: 'string', description: 'Skill name (e.g., django-verification)', required: false },
             { name: 'filePath', type: 'string', description: 'Skill file path (relative to project directory)', required: false },
+            { name: 'prompt', type: 'string', description: 'Optional prompt used to rank skills when action="list"', required: false },
+            { name: 'topN', type: 'number', description: 'Limit for ranked list (default 5)', required: false },
         ],
     };
 
     async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
         const toolCallId = (args['toolCallId'] as string) ?? '';
-        const skillName = typeof args['name'] === 'string' ? args['name'].trim() : '';
-        const filePath = typeof args['filePath'] === 'string' ? args['filePath'].trim() : '';
+        const action = normalizeSkillAction(args['action']);
 
-        let targetPath: string | undefined;
-
-        if (filePath) {
-            targetPath = resolvePathWithinProject(filePath, context);
-        } else if (skillName) {
-            targetPath = resolveSkillDocumentPath(skillName, context.projectRoot);
+        if (action === 'list') {
+            return executeSkillList(args, context, toolCallId);
         }
 
-        if (!targetPath) {
-            return {
-                toolCallId,
-                success: false,
-                output: '',
-                error: 'Please provide name or filePath to load the skill document',
-            };
-        }
+        return executeSkillActivate(args, context, toolCallId);
+    }
+}
 
-        if (!fs.existsSync(targetPath)) {
-            return {
-                toolCallId,
-                success: false,
-                output: '',
-                error: `Skill file does not exist: ${targetPath}`,
-            };
-        }
+function normalizeSkillAction(raw: unknown): 'list' | 'activate' {
+    if (typeof raw !== 'string') return 'activate';
+    const lower = raw.trim().toLowerCase();
+    return lower === 'list' ? 'list' : 'activate';
+}
 
-        const content = fs.readFileSync(targetPath, 'utf-8');
-        const renderedName = skillName || path.basename(path.dirname(targetPath));
+async function executeSkillActivate(
+    args: Record<string, unknown>,
+    context: ToolContext,
+    toolCallId: string,
+): Promise<ToolResult> {
+    const skillName = typeof args['name'] === 'string' ? args['name'].trim() : '';
+    const filePath = typeof args['filePath'] === 'string' ? args['filePath'].trim() : '';
 
+    let targetPath: string | undefined;
+    if (filePath) {
+        targetPath = resolvePathWithinProject(filePath, context);
+    } else if (skillName) {
+        targetPath = resolveSkillDocumentPath(skillName, context.projectRoot);
+    }
+
+    if (!targetPath) {
+        return {
+            toolCallId,
+            success: false,
+            output: '',
+            error: 'Please provide name or filePath to load the skill document',
+        };
+    }
+
+    if (!fs.existsSync(targetPath)) {
+        return {
+            toolCallId,
+            success: false,
+            output: '',
+            error: `Skill file does not exist: ${targetPath}`,
+        };
+    }
+
+    const content = fs.readFileSync(targetPath, 'utf-8');
+    const renderedName = skillName || path.basename(path.dirname(targetPath));
+
+    // Best-effort: resolve the structured skill entry (if the file has
+    // frontmatter) so we can surface allowed-tools metadata to the
+    // permission layer / UI. This is advisory only — the SkillTool does
+    // not reach into permission-gate here; that wiring happens in a later
+    // phase.
+    const structured = findSkillEntry(context.projectRoot, skillName, targetPath);
+    const allowedTools = structured?.tools ?? [];
+
+    return {
+        toolCallId,
+        success: true,
+        output: `<skill_content name="${renderedName}">\n${content}\n</skill_content>`,
+        metadata: {
+            path: targetPath,
+            bytes: Buffer.byteLength(content, 'utf-8'),
+            activatedSkill: structured?.name ?? renderedName,
+            ...(allowedTools.length > 0 ? { allowedTools } : {}),
+        },
+    };
+}
+
+async function executeSkillList(
+    args: Record<string, unknown>,
+    context: ToolContext,
+    toolCallId: string,
+): Promise<ToolResult> {
+    const prompt = typeof args['prompt'] === 'string' ? args['prompt'].trim() : '';
+    const topNRaw = args['topN'];
+    const topN = typeof topNRaw === 'number' && Number.isFinite(topNRaw) && topNRaw > 0
+        ? Math.floor(topNRaw)
+        : 5;
+
+    const registry = loadSkillRegistry(context.projectRoot);
+    if (registry.skills.length === 0) {
         return {
             toolCallId,
             success: true,
-            output: `<skill_content name="${renderedName}">\n${content}\n</skill_content>`,
-            metadata: {
-                path: targetPath,
-                bytes: Buffer.byteLength(content, 'utf-8'),
-            },
+            output: 'No skills found under .xqoder/skills, .claude/skills, or user-level equivalents.',
+            metadata: { skillCount: 0, ranked: false },
         };
+    }
+
+    let ranked = false;
+    let listing: Array<{ name: string; description: string; triggers: readonly string[] }>;
+    if (prompt) {
+        const candidates = detectSkillCandidates(prompt, registry.skills, { topN });
+        if (candidates.length > 0) {
+            ranked = true;
+            listing = candidates.map((candidate) => ({
+                name: candidate.skill.name,
+                description: candidate.skill.description,
+                triggers: candidate.matchedTriggers,
+            }));
+        } else {
+            listing = registry.skills.slice(0, topN).map((skill) => ({
+                name: skill.name,
+                description: skill.description,
+                triggers: skill.triggers,
+            }));
+        }
+    } else {
+        listing = registry.skills.slice(0, topN).map((skill) => ({
+            name: skill.name,
+            description: skill.description,
+            triggers: skill.triggers,
+        }));
+    }
+
+    const summary = listing
+        .map((entry) => {
+            const triggers = entry.triggers.length > 0 ? ` [${entry.triggers.join(', ')}]` : '';
+            return `- ${entry.name}${triggers}: ${entry.description}`;
+        })
+        .join('\n');
+
+    const preamble = ranked
+        ? `Top ${listing.length} skills for prompt:`
+        : `Available skills (${registry.skills.length}):`;
+
+    return {
+        toolCallId,
+        success: true,
+        output: `${preamble}\n${summary}`,
+        metadata: {
+            skillCount: registry.skills.length,
+            ranked,
+            results: listing.map((entry) => entry.name),
+        },
+    };
+}
+
+function findSkillEntry(
+    projectRoot: string,
+    skillName: string,
+    targetPath: string,
+): SkillFile | undefined {
+    try {
+        const registry = loadSkillRegistry(projectRoot);
+        if (skillName) {
+            const byName = registry.get(skillName);
+            if (byName) return byName;
+        }
+        return registry.skills.find((entry) => entry.filePath === targetPath);
+    } catch {
+        return undefined;
     }
 }
 
 export class TodoWriteTool implements ITool {
+    isConcurrencySafe(): boolean {
+        return false;
+    }
+
     readonly definition: ToolDefinition = {
         name: 'todowrite',
         description: 'Write a structured task list to track the execution plan in the current session.',
@@ -125,6 +257,14 @@ export class TodoWriteTool implements ITool {
 }
 
 export class TodoReadTool implements ITool {
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return true;
+    }
+
     readonly definition: ToolDefinition = {
         name: 'todoread',
         description: 'Read the structured task list and return the last written todo state for the current session.',
@@ -194,6 +334,10 @@ export class TodoReadTool implements ITool {
 }
 
 export class QuestionTool implements ITool {
+    isConcurrencySafe(): boolean {
+        return false;
+    }
+
     readonly definition: ToolDefinition = {
         name: 'question',
         description: 'Ask structured questions. Automatically returns a recommended answer to continue execution when there is no interactive question channel.',

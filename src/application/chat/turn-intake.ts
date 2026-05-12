@@ -31,6 +31,13 @@ import {
     defaultAgentForWorkflowMode,
 } from '../workflows/index.js';
 import { buildTurnPermissionGate } from './permission-gate.js';
+import { resolveTurnAttachments } from './turn-intake/attachment-resolver.js';
+import { loadMemdirContextSync } from '../memory/memdir.js';
+import { renderMemoryAppendix } from './turn-intake/memory-loader.js';
+import {
+    appendOutputStyleTail,
+    resolveActiveOutputStyleTail,
+} from '@xqoder/core-output-styles';
 
 const DEFAULT_SANDBOX = {
     mode: 'project',
@@ -68,6 +75,7 @@ export interface ConversationTurnInput {
     agent?: string;
     sessionTitle?: string;
     autoApproveTools?: boolean;
+    maxTurns?: number;
     runtime: {
         commandRoute: ChatCommandRoute;
         interaction: ChatInteractionRoute;
@@ -94,6 +102,7 @@ export interface BuildConversationTurnInputOptions {
     agent?: string;
     sessionTitle?: string;
     autoApproveTools?: boolean;
+    maxTurns?: number;
     entrypoint?: ConversationTurnEntrypoint;
 }
 
@@ -131,13 +140,20 @@ export function buildConversationTurnInput(
     const directCommand = isDirectChatCommandRoute(turnRoute.commandRoute);
     const normalizedText = resolveNormalizedTurnText(options.prompt, turnRoute);
     const slashCommand = resolveSlashCommand(options.prompt, turnRoute.commandRoute);
+    const mentionResolution = directCommand
+        ? { attachments: options.attachments?.map((attachment) => ({ ...attachment })) ?? [] }
+        : resolveTurnAttachments({
+            prompt: options.prompt,
+            cwd: resolvedDir,
+            ...(options.attachments ? { userProvided: options.attachments } : {}),
+        });
 
     return {
         rawText: options.prompt,
         normalizedText,
         preparedText,
-        attachments: options.attachments?.map((attachment) => ({ ...attachment })) ?? [],
-        referencedFiles: extractReferencedFiles(options.prompt, options.attachments),
+        attachments: mentionResolution.attachments,
+        referencedFiles: extractReferencedFiles(options.prompt, mentionResolution.attachments),
         ...(slashCommand ? { slashCommand } : {}),
         cwd: resolvedDir,
         ...(options.sessionId ? { sessionId: options.sessionId } : {}),
@@ -157,6 +173,7 @@ export function buildConversationTurnInput(
                 : {}),
         ...(options.sessionTitle ? { sessionTitle: options.sessionTitle } : {}),
         ...(options.autoApproveTools !== undefined ? { autoApproveTools: options.autoApproveTools } : {}),
+        ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
         runtime: {
             commandRoute: turnRoute.commandRoute,
             interaction: turnRoute.interaction,
@@ -195,6 +212,7 @@ export function prepareChatExecution<TTurnInput extends ConversationTurnInput>(
         effectiveTurnInput.cwd,
         effectiveTurnInput.agent,
     );
+    const memoryAppendix = buildTurnMemoryAppendix(effectiveTurnInput);
     const permissionGate = buildTurnPermissionGate({
         commandRoute: effectiveTurnInput.runtime.commandRoute,
         interaction: effectiveTurnInput.runtime.interaction,
@@ -205,14 +223,18 @@ export function prepareChatExecution<TTurnInput extends ConversationTurnInput>(
         cwd: effectiveTurnInput.cwd,
         projectRoot: effectiveTurnInput.cwd,
         modelOverride: effectiveTurnInput.model,
-        promptAppendix: joinPromptAppendices(
-            buildChatPromptAppendixFromRoute(
-                effectiveTurnInput.runtime.interaction,
-                sandbox,
-                effectiveTurnInput.cwd,
-                resolveChatRuntimeIdentity(effectiveConfig, effectiveTurnInput.agent, effectiveTurnInput.model),
+        promptAppendix: applyOutputStyleTail(
+            joinPromptAppendices(
+                buildChatPromptAppendixFromRoute(
+                    effectiveTurnInput.runtime.interaction,
+                    sandbox,
+                    effectiveTurnInput.cwd,
+                    resolveChatRuntimeIdentity(effectiveConfig, effectiveTurnInput.agent, effectiveTurnInput.model),
+                ),
+                instructionAppendix,
+                memoryAppendix,
             ),
-            instructionAppendix,
+            effectiveTurnInput.cwd,
         ),
         session,
         sessionTitle: effectiveTurnInput.sessionTitle,
@@ -222,6 +244,7 @@ export function prepareChatExecution<TTurnInput extends ConversationTurnInput>(
         taskMode: permissionGate.taskMode,
         executionCapability: permissionGate.executionCapability,
         approvalPolicy: permissionGate.approvalPolicy,
+        ...(effectiveTurnInput.maxTurns !== undefined ? { maxIterations: effectiveTurnInput.maxTurns } : {}),
     });
 
     return {
@@ -276,6 +299,14 @@ function joinPromptAppendices(...appendices: Array<string | undefined>): string 
     return appendices.filter((entry): entry is string => Boolean(entry?.trim())).join('\n\n');
 }
 
+// Kept as a dynamic tail so the style append does not break the static
+// prompt-cache prefix built by `buildChatPromptAppendixFromRoute`. Selection
+// is persisted per-project via `.xqoder/state/output-style.json`.
+function applyOutputStyleTail(prompt: string, projectRoot: string): string {
+    const style = resolveActiveOutputStyleTail(projectRoot);
+    return appendOutputStyleTail(prompt, style);
+}
+
 function buildResolvedInstructionAppendix(
     effectiveConfig: ReturnType<typeof resolveConfigWithEnvOverrides>['config'],
     cwd: string,
@@ -286,6 +317,20 @@ function buildResolvedInstructionAppendix(
         cwd,
         agentName,
     });
+}
+
+function buildTurnMemoryAppendix(turnInput: ConversationTurnInput): string | undefined {
+    if (isDirectChatCommandRoute(turnInput.runtime.commandRoute)) {
+        return undefined;
+    }
+    const prompt = turnInput.normalizedText || turnInput.rawText;
+    if (!prompt.trim()) return undefined;
+    const { memories } = loadMemdirContextSync({
+        cwd: turnInput.cwd,
+        sessionId: turnInput.sessionId ?? 'pending',
+        prompt,
+    });
+    return renderMemoryAppendix(memories);
 }
 
 function resolveNormalizedTurnText(

@@ -15,7 +15,9 @@ import {
 import { inspectMcpServersWithClientFactory } from './mcp-inspection.js';
 import type { McpServerInspection } from './mcp-inspection.js';
 import { McpHttpClient } from './mcp-http-client.js';
+import { McpSseClient } from './mcp-sse-client.js';
 import { McpStdioClient } from './mcp-stdio-client.js';
+import { createMcpAuthProvider } from './mcp-oauth.js';
 import type {
     McpClientAdapter,
     McpManagerOptions,
@@ -103,12 +105,17 @@ export class McpServerManager {
             return existing;
         }
 
+        const authProvider = this.options.authProvider
+            ?? createMcpAuthProvider(server, { logger: this.logger });
+
         const client = this.createClient(server, {
             cwd: this.options.cwd,
             projectRoot: this.options.projectRoot,
             sandboxMode: this.options.sandboxMode,
             allowedPaths: this.options.allowedPaths,
             logger: this.logger,
+            elicit: this.options.elicit,
+            ...(authProvider ? { authProvider } : {}),
         });
 
         this.clients.set(server.name, client);
@@ -120,19 +127,25 @@ export function createDefaultMcpClient(
     server: MCPServerConfig,
     options: Omit<McpManagerOptions, 'servers'>,
 ): McpClientAdapter {
-    if (server.transport === 'http' || server.transport === 'sse') {
+    if (server.transport === 'sse') {
+        return new McpSseClient(server, options);
+    }
+    if (server.transport === 'http') {
         return new McpHttpClient(server, options);
     }
     return new McpStdioClient(server, options);
 }
 
 export function createStandaloneMcpClient(server: MCPServerConfig, options: McpManagerOptions): McpClientAdapter {
+    const authProvider = options.authProvider ?? createMcpAuthProvider(server, { logger: options.logger });
     return createDefaultMcpClient(server, {
         cwd: options.cwd,
         projectRoot: options.projectRoot,
         sandboxMode: options.sandboxMode,
         allowedPaths: options.allowedPaths,
         logger: options.logger,
+        elicit: options.elicit,
+        ...(authProvider ? { authProvider } : {}),
     });
 }
 

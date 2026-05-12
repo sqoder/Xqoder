@@ -8,6 +8,9 @@ import {
     type GoldenTaskDefinition,
     type GoldenTaskMetrics,
 } from '../src/features/eval/golden-task-runner.js';
+import { prepareLiveFixtureWorkspace } from './lib/prepare-live-fixture-workspace.js';
+
+const LIVE_WORKSPACE_ROOT = path.resolve('tmp/golden-workspaces');
 
 interface CliOptions {
     manifestPath: string;
@@ -92,6 +95,13 @@ async function main(): Promise<void> {
     try {
         const result = await runGoldenTaskBatch(tasks, {
             run: async (task) => {
+                const runtimeCwd = options.live
+                    ? prepareLiveFixtureWorkspace({
+                        templateDir: task.cwd,
+                        workspaceDir: path.join(LIVE_WORKSPACE_ROOT, task.id),
+                    }).workspaceDir
+                    : task.cwd;
+
                 const deterministicBaseline = buildGoldenFallbackResponse(task);
                 if (!options.live && !options.model && !options.agent && deterministicBaseline && evaluateGoldenTaskResponse(task, deterministicBaseline).ok) {
                     return {
@@ -107,11 +117,12 @@ async function main(): Promise<void> {
                 for (let attempt = 0; attempt < 2; attempt += 1) {
                     attemptsUsed = attempt + 1;
                     const response = await runChatHeadless(buildGoldenTaskPrompt(task, attempt), {
-                        dir: task.cwd,
+                        dir: runtimeCwd,
                         newSession: true,
                         title: `golden:${task.id}:attempt:${attempt + 1}`,
                         ...(options.model ? { model: options.model } : {}),
                         ...(options.agent ? { agent: options.agent } : {}),
+                        ...(options.live ? { maxTurns: 30 } : {}),
                     }, {
                         sessionStore,
                     });
@@ -327,7 +338,7 @@ function loadManifest(manifestPath: string): GoldenTaskDefinition[] {
     });
 }
 
-function buildGoldenTaskPrompt(task: GoldenTaskDefinition, attempt: number): string {
+export function buildGoldenTaskPrompt(task: GoldenTaskDefinition, attempt: number): string {
     if (task.prompt.trim().startsWith('/')) {
         return task.prompt;
     }
@@ -345,7 +356,7 @@ function buildGoldenTaskPrompt(task: GoldenTaskDefinition, attempt: number): str
 
     return `${task.prompt}
 
-Answer from direct repository inspection. Prefer read_file and search_code before considering run_shell. Do not narrate your search steps or repeat draft answers. Once you have enough evidence, stop and give a short direct answer. ${literalHint} ${retryHint}`.trim();
+Answer from direct repository inspection. Prefer read_file and search_code before considering run_shell. Do not narrate your search steps or repeat draft answers. Once you have enough evidence, write your final answer as plain text — you must output a text response after tool use, not finish silently inside the tool loop. ${literalHint} ${retryHint}`.trim();
 }
 
 function buildGoldenFallbackResponse(task: GoldenTaskDefinition): string | null {

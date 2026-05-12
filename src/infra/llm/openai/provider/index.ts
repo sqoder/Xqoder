@@ -16,6 +16,10 @@ import type {
 import { LLMError, resolveLLMProviderCapabilities } from '@xqoder/shared';
 import { BaseLLMProvider, type CompletionRequest, type CompletionResponse } from '@xqoder/llm-api';
 import { resolveProxyForProvider, type ProxyResolutionOptions } from '../../../../shared/network-proxy.js';
+// Clean-room retry wrapper inspired by Claude Code / OpenClaude behavior.
+// Handles 429 / 529 / 401-OAuth / transient socket errors uniformly so the
+// application layer sees only classified LLM errors.
+import { withRetry, wrapStream, isClassifiedLLMError } from '../../retry/index.js';
 
 const DEFAULT_OPENAI_REQUEST_TIMEOUT_MS = 120_000;
 
@@ -183,16 +187,20 @@ export class OpenAIProvider extends BaseLLMProvider {
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     try {
-      const response = await withTimeout(
-        this.client.chat.completions.create({
-          model: this.model,
-          messages: this.formatMessages(request.messages),
-          tools: request.tools ? (this.formatTools(request.tools) as OpenAI.ChatCompletionTool[]) : undefined,
-          max_tokens: request.maxTokens ?? this.maxTokens,
-          temperature: request.temperature ?? this.temperature,
-        }, { timeout: this.timeoutMs }),
-        this.timeoutMs,
-        `OpenAI request timed out after ${this.timeoutMs}ms`,
+      const response = await withRetry(
+        { providerName: this.name, foreground: true },
+        () =>
+          withTimeout(
+            this.client.chat.completions.create({
+              model: this.model,
+              messages: this.formatMessages(request.messages),
+              tools: request.tools ? (this.formatTools(request.tools) as OpenAI.ChatCompletionTool[]) : undefined,
+              max_tokens: request.maxTokens ?? this.maxTokens,
+              temperature: request.temperature ?? this.temperature,
+            }, { timeout: this.timeoutMs }),
+            this.timeoutMs,
+            `OpenAI request timed out after ${this.timeoutMs}ms`,
+          ),
       );
       const choice = response.choices[0]!;
       const message = this.parseResponseMessage(choice);
@@ -206,6 +214,12 @@ export class OpenAIProvider extends BaseLLMProvider {
         finishReason: this.mapFinishReason(choice.finish_reason),
       };
     } catch (err) {
+      // Classified retry errors already carry provider + statusCode; rethrow
+      // as-is so downstream code can `switch` on `kind`. Unknown errors fall
+      // back to the original wrapped LLMError for compatibility.
+      if (isClassifiedLLMError(err)) {
+        throw err;
+      }
       throw new LLMError(
         `${this.name} API call failed: ${err instanceof Error ? err.message : String(err)}`,
         this.name,
@@ -217,24 +231,31 @@ export class OpenAIProvider extends BaseLLMProvider {
   async stream(request: CompletionRequest, callbacks: StreamCallbacks): Promise<CompletionResponse> {
     let streamRef: AsyncIterable<OpenAI.ChatCompletionChunk> | undefined;
     try {
-      streamRef = await withTimeout(
-        this.client.chat.completions.create({
-          model: this.model,
-          messages: this.formatMessages(request.messages),
-          tools: request.tools ? (this.formatTools(request.tools) as OpenAI.ChatCompletionTool[]) : undefined,
-          max_tokens: request.maxTokens ?? this.maxTokens,
-          temperature: request.temperature ?? this.temperature,
-          stream: true,
-          stream_options: {
-            include_usage: true,
-          },
-        }, { timeout: this.timeoutMs }),
-        this.timeoutMs,
-        `OpenAI stream connection timed out after ${this.timeoutMs}ms`,
+      streamRef = await withRetry(
+        { providerName: this.name, foreground: true },
+        () =>
+          withTimeout(
+            this.client.chat.completions.create({
+              model: this.model,
+              messages: this.formatMessages(request.messages),
+              tools: request.tools ? (this.formatTools(request.tools) as OpenAI.ChatCompletionTool[]) : undefined,
+              max_tokens: request.maxTokens ?? this.maxTokens,
+              temperature: request.temperature ?? this.temperature,
+              stream: true,
+              stream_options: {
+                include_usage: true,
+              },
+            }, { timeout: this.timeoutMs }),
+            this.timeoutMs,
+            `OpenAI stream connection timed out after ${this.timeoutMs}ms`,
+          ),
       );
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       callbacks.onError?.(error);
+      if (isClassifiedLLMError(err)) {
+        throw err;
+      }
       throw new LLMError(
         `${this.name} stream connection failed: ${error.message}`,
         this.name,
@@ -242,10 +263,12 @@ export class OpenAIProvider extends BaseLLMProvider {
       );
     }
     try {
-      return await withTimeout(
-        this.collectStreamingResponse(streamRef, callbacks),
-        this.timeoutMs,
-        `OpenAI stream timed out after ${this.timeoutMs}ms`,
+      // wrapStream gives us idle-based detection (StreamIdleError after
+      // DEFAULT_STREAM_IDLE_MS without a chunk) instead of a wall-clock
+      // timeout that would kill a slow-but-active stream.
+      return await this.collectStreamingResponse(
+        wrapStream(streamRef, { providerName: this.name }),
+        callbacks,
       );
     } catch (err) {
       await closeAsyncIterable(streamRef);
@@ -254,6 +277,9 @@ export class OpenAIProvider extends BaseLLMProvider {
         callbacks.onError?.(error);
       } catch {
         /* noop */
+      }
+      if (isClassifiedLLMError(err)) {
+        throw err;
       }
       throw new LLMError(`${this.name} stream call failed: ${error.message}`, this.name);
     }

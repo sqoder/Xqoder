@@ -40,6 +40,7 @@ import {
 import {
     resolveDirectChatCommandResponse,
 } from './direct-command.js';
+import { resolvePromptSubmissionOutcome, writeBlockedPromptResponse } from './turn-intake/submission-preprocess.js';
 import {
     createCoreMessage,
     createEnvelopeCallbackBridge,
@@ -71,6 +72,7 @@ export interface ChatRunOptions {
     format?: OutputFormat;
     attachments?: MessageAttachment[];
     title?: string;
+    maxTurns?: number;
 }
 
 export interface ChatServiceDependencies extends ChatTurnIntakeDependencies {
@@ -126,18 +128,17 @@ export async function runChatHeadless(
     options: ChatRunOptions,
     dependencies: ChatServiceDependencies = {},
 ): Promise<{ response: string; sessionId: string }> {
+    const outcome = await resolvePromptSubmissionOutcome({
+        prompt, cwd: options.dir, sessionId: options.session,
+        configManagerOverride: dependencies.configManager,
+    });
+    if (outcome.status === 'blocked') return { response: outcome.response, sessionId: outcome.sessionId };
     const turnInput = buildConversationTurnInput({
-        prompt,
-        cwd: options.dir,
-        attachments: options.attachments,
-        outputFormat: options.format,
-        model: options.model,
-        agent: options.agent,
-        sessionId: options.session,
-        startNewSession: options.newSession ?? false,
-        sessionTitle: options.title,
-        requireSessionStore: true,
-        entrypoint: 'headless',
+        prompt: outcome.prompt, cwd: options.dir, attachments: options.attachments,
+        outputFormat: options.format, model: options.model, agent: options.agent,
+        sessionId: options.session, startNewSession: options.newSession ?? false,
+        sessionTitle: options.title, requireSessionStore: true, entrypoint: 'headless',
+        ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
     });
     const execution = prepareChatExecution(turnInput, dependencies);
     return await runPreparedChatTurn(execution, dependencies, {
@@ -153,8 +154,18 @@ export async function runChat(
     dependencies: ChatServiceDependencies = {},
     callbacksFactory: () => AgentCallbacks,
 ): Promise<{ response: string; sessionId: string }> {
-    const turnInput = buildConversationTurnInput({
+    const outcome = await resolvePromptSubmissionOutcome({
         prompt,
+        cwd: options.dir,
+        sessionId: options.session,
+        configManagerOverride: dependencies.configManager,
+    });
+    if (outcome.status === 'blocked') {
+        writeBlockedPromptResponse(outcome.response, options.format ?? 'text');
+        return { response: outcome.response, sessionId: outcome.sessionId };
+    }
+    const turnInput = buildConversationTurnInput({
+        prompt: outcome.prompt,
         cwd: options.dir,
         attachments: options.attachments,
         outputFormat: options.format,
@@ -260,18 +271,20 @@ export async function runChatMessageStream(
     options: ChatMessageStreamOptions,
     dependencies: ChatServiceDependencies = {},
 ): Promise<{ response: string; sessionId: string }> {
-    const turnInput = buildConversationTurnInput({
+    const outcome = await resolvePromptSubmissionOutcome({
         prompt: options.prompt,
         cwd: options.cwd,
-        attachments: options.attachments,
-        model: options.model,
-        agent: options.agent,
         sessionId: options.sessionId,
+        configManagerOverride: dependencies.configManager,
+    });
+    if (outcome.status === 'blocked') return { response: outcome.response, sessionId: outcome.sessionId };
+    const turnInput = buildConversationTurnInput({
+        prompt: outcome.prompt, cwd: options.cwd, attachments: options.attachments,
+        model: options.model, agent: options.agent, sessionId: options.sessionId,
         startNewSession: options.startNewSession ?? false,
         shouldPersistSession: options.shouldPersistSession ?? true,
         requireSessionStore: options.shouldPersistSession ?? true,
-        sessionTitle: options.sessionTitle,
-        autoApproveTools: options.autoApproveTools,
+        sessionTitle: options.sessionTitle, autoApproveTools: options.autoApproveTools,
         entrypoint: options.entrypoint ?? 'headless',
     });
     const execution = prepareChatExecution(turnInput, dependencies);

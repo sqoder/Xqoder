@@ -4,14 +4,48 @@ import * as path from 'node:path';
 import { McpServerManager } from '../src/core/agent/mcp-server-manager.js';
 import type { ITool, ToolContext } from '../src/core/agent/tools/tool.js';
 import { resolveToolPermissionDecision } from '../src/domain/permissions/index.js';
+import type { MCPServerConfig } from '@xqoder/shared';
+
+type Transport = 'stdio' | 'http' | 'sse';
+
+interface TransportReport {
+    status: 'pass';
+    server: string;
+    transport: Transport;
+    checks: string[];
+}
 
 const rootDir = path.resolve(import.meta.dirname, '..');
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xqoder-mcp-live-smoke-'));
-const serverPath = path.join(tempDir, 'stdio-fixture.mjs');
-const checks: string[] = [];
 
 try {
-    fs.writeFileSync(serverPath, createFixtureServerSource(), 'utf-8');
+    const reports: TransportReport[] = [];
+    reports.push(await runStdioSmoke());
+
+    const httpPort = await pickFreePort();
+    const httpHandle = startHttpFixtureServer(httpPort);
+    try {
+        reports.push(await runHttpSmoke(`http://127.0.0.1:${httpPort}/mcp`));
+    } finally {
+        await httpHandle.stop();
+    }
+
+    const ssePort = await pickFreePort();
+    const sseHandle = startSseFixtureServer(ssePort);
+    try {
+        reports.push(await runSseSmoke(`http://127.0.0.1:${ssePort}/mcp`));
+    } finally {
+        await sseHandle.stop();
+    }
+
+    process.stdout.write(`${JSON.stringify({ status: 'pass', transports: reports }, null, 2)}\n`);
+} finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+}
+
+async function runStdioSmoke(): Promise<TransportReport> {
+    const serverPath = path.join(tempDir, 'stdio-fixture.mjs');
+    fs.writeFileSync(serverPath, createFixtureStdioSource(), 'utf-8');
 
     const manager = new McpServerManager({
         servers: [{
@@ -28,6 +62,7 @@ try {
     });
 
     try {
+        const checks: string[] = [];
         const tools = await manager.listTools();
         const remoteTool = requireTool(tools, (tool) => tool.definition.name.endsWith('.echo'), 'remote echo tool');
         const listResources = requireTool(tools, (tool) => tool.definition.name.endsWith('.resources.list'), 'resources/list tool');
@@ -36,11 +71,7 @@ try {
         const getPrompt = requireTool(tools, (tool) => tool.definition.name.endsWith('.prompts.get'), 'prompts/get tool');
         checks.push('tools/list exposed remote, resources, and prompts tools');
 
-        const context: ToolContext = {
-            cwd: rootDir,
-            projectRoot: rootDir,
-            sandboxMode: 'project',
-        };
+        const context: ToolContext = { cwd: rootDir, projectRoot: rootDir, sandboxMode: 'project' };
         const securityContext = remoteTool.getSecurityPolicyContext?.();
         const approval = await remoteTool.buildApprovalRequest?.({ message: 'hello' }, context);
         const decision = resolveToolPermissionDecision({
@@ -55,20 +86,14 @@ try {
         assert(approval?.risk === 'high', `expected high-risk approval request, got ${approval?.risk ?? 'none'}`);
         checks.push('untrusted MCP tool call requires approval');
 
-        const toolResult = await remoteTool.execute({
-            toolCallId: 'mcp-live-tool-1',
-            message: 'hello',
-        }, context);
+        const toolResult = await remoteTool.execute({ toolCallId: 'mcp-live-tool-1', message: 'hello' }, context);
         assert(toolResult.success, toolResult.error ?? 'remote tool call failed');
         assert(toolResult.output.includes('echo:hello'), 'remote tool output did not include echo payload');
         checks.push('tools/call returned remote tool output');
 
         const resourcesResult = await listResources.execute({ toolCallId: 'mcp-live-resources-1' }, context);
         assert(resourcesResult.output.includes('fixture://readme'), 'resources/list output missing fixture resource');
-        const readResult = await readResource.execute({
-            toolCallId: 'mcp-live-resource-1',
-            uri: 'fixture://readme',
-        }, context);
+        const readResult = await readResource.execute({ toolCallId: 'mcp-live-resource-1', uri: 'fixture://readme' }, context);
         assert(readResult.output.includes('MCP live smoke resource'), 'resources/read output missing fixture content');
         checks.push('resources/list and resources/read returned fixture content');
 
@@ -82,17 +107,164 @@ try {
         assert(promptResult.output.includes('release-check:signoff'), 'prompts/get output missing argument projection');
         checks.push('prompts/list and prompts/get returned fixture prompt');
 
-        process.stdout.write(`${JSON.stringify({
-            status: 'pass',
-            server: 'live-fixture',
-            transport: 'stdio',
-            checks,
-        }, null, 2)}\n`);
+        return { status: 'pass', server: 'live-fixture', transport: 'stdio', checks };
     } finally {
         await manager.dispose();
     }
-} finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+}
+
+async function runHttpSmoke(url: string): Promise<TransportReport> {
+    return runRemoteTransportSmoke({
+        server: 'live-fixture-http',
+        transport: 'http',
+        config: {
+            name: 'live-fixture-http',
+            transport: 'http',
+            url,
+            trust: 'trusted',
+            timeoutMs: 5_000,
+        },
+    });
+}
+
+async function runSseSmoke(url: string): Promise<TransportReport> {
+    return runRemoteTransportSmoke({
+        server: 'live-fixture-sse',
+        transport: 'sse',
+        config: {
+            name: 'live-fixture-sse',
+            transport: 'sse',
+            url,
+            trust: 'trusted',
+            timeoutMs: 5_000,
+        },
+    });
+}
+
+async function runRemoteTransportSmoke(args: {
+    server: string;
+    transport: Transport;
+    config: MCPServerConfig;
+}): Promise<TransportReport> {
+    const manager = new McpServerManager({
+        servers: [args.config],
+        cwd: rootDir,
+        projectRoot: rootDir,
+        sandboxMode: 'project',
+    });
+
+    try {
+        const checks: string[] = [];
+        const tools = await manager.listTools();
+        const echoTool = requireTool(tools, (tool) => tool.definition.name.endsWith('.echo'), `${args.transport} echo tool`);
+        checks.push(`tools/list exposed ${args.transport} echo tool`);
+
+        const context: ToolContext = { cwd: rootDir, projectRoot: rootDir, sandboxMode: 'project' };
+        const result = await echoTool.execute({ toolCallId: `mcp-${args.transport}-1`, message: 'hello' }, context);
+        assert(result.success, result.error ?? `${args.transport} echo call failed`);
+        assert(result.output.includes('echo:hello'), `${args.transport} echo output missing payload`);
+        checks.push(`tools/call roundtrip succeeded over ${args.transport}`);
+
+        return { status: 'pass', server: args.server, transport: args.transport, checks };
+    } finally {
+        await manager.dispose();
+    }
+}
+
+interface FixtureHandle {
+    stop(): Promise<void>;
+}
+
+function startHttpFixtureServer(port: number): FixtureHandle {
+    const server = Bun.serve({
+        port,
+        hostname: '127.0.0.1',
+        async fetch(req) {
+            if (req.method !== 'POST') {
+                return new Response('', { status: 405 });
+            }
+            let body: Record<string, unknown> = {};
+            try { body = (await req.json()) as Record<string, unknown>; } catch { return new Response('', { status: 400 }); }
+            return Response.json(handleFixtureRequest(body));
+        },
+    });
+    return {
+        async stop() { server.stop(true); },
+    };
+}
+
+function startSseFixtureServer(port: number): FixtureHandle {
+    const encoder = new TextEncoder();
+    const server = Bun.serve({
+        port,
+        hostname: '127.0.0.1',
+        async fetch(req) {
+            if (req.method !== 'POST') {
+                return new Response('', { status: 405 });
+            }
+            let body: Record<string, unknown> = {};
+            try { body = (await req.json()) as Record<string, unknown>; } catch { return new Response('', { status: 400 }); }
+            const payload = handleFixtureRequest(body);
+            const stream = new ReadableStream<Uint8Array>({
+                start(controller) {
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+                    controller.close();
+                },
+            });
+            return new Response(stream, {
+                headers: { 'content-type': 'text/event-stream' },
+            });
+        },
+    });
+    return {
+        async stop() { server.stop(true); },
+    };
+}
+
+function handleFixtureRequest(body: Record<string, unknown>): Record<string, unknown> {
+    const id = body['id'];
+    const method = body['method'];
+    if (method === 'initialize') {
+        return {
+            jsonrpc: '2.0', id, result: {
+                protocolVersion: '2025-11-25',
+                serverInfo: { name: 'xqoder-live-smoke-fixture', version: '1.0.0' },
+                capabilities: { tools: { listChanged: false } },
+            },
+        };
+    }
+    if (method === 'tools/list') {
+        return {
+            jsonrpc: '2.0', id, result: {
+                tools: [{
+                    name: 'echo',
+                    description: 'Echoes a message for Xqoder MCP live smoke',
+                    inputSchema: {
+                        type: 'object',
+                        properties: { message: { type: 'string' } },
+                        required: ['message'],
+                    },
+                }],
+            },
+        };
+    }
+    if (method === 'tools/call') {
+        const params = (body['params'] ?? {}) as { arguments?: Record<string, unknown> };
+        const message = String((params.arguments ?? {})['message'] ?? '');
+        return {
+            jsonrpc: '2.0', id, result: {
+                content: [{ type: 'text', text: `echo:${message}` }],
+            },
+        };
+    }
+    return { jsonrpc: '2.0', id, error: { code: -32601, message: `method not supported: ${String(method)}` } };
+}
+
+async function pickFreePort(): Promise<number> {
+    const server = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: () => new Response('ok') });
+    const port = server.port;
+    server.stop(true);
+    return port;
 }
 
 function requireTool(tools: ITool[], predicate: (tool: ITool) => boolean, label: string): ITool {
@@ -107,7 +279,7 @@ function assert(condition: unknown, message: string): asserts condition {
     }
 }
 
-function createFixtureServerSource(): string {
+function createFixtureStdioSource(): string {
     return `import readline from 'node:readline';
 
 const rl = readline.createInterface({ input: process.stdin });

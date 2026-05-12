@@ -69,6 +69,15 @@ const MIGRATIONS: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_file_changes_session ON session_file_changes(session_id);
         `,
     },
+    {
+        version: 4,
+        name: 'p24_session_lifecycle',
+        up: `
+            ALTER TABLE sessions ADD COLUMN permission_mode TEXT;
+            ALTER TABLE sessions ADD COLUMN activated_skills TEXT DEFAULT '[]';
+            ALTER TABLE sessions ADD COLUMN parent_session_id TEXT;
+        `,
+    },
 ];
 
 /**

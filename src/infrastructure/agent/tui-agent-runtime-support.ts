@@ -35,7 +35,11 @@ export function resolveRemoteToolPermissionMode(
     if (mode === 'allow' || mode === 'ask' || mode === 'deny') {
         return mode;
     }
-    if (mode === 'bypassPermissions') {
+    if (mode === 'bypassPermissions' || mode === 'acceptEdits') {
+        // Legacy runtime only understands allow/ask/deny. Downgrade both
+        // modes to 'allow' here — the full nuance (acceptEdits = edits-only)
+        // is enforced by resolveToolPermissionDecision upstream, so a remote
+        // surface receiving the downgrade already saw the per-tool decision.
         return 'allow';
     }
 

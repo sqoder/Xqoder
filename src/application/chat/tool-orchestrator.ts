@@ -15,6 +15,7 @@ import {
     type ConversationTranscriptEntry,
 } from '../../domain/conversation/messages.js';
 import type { ConversationStopReason } from '../../domain/conversation/stop-reason.js';
+import { partitionToolCalls } from '@xqoder/agent';
 
 export interface ToolExecutionCheckpoint {
     required: boolean;
@@ -108,6 +109,7 @@ export interface ToolOrchestratorDependencies<TCallbacks = unknown> {
         callbacks: TCallbacks | undefined,
         streamId: string,
     ) => Promise<ToolResult[]>;
+    abortSignal?: AbortSignal;
 }
 
 interface PreparedToolCallExecution<TCallbacks = unknown> {
@@ -165,20 +167,27 @@ export async function runToolOrchestrator<TCallbacks = unknown>(
         }));
     }
 
-    for (let index = 0; index < preparedCalls.length;) {
-        const prepared = preparedCalls[index]!;
-        if (prepared.preparation.canRunInParallel) {
-            const batch: PreparedToolCallExecution<TCallbacks>[] = [];
-            while (index < preparedCalls.length && preparedCalls[index]?.preparation.canRunInParallel) {
-                batch.push(preparedCalls[index]!);
-                index += 1;
-            }
+    const partitionDisabled = process.env['XQODER_DISABLE_TOOL_PARTITION'] === '1';
+    const preparedByCallId = new Map(preparedCalls.map((item) => [item.toolCall.id, item] as const));
+    const batches = partitionToolCalls(
+        preparedCalls.map((item) => item.toolCall),
+        {
+            isConcurrencySafe: (call) => partitionDisabled
+                ? false
+                : preparedByCallId.get(call.id)?.preparation.canRunInParallel === true,
+        },
+    );
 
-            const rawResults = await Promise.all(batch.map((item) => item.preparation.blocked
+    for (const batch of batches) {
+        if (dependencies.abortSignal?.aborted) break;
+
+        if (batch.concurrent) {
+            const items = batch.calls.map((call) => preparedByCallId.get(call.id)!);
+            const rawResults = await Promise.all(items.map((item) => item.preparation.blocked
                 ? Promise.resolve(undefined)
                 : item.toolExecutionPort.invokePreparedToolCall(item.preparation)));
-            for (let batchIndex = 0; batchIndex < batch.length; batchIndex += 1) {
-                const item = batch[batchIndex]!;
+            for (let batchIndex = 0; batchIndex < items.length; batchIndex += 1) {
+                const item = items[batchIndex]!;
                 item.stages.push({
                     stage: 'execute',
                     detail: item.preparation.blocked
@@ -194,8 +203,11 @@ export async function runToolOrchestrator<TCallbacks = unknown>(
             continue;
         }
 
-        results.push(await invokeAndFinalizePreparedToolCallExecution(prepared));
-        index += 1;
+        for (const call of batch.calls) {
+            if (dependencies.abortSignal?.aborted) break;
+            const item = preparedByCallId.get(call.id)!;
+            results.push(await invokeAndFinalizePreparedToolCallExecution(item));
+        }
     }
 
     return {

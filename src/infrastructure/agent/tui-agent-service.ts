@@ -13,6 +13,8 @@ import { RuntimeKernel } from '@xqoder/core-runtime';
 import {
     createConversationEventEnvelopeEmitter,
 } from '@xqoder/protocol';
+import { feature } from '../../shared/feature-flags.js';
+import { getCronService } from '@xqoder/core-cron';
 import type { AgentSessionStore } from '@xqoder/storage-sqlite';
 import type {
     AgentConversationPort,
@@ -63,6 +65,11 @@ export class TuiAgentService implements AgentConversationPort {
         });
         this.runtime = runtimeState.runtime;
         this.runtimeReady = runtimeState.runtimeReady;
+
+        // P19d — start cron scheduler when CRON_TASKS feature is enabled.
+        if (feature('CRON_TASKS')) {
+            getCronService().scheduler.start();
+        }
     }
 
     get isBusy(): boolean {

@@ -270,6 +270,10 @@ export function resetPersistentShellsForTests(): void {
  * Executes commands in the terminal and returns output
  */
 export class RunCommandTool implements ITool {
+    isConcurrencySafe(): boolean {
+        return false;
+    }
+
     readonly definition: ToolDefinition = {
         name: 'run_command',
         description: 'Execute shell commands in the terminal. Use it to install dependencies, run scripts, execute builds, and other tasks.',
@@ -291,6 +295,10 @@ export class RunCommandTool implements ITool {
 }
 
 export class RunShellTool implements ITool {
+    isConcurrencySafe(): boolean {
+        return false;
+    }
+
     readonly definition: ToolDefinition = {
         name: 'run_shell',
         description: 'Execute shell commands in the terminal. Use it for test, lint, build, or targeted runtime checks.',
@@ -316,6 +324,10 @@ export class RunShellTool implements ITool {
  * Installs npm/pip dependency packages
  */
 export class InstallPackageTool implements ITool {
+    isConcurrencySafe(): boolean {
+        return false;
+    }
+
     readonly definition: ToolDefinition = {
         name: 'install_package',
         description: 'Install project dependency packages. Automatically detects project type (npm/pip) and uses the corresponding package manager.',

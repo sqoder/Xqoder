@@ -47,9 +47,39 @@ export {
     type AgentName,
 } from './sub-agents.js';
 export {
+    createStandaloneMcpClient,
     McpServerManager,
     inspectMcpServers,
     type McpServerInspection,
+} from './mcp.js';
+export {
+    buildAuthorizeUrl,
+    createMcpAuthProvider,
+    exchangeAuthCode,
+    FileMcpTokenStore,
+    generatePkcePair,
+    generateState,
+    McpAuthTool,
+    oauthDisabled,
+    refreshAccessToken,
+    runMcpOauth,
+} from './mcp.js';
+export type {
+    McpAuthProvider,
+    McpAuthToolOptions,
+    McpCallToolResult,
+    McpClientAdapter,
+    McpGetPromptResult,
+    McpPromptArgumentDescriptor,
+    McpPromptDescriptor,
+    McpReadResourceResult,
+    McpResourceDescriptor,
+    McpResourceTemplateDescriptor,
+    McpServerInfo,
+    McpToolDescriptor,
+    McpTokenStore,
+    RunMcpOauthOptions,
+    StoredMcpToken,
 } from './mcp.js';
 export {
     type CompletionMatch,
@@ -71,11 +101,32 @@ export {
     buildPostToolUseHookPayload,
     buildPostToolUseFailureHookPayload,
     formatHookFeedbackSection,
+    type HookPayloadBase,
+    type HookRunnerConfigBase,
     type ToolHookEventName,
     type ToolHookPayload,
     type ToolHookRunnerConfig,
     type ToolHookExecutionResult,
 } from './hooks.js';
+export {
+    dispatchLifecycleHook,
+    dispatchLifecycleHookFireAndForget,
+    buildSessionStartPayload,
+    buildSessionEndPayload,
+    buildStopPayload,
+    buildSubagentStopPayload,
+    buildPreCompactPayload,
+    buildPostCompactPayload,
+    type LifecycleHookEventName,
+    type LifecycleHookPayload,
+    type LifecycleHookResult,
+    type SessionStartHookPayload,
+    type SessionEndHookPayload,
+    type StopHookPayload,
+    type SubagentStopHookPayload,
+    type PreCompactHookPayload,
+    type PostCompactHookPayload,
+} from './lifecycle-hooks.js';
 export { ReadFileTool, WriteFileTool, EditFileTool, PreviewDiffTool, SearchCodeTool } from './tools/file-tools.js';
 export {
     ReadAnyFileTool,
@@ -144,6 +195,17 @@ export {
     type OpenClawMemoryEntry,
 } from './openclaw.js';
 export { DelegateTaskTool } from './tools/agent-tool.js';
+export { partitionToolCalls, type ToolBatch, type PartitionOptions } from './tools/partition.js';
+export { runToolBatches, type ToolBatchExecutionContext } from './tools/streaming-executor.js';
+export {
+    createAutoFixRunner,
+    type AutoFixCheckResult,
+    type AutoFixExecutedTool,
+    type AutoFixOutcome,
+    type AutoFixRunner,
+    type AutoFixRunnerOptions,
+    type AutoFixRunInput,
+} from './tools/auto-fix-runner.js';
 export { LspFileWatcher, type LspWatcherOptions } from './lsp-watcher.js';
 export {
     runMigrations,
@@ -187,6 +249,20 @@ export {
     normalizeMvpFailureSignature,
 } from './mvp/pattern-memory.js';
 export { resolveMvpRecoveryDecision, applyMvpRecoveryDecision, renderMvpRecoveryMessage } from './mvp/recovery-manager.js';
+export {
+    applyToolResultBudget,
+    snipCompactIfNeeded,
+    microcompact,
+    nextReactiveStep,
+    applyReactiveStep,
+    TOOL_RESULT_MAX_BYTES,
+    SNIP_THRESHOLD_BYTES,
+    MICRO_PAIRS_THRESHOLD,
+    type ReactiveStep,
+    type ReactiveSessionTarget,
+    type ToolResultTruncation,
+} from './session/compaction/index.js';
+export { PromptTooLongError } from '../../infra/llm/retry/index.js';
 export { loadMvpRuntimeConfig } from './mvp/runtime-config.js';
 export {
     createMvpBaselineCheck,

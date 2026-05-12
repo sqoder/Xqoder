@@ -2,8 +2,12 @@ import { describe, expect, it } from 'bun:test';
 import type { MCPServerConfig } from '@xqoder/shared';
 import {
     McpServerManager,
+    createDefaultMcpClient,
 } from '../../src/core/agent/mcp-server-manager.js';
 import { McpServerManager as ReExportedManager } from '../../src/core/agent/mcp.js';
+import { McpSseClient } from '../../src/core/agent/mcp-sse-client.js';
+import { McpHttpClient } from '../../src/core/agent/mcp-http-client.js';
+import { McpStdioClient } from '../../src/core/agent/mcp-stdio-client.js';
 import type { McpClientAdapter } from '../../src/core/agent/mcp.js';
 
 describe('McpServerManager', () => {
@@ -96,6 +100,39 @@ describe('McpServerManager', () => {
         });
 
         await manager.dispose();
+    });
+
+    it('routes transport "sse" to McpSseClient via createDefaultMcpClient', () => {
+        const server = {
+            name: 'remote-sse',
+            transport: 'sse',
+            url: 'https://mcp.example.test/sse',
+        } as MCPServerConfig;
+        const client = createDefaultMcpClient(server, {
+            cwd: '/workspace',
+            projectRoot: '/workspace',
+        });
+        expect(client).toBeInstanceOf(McpSseClient);
+        expect(client).not.toBeInstanceOf(McpHttpClient);
+    });
+
+    it('routes transport "http" to McpHttpClient and default to McpStdioClient (no regression)', () => {
+        const http = createDefaultMcpClient(
+            {
+                name: 'remote-http',
+                transport: 'http',
+                url: 'https://mcp.example.test',
+            } as MCPServerConfig,
+            { cwd: '/workspace', projectRoot: '/workspace' },
+        );
+        expect(http).toBeInstanceOf(McpHttpClient);
+        expect(http).not.toBeInstanceOf(McpSseClient);
+
+        const stdio = createDefaultMcpClient(
+            { name: 'local-stdio', command: 'node' } as MCPServerConfig,
+            { cwd: '/workspace', projectRoot: '/workspace' },
+        );
+        expect(stdio).toBeInstanceOf(McpStdioClient);
     });
 });
 

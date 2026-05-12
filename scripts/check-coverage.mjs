@@ -59,9 +59,13 @@ function normalizeRelativePath(filePath) {
 function runCoverage() {
   fs.rmSync(coverageDir, { recursive: true, force: true });
 
+  // Match the `test` script in package.json: only XQoder's own sources are
+  // in scope. Without an explicit path list, Bun walks the repo root and
+  // picks up `openclaude/**` (a reference-only clone, see .gitignore), which
+  // contributes 300+ unrelated test files and breaks coverage.
   const result = spawnSync(
     bunExecutable,
-    ['test', '--coverage', '--coverage-reporter=lcov'],
+    ['test', './test', './src', '--coverage', '--coverage-reporter=lcov'],
     {
       cwd: rootDir,
       stdio: 'inherit',

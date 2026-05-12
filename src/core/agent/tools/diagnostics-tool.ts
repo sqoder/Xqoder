@@ -57,6 +57,14 @@ export class DiagnosticsTool implements ITool {
         ],
     };
 
+    isReadOnly(): boolean {
+        return true;
+    }
+
+    isConcurrencySafe(): boolean {
+        return true;
+    }
+
     async execute(
         args: Record<string, unknown>,
         context: ToolContext,

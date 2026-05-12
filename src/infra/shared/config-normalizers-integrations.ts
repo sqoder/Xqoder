@@ -2,6 +2,7 @@ import {
     type LSPServerConfig,
     type LSPSettings,
     type MCPServerConfig,
+    type MCPServerOAuthConfig,
     type MCPServerTrustLevel,
     type MCPSettings,
     type PluginPreferences,
@@ -55,6 +56,7 @@ function normalizeMCPServerConfig(server: MCPServerConfig): MCPServerConfig {
     );
     const transport = resolveMcpTransport(server);
     const cwd = server.cwd?.trim() || undefined;
+    const oauth = normalizeMcpOAuth(server.oauth);
 
     return {
         name: server.name?.trim() || '',
@@ -68,6 +70,32 @@ function normalizeMCPServerConfig(server: MCPServerConfig): MCPServerConfig {
         trust: normalizeMcpTrust(server.trust, transport),
         enabled: server.enabled ?? true,
         timeoutMs: normalizeTimeout(server.timeoutMs),
+        ...(oauth !== undefined ? { oauth } : {}),
+    };
+}
+
+function normalizeMcpOAuth(oauth: MCPServerOAuthConfig | undefined): MCPServerOAuthConfig | undefined {
+    if (!oauth) {
+        return undefined;
+    }
+    const authorizationUrl = oauth.authorizationUrl?.trim();
+    const tokenUrl = oauth.tokenUrl?.trim();
+    const clientId = oauth.clientId?.trim();
+    if (!authorizationUrl || !tokenUrl || !clientId) {
+        return undefined;
+    }
+    const scopes = Array.isArray(oauth.scopes)
+        ? oauth.scopes.map((s) => s.trim()).filter(Boolean)
+        : [];
+    const clientSecret = oauth.clientSecret?.trim() || undefined;
+    const audience = oauth.audience?.trim() || undefined;
+    return {
+        authorizationUrl,
+        tokenUrl,
+        clientId,
+        ...(clientSecret !== undefined ? { clientSecret } : {}),
+        ...(scopes.length > 0 ? { scopes } : {}),
+        ...(audience !== undefined ? { audience } : {}),
     };
 }
 

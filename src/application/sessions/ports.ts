@@ -22,6 +22,10 @@ export interface SessionSummary {
     compactionCount: number;
     commandCount: number;
     fileChangeCount: number;
+    /** P24 */
+    permissionMode?: string;
+    activatedSkills: string[];
+    parentSessionId?: string;
 }
 
 export interface SessionMessageView {

@@ -13,6 +13,12 @@ export interface MarkdownAgentDefinition {
     tools?: string[];
     disallowedTools?: string[];
     model?: string;
+    /** P16a — optional provider override (e.g. `dashscope`, `anthropic`). */
+    provider?: string;
+    /** P16a — optional base URL override for the agent's provider. */
+    baseUrl?: string;
+    /** P16a — optional color hint surfaced in TUI / logs (e.g. `cyan`). */
+    color?: string;
     permissionMode?: AgentPermissionMode;
     source: MarkdownAgentSource;
     filePath: string;
@@ -22,7 +28,6 @@ type ParsedFrontmatterValue = string | string[];
 
 const FRONTMATTER_PATTERN = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/;
 const PROJECT_AGENT_DIR = path.join('.claude', 'agents');
-const USER_AGENT_DIR = path.join(os.homedir(), '.claude', 'agents');
 const SUPPORTED_AGENT_MODES = new Set<AgentMode>(['primary', 'subagent']);
 const SUPPORTED_PERMISSION_MODES = new Set<AgentPermissionMode>([
     'allow',
@@ -32,12 +37,35 @@ const SUPPORTED_PERMISSION_MODES = new Set<AgentPermissionMode>([
     'plan',
     'default',
     'bypassPermissions',
+    'acceptEdits',
 ]);
 
-export function listMarkdownAgents(cwd: string = process.cwd()): MarkdownAgentDefinition[] {
+export interface MarkdownAgentLookupOptions {
+    cwd?: string;
+    /**
+     * Override the user-level agents directory lookup. Primarily used by
+     * tests to stay hermetic against the developer's real `~/.claude/agents`
+     * layout. Defaults to `~/.claude/agents`.
+     */
+    userAgentDir?: string;
+}
+
+function resolveUserAgentDir(override: string | undefined): string {
+    return override ?? path.join(os.homedir(), '.claude', 'agents');
+}
+
+export function listMarkdownAgents(
+    cwdOrOptions: string | MarkdownAgentLookupOptions = process.cwd(),
+): MarkdownAgentDefinition[] {
+    const options: MarkdownAgentLookupOptions = typeof cwdOrOptions === 'string'
+        ? { cwd: cwdOrOptions }
+        : cwdOrOptions;
+    const cwd = options.cwd ?? process.cwd();
+    const userAgentDir = resolveUserAgentDir(options.userAgentDir);
+
     const deduped = new Map<string, MarkdownAgentDefinition>();
 
-    for (const agent of readMarkdownAgentsFromDir(USER_AGENT_DIR, 'user-markdown')) {
+    for (const agent of readMarkdownAgentsFromDir(userAgentDir, 'user-markdown')) {
         deduped.set(agent.name, agent);
     }
 
@@ -50,14 +78,14 @@ export function listMarkdownAgents(cwd: string = process.cwd()): MarkdownAgentDe
 
 export function getMarkdownAgentDefinition(
     name: string,
-    cwd: string = process.cwd(),
+    cwdOrOptions: string | MarkdownAgentLookupOptions = process.cwd(),
 ): MarkdownAgentDefinition | undefined {
     const normalizedName = name.trim();
     if (!normalizedName) {
         return undefined;
     }
 
-    return listMarkdownAgents(cwd).find((agent) => agent.name === normalizedName);
+    return listMarkdownAgents(cwdOrOptions).find((agent) => agent.name === normalizedName);
 }
 
 function readMarkdownAgentsFromDir(
@@ -131,6 +159,9 @@ function parseMarkdownAgentFile(
     const tools = normalizeToolList(metadata.tools, metadata.allowedTools, metadata.allowed_tools);
     const disallowedTools = normalizeToolList(metadata.disallowedTools, metadata.disallowed_tools);
     const model = asTrimmedString(metadata.model);
+    const provider = asTrimmedString(metadata.provider);
+    const baseUrl = asTrimmedString(metadata.baseUrl, metadata.base_url);
+    const color = asTrimmedString(metadata.color);
     const permissionMode = normalizePermissionMode(
         asTrimmedString(metadata.permissionMode, metadata.permission_mode),
     );
@@ -143,6 +174,9 @@ function parseMarkdownAgentFile(
         ...(tools.length > 0 ? { tools } : {}),
         ...(disallowedTools.length > 0 ? { disallowedTools } : {}),
         ...(model ? { model } : {}),
+        ...(provider ? { provider } : {}),
+        ...(baseUrl ? { baseUrl } : {}),
+        ...(color ? { color } : {}),
         ...(permissionMode ? { permissionMode } : {}),
         source,
         filePath,

@@ -69,6 +69,7 @@ const VALID_PERMISSION_MODES: AgentPermissionMode[] = [
     'plan',
     'default',
     'bypassPermissions',
+    'acceptEdits',
 ];
 const VALID_APPROVAL_POLICIES = ['strict', 'balanced', 'workspace_auto'] as const;
 

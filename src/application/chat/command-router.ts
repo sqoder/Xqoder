@@ -12,6 +12,7 @@ const CHAT_COMMAND_ALIASES = {
     permissions: ['/permissions', '/auth'],
     tools: ['/tools'],
     compact: ['/compact', '/compress'],
+    help: ['/help', '/?'],
     implement: ['/implement'],
     skill: ['/skill'],
     plan: ['/plan'],
@@ -24,6 +25,7 @@ export type ChatCommandRoute =
     | { kind: 'permissions' }
     | { kind: 'tools' }
     | { kind: 'compact' }
+    | { kind: 'help' }
     | { kind: 'implement'; input: string }
     | { kind: 'skill'; name: string; input: string }
     | {
@@ -68,6 +70,11 @@ export function resolveChatCommandRoute(prompt: string): ChatCommandRoute {
     const compactAlias = matchCommandAlias(trimmed, CHAT_COMMAND_ALIASES.compact);
     if (compactAlias) {
         return { kind: 'compact' };
+    }
+
+    const helpAlias = matchCommandAlias(trimmed, CHAT_COMMAND_ALIASES.help);
+    if (helpAlias) {
+        return { kind: 'help' };
     }
 
     const implementAlias = matchCommandAlias(trimmed, CHAT_COMMAND_ALIASES.implement);
@@ -201,6 +208,7 @@ export function isDirectChatCommandRoute(route: ChatCommandRoute): boolean {
         || route.kind === 'permissions'
         || route.kind === 'tools'
         || route.kind === 'compact'
+        || route.kind === 'help'
         || route.kind === 'usage';
 }
 
