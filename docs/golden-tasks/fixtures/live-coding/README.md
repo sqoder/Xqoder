@@ -12,12 +12,12 @@ fixtures/live-coding/
   02-api-field/            src/ + test/ — additive API field extension
   03-lint-type-fix/        src/ + tsconfig.json — TS error to repair
   04-test-coverage/        src/ + test/ — TDD regression loop for NaN edge
-  05-denied-permission/    src/ + biome.json — read-only alternative path
-  06-session-resume/       src/ + test/ + transcript.md — resume mid-task
-  07-mcp-readonly/         inventory.json — read-only resource Q&A
-  08-rules-memory/         CLAUDE.md + .xqoder/notepad.md — rule loading
-  09-diff-approval/        src/ — approval/diff-preview path
-  10-dangerous-bash/       data.txt — sandbox denial scenario
+  05-denied-permission-alternative/  scenario.txt — permission-denied alternative path
+  06-session-resume/                  src/ + test/ + transcript.md — resume mid-task
+  07-mcp-readonly/                    inventory.json — read-only resource Q&A
+  08-rules-memory/                    CLAUDE.md + .xqoder/notepad.md + src/ — rule loading
+  09-diff-approval/                   src/ — approval/diff-preview path
+  10-dangerous-bash-denied/           sandbox-log.txt — sandbox denial scenario
 ```
 
 Each task's README describes the scenario, the acceptance signal, and what

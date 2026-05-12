@@ -3,7 +3,7 @@
     "id": "live-01-bug-fix",
     "title": "Small bug fix loop",
     "prompt": "In the prepared live-coding fixture, reproduce the failing test, fix the small logic bug, run the targeted test again, and summarize the changed file and verification.",
-    "cwd": "../..",
+    "cwd": "fixtures/live-coding/01-bug-fix",
     "expectedAll": ["changed", "test"],
     "expectedAny": ["pass", "passed", "green"]
   },
@@ -11,7 +11,7 @@
     "id": "live-02-api-field",
     "title": "API field extension",
     "prompt": "Add the requested response field to the fixture API shape, update the related test, run it, and summarize the compatibility behavior.",
-    "cwd": "../..",
+    "cwd": "fixtures/live-coding/02-api-field",
     "expectedAll": ["field", "test"],
     "expectedAny": ["compatible", "backward", "pass"]
   },
@@ -19,7 +19,7 @@
     "id": "live-03-lint-type-fix",
     "title": "Lint and type repair",
     "prompt": "Fix the fixture TypeScript lint/type failure with the smallest code change, run the targeted typecheck, and summarize the result.",
-    "cwd": "../..",
+    "cwd": "fixtures/live-coding/03-lint-type-fix",
     "expectedAll": ["type", "fix"],
     "expectedAny": ["pass", "passed", "typecheck"]
   }
