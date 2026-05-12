@@ -26,7 +26,13 @@ function saveHistory(history: string[], filePath = HISTORY_PATH): void {
     try {
         const dir = path.dirname(filePath);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        const deduped = Array.from(new Set(history)).slice(-MAX_HISTORY);
+        // Deduplicate keeping last occurrence (most recent wins)
+        const seen = new Set<string>();
+        const deduped = history.slice().reverse().filter((h) => {
+            if (seen.has(h)) return false;
+            seen.add(h);
+            return true;
+        }).reverse().slice(-MAX_HISTORY);
         fs.writeFileSync(filePath, JSON.stringify(deduped, null, 2), 'utf-8');
     } catch {
         // Silently ignore

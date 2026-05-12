@@ -65,6 +65,13 @@ function nextId(): string {
     return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+export type ConversationAction = Action;
+export { initialState as conversationInitialState };
+
+export function conversationReducer(state: ConversationState, action: Action): ConversationState {
+    return reduce(state, action);
+}
+
 function reduce(state: ConversationState, action: Action): ConversationState {
     switch (action.type) {
         case 'send.start': {
