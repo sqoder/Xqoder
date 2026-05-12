@@ -1330,3 +1330,20 @@
   5. `xqoder session arc` + `xqoder session rewind` CLI 子命令
   6. 15 新测试 (arc 10, rewind 5) — 全绿
 - 下一期: P25 — Bridge / Remote / Daemon
+
+---
+
+## P25 (2026-05-12) — Bridge / Remote / Daemon
+
+- release:check: ✅
+- golden task pass: 未重跑
+- /review 警告: 0 条
+- 本期 token 消耗: 约 8 万
+- ADR: docs/adr/0035-p25-bridge-remote-daemon.md
+- 新增:
+  1. `src/core/daemon/` — IPC (JSON-lines Unix socket RPC), supervisor (child_process.fork), worker, daemon entry; `@xqoder/core-daemon` alias
+  2. `src/core/bridge/` — work-secret, HS256 JWT, pairing (6-digit code), bridge-api (HTTP), repl-bridge; `@xqoder/core-bridge` alias
+  3. `src/core/remote/` — session-manager, sessions-websocket (native WS + backoff), permission-bridge; `@xqoder/core-remote` alias
+  4. 28 新测试 (IPC 5, bridge 13, remote 10) — 全绿
+  5. architecture-guardrail: core/daemon + core/bridge + core/remote 不得 import infrastructure/domain
+- 下一期: P26 — SDK entrypoint (headless / structuredIO)

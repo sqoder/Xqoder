@@ -166,4 +166,19 @@ describe('architecture guardrails', () => {
         const violations = collectViolations('core/coordinator', ['infrastructure', 'domain']);
         expect(formatViolations(violations)).toBe('');
     });
+
+    it('keeps the core-daemon layer isolated from infrastructure and domain layers', () => {
+        const violations = collectViolations('core/daemon', ['infrastructure', 'domain']);
+        expect(formatViolations(violations)).toBe('');
+    });
+
+    it('keeps the core-bridge layer isolated from infrastructure and domain layers', () => {
+        const violations = collectViolations('core/bridge', ['infrastructure', 'domain']);
+        expect(formatViolations(violations)).toBe('');
+    });
+
+    it('keeps the core-remote layer isolated from infrastructure and domain layers', () => {
+        const violations = collectViolations('core/remote', ['infrastructure', 'domain']);
+        expect(formatViolations(violations)).toBe('');
+    });
 });
