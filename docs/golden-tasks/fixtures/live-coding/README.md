@@ -29,17 +29,17 @@ numbers exist.
 
 ## Reset strategy
 
-`scripts/run-golden-tasks.ts` calls `git restore` + `git clean -fd` scoped
-to each fixture subdir **before** every task, so every run starts from the
-committed baseline regardless of what the agent did on the previous run.
-Consequences:
+For `--live` runs, `scripts/run-golden-tasks.ts` calls
+`prepareLiveFixtureWorkspace` (see `scripts/lib/prepare-live-fixture-workspace.ts`)
+before each task. It copies the template subdir into
+`tmp/golden-workspaces/<task-id>/` and runs the agent there. The template
+is never mutated. Consequences:
 
 - Every file the agent might touch must be committed — the fixture tree
   must live under version control in this repo.
-- Untracked files the agent creates are removed between tasks.
+- The workspace is wiped and repopulated before every task, so state from
+  any prior run cannot leak.
 - Running the suite twice yields an identical starting state.
 
-The reset path is deliberately scoped to paths under
-`docs/golden-tasks/fixtures/` — the harness refuses to reset anything
-outside that prefix. See `resetFixtureCwd` in
-`scripts/run-golden-tasks.ts`.
+For repo-evidence (non-`--live`) runs the agent reads the template directly
+and never writes, so no reset is needed.
