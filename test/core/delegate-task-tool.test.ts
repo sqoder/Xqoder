@@ -77,7 +77,8 @@ describe('DelegateTaskTool', () => {
 
         expect(result.success).toBe(true);
         expect(result.output).toContain('agent: plan');
-        expect(requests[0]?.messages[0]?.content).toContain('task planning agent');
+        // P16d: system prompt now comes from subagents/built-in.ts ("planning subagent")
+        expect(requests[0]?.messages[0]?.content).toContain('planning subagent');
         expect(requests[0]?.tools?.some((entry) => entry.name === 'write_file')).toBe(false);
         expect(requests[0]?.tools?.some((entry) => entry.name === 'run_shell')).toBe(false);
     });
@@ -139,7 +140,10 @@ describe('DelegateTaskTool', () => {
         });
 
         expect(result.success).toBe(true);
-        expect(result.output).toContain('safe read output');
+        // P16d: output is now a memory snapshot — tool evidence is not included verbatim.
+        // The final assistant response and tracked read files appear instead.
+        expect(result.output).toContain('delegated final answer');
+        expect(result.output).toContain('Files read: .env');
         expect(approvals).toHaveLength(1);
         expect(approvals[0]).toMatchObject({
             toolName: 'read_file',

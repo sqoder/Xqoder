@@ -1418,3 +1418,20 @@
   3. `src/platform/terminal/ink/components/HistorySearchDialog.tsx` — Levenshtein fuzzy search + React dialog
   4. 53 新测试 (matchKeys 12, motions 10, operators 8, transitions 9, fuzzy 9, defaults 4, load-user 1) — 全绿
 - 下一期: S6 剩余 phases (P24 已完成 ADR 0034)
+
+---
+
+## P16d (2026-05-12) — DelegateTaskTool rewrite (forkSubagentsBatch 集成)
+
+- release:check: ✅
+- golden task pass: 未重跑
+- /review 警告: 0 条
+- 本期 token 消耗: 约 4 万
+- ADR: docs/adr/0040-p16d-delegate-task-tool-rewrite.md
+- 改动:
+  1. `src/core/agent/tools/agent-tool.ts` — 用 forkSubagentsBatch + renderAgentMemorySnapshot 重写 DelegateTaskTool.execute
+  2. `InMemoryChildSession` — 实现 ForkableChildSession，追踪 messages/usage/readFiles
+  3. Markdown agent prompt 优先级修复（覆盖 built-in systemPrompt）
+  4. 输出格式从 `agent:/iterations:/final:` 改为 memory snapshot 格式
+  5. `test/core/delegate-task-tool.test.ts` — 更新 4 条测试断言 — 全绿
+- 下一期: 查看 S6 剩余 phases
