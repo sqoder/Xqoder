@@ -1435,3 +1435,20 @@
   4. 输出格式从 `agent:/iterations:/final:` 改为 memory snapshot 格式
   5. `test/core/delegate-task-tool.test.ts` — 更新 4 条测试断言 — 全绿
 - 下一期: 查看 S6 剩余 phases
+
+---
+
+## P06 (2026-05-12) — Ink REPL 接线 (renderInkApp + useConversationStream)
+
+- release:check: ✅
+- golden task pass: 未重跑
+- /review 警告: 0 条
+- 本期 token 消耗: 约 5 万
+- ADR: docs/adr/0041-p06-ink-repl-wiring.md
+- 新增:
+  1. `src/platform/terminal/ink/hooks/useConversationStream.ts` — AgentConversationPort → React state bridge (reducer + approval/question Promise wiring)
+  2. `src/platform/terminal/ink/components/ApprovalDialog.tsx` — 键盘驱动审批 (y/a allow, n/d/Esc deny)
+  3. `src/platform/terminal/ink/app.tsx` — P06 完整接线版 (agentService + settings + approval + question)
+  4. `src/platform/terminal/ink/index.tsx` — renderInkApp 入口
+  5. `src/platform/terminal/app/run-terminal-app.ts` — 默认走 Ink REPL；XQODER_TUI=classic 回退 readline
+- 下一期: 路线图全部 27 期已完成主链；可按需补充 follow-up
