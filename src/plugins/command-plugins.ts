@@ -14,6 +14,7 @@ import { outputStyleCommand } from '../commands/core/output-style.js';
 import { skillsCommand } from '../commands/core/skills.js';
 import { taskCommand } from '../commands/core/task.js';
 import { cronCommand } from '../commands/core/cron.js';
+import { worktreeCommand } from '../commands/core/worktree.js';
 import { effortCommand, fastCommand, thinkCommand } from '../commands/core/thinking.js';
 import { authCommand } from '../commands/auth/index.js';
 import { fixCommand } from '../commands/fix.js';
@@ -112,6 +113,7 @@ function createBuiltInCommandPlugins(options: CommandPluginFactoryOptions = {}):
                     outputStyleCommand,
                     taskCommand,
                     cronCommand,
+                    worktreeCommand,
                     options.chatCommand ?? chatCommand,
                     options.tuiCommand ?? tuiCommand,
                 ].forEach((command) => api.registerCommand(defineCommanderCommand(command)));

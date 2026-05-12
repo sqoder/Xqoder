@@ -1276,3 +1276,21 @@
   5. architecture-guardrails 扩展到 infra/plugins 层 + loader.ts 改依赖注入 (H1)
   6. loader.unwind 日志 + plugins enable/disable try-catch (E1+E2)
 - 下一期: P19b
+
+---
+
+## P19c (2026-05-12) — Worktree manager + tools + CLI
+
+- release:check: ✅
+- golden task pass: 未重跑
+- /review 警告: 0 条
+- 本期 token 消耗: 约 8 万
+- ADR: docs/adr/0032-p19c-worktree-manager.md
+- 新增:
+  1. `src/core/worktree/` — worktree-types, worktree-manager (git via child_process), worktree-session (singleton), index barrel
+  2. `@xqoder/core-worktree` tsconfig alias
+  3. `EnterWorktreeTool` / `ExitWorktreeTool` — 注册进 agent-default-tools
+  4. `xqoder worktree enter|list|remove` CLI — 注册进 command-plugins
+  5. 45 新测试 (worktree-types 11, worktree-session 5, worktree-tools 10, CLI 10, guardrail 1) — 全绿
+  6. architecture-guardrail: core/worktree 不得 import infrastructure/domain
+- 下一期: P19d — Coordinator mode + remaining task types
