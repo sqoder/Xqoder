@@ -1380,7 +1380,7 @@
   3. feature flags: TOOL_SEARCH_LAZY, REPL_TOOL, POWERSHELL_TOOL, REMOTE_TRIGGER_TOOL
   4. `registerDefaultAgentTools` 注册全部 P27 工具；flags 全开时 47 个工具
   5. 46 新测试 (utility 30, advanced 16) — 全绿
-- 下一期: P28 — Thinking effort + fast mode
+- 下一期: P20 — Thinking effort + fast mode (已完成，见 P20a/P20b 条目)
 
 ---
 
