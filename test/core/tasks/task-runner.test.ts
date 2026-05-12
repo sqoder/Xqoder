@@ -1,4 +1,4 @@
-// P19a — task-runner dispatch tests.
+// P19a / P19d — task-runner dispatch tests.
 
 import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'node:fs';
@@ -27,12 +27,51 @@ describe('runTask', () => {
             cwd: workspace,
             logDir: path.join(workspace, 'logs'),
         });
+        expect(result.kind).toBe('shell');
         expect(result.status).toBe('completed');
         expect(result.exitCode).toBe(0);
     });
 
-    it('throws a clear error for agent / remote-agent / monitor-mcp / dream / main', async () => {
-        for (const type of ['agent', 'remote-agent', 'monitor-mcp', 'dream', 'main'] as const) {
+    it('dispatches agent type to LocalAgentTask with injected runner', async () => {
+        const task = store.create({
+            title: 'agent',
+            type: 'agent',
+            metadata: { prompt: 'hello?' },
+        });
+        const result = await runTask(task, {
+            store,
+            cwd: workspace,
+            logDir: path.join(workspace, 'logs'),
+            localAgentRunnerOverride: async (session) => {
+                (session as unknown as {
+                    pushMessage: (m: { role: string; content: string }) => void;
+                }).pushMessage({ role: 'assistant', content: 'ok' });
+            },
+        });
+        expect(result.kind).toBe('agent');
+        expect(result.status).toBe('completed');
+        expect(store.get(task.id)?.status).toBe('completed');
+    });
+
+    it('dispatches remote-agent type to RemoteAgentTask with injected fetcher', async () => {
+        const task = store.create({
+            title: 'remote',
+            type: 'remote-agent',
+            metadata: { prompt: 'ping', remote: { endpoint: 'http://stub/run' } },
+        });
+        const result = await runTask(task, {
+            store,
+            cwd: workspace,
+            logDir: path.join(workspace, 'logs'),
+            remoteFetcher: async () => ({ finalResponse: 'pong' }),
+        });
+        expect(result.kind).toBe('remote-agent');
+        expect(result.status).toBe('completed');
+        expect(store.get(task.id)?.status).toBe('completed');
+    });
+
+    it('throws for monitor-mcp / dream / main (deferred to later phases)', async () => {
+        for (const type of ['monitor-mcp', 'dream', 'main'] as const) {
             const task = store.create({ title: type, type });
             await expect(
                 runTask(task, {
@@ -40,7 +79,7 @@ describe('runTask', () => {
                     cwd: workspace,
                     logDir: path.join(workspace, 'logs'),
                 }),
-            ).rejects.toThrow(/not yet implemented in P19a/);
+            ).rejects.toThrow(/not yet implemented/);
         }
     });
 });
@@ -66,14 +105,16 @@ describe('startTask', () => {
         expect(result.status).toBe('completed');
     });
 
-    it('throws for non-shell types', () => {
-        const task = store.create({ title: 'x', type: 'agent' });
-        expect(() =>
-            startTask(task, {
-                store,
-                cwd: workspace,
-                logDir: path.join(workspace, 'logs'),
-            }),
-        ).toThrow(/not yet implemented in P19a/);
+    it('throws for non-shell types (background mode limited to shell in P19d)', () => {
+        for (const type of ['agent', 'remote-agent', 'monitor-mcp', 'dream', 'main'] as const) {
+            const task = store.create({ title: type, type });
+            expect(() =>
+                startTask(task, {
+                    store,
+                    cwd: workspace,
+                    logDir: path.join(workspace, 'logs'),
+                }),
+            ).toThrow(/background mode not implemented|not yet implemented/);
+        }
     });
 });
