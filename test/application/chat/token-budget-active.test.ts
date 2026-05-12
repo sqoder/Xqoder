@@ -66,7 +66,8 @@ function baseDeps(session: AgentSession, logger: Logger, profile: AgentRuntimePr
             model: 'claude-3-5-sonnet-20241022',
         } as LLMProviderConfig,
         runtimeProfile: profile,
-        compaction: undefined,
+        // Disable the LLM summarizer path so tests don't make real network calls.
+        compaction: { auto: false },
         callbacks: undefined,
         streamId: 'stream-p10',
         emit: () => {},
