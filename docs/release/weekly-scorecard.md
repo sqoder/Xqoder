@@ -1347,3 +1347,20 @@
   4. 28 新测试 (IPC 5, bridge 13, remote 10) — 全绿
   5. architecture-guardrail: core/daemon + core/bridge + core/remote 不得 import infrastructure/domain
 - 下一期: P26 — SDK entrypoint (headless / structuredIO)
+
+---
+
+## P26 (2026-05-12) — SDK entrypoint (headless / structuredIO)
+
+- release:check: ✅
+- golden task pass: 未重跑
+- /review 警告: 0 条
+- 本期 token 消耗: 约 6 万
+- ADR: docs/adr/0036-p26-sdk-entrypoint.md
+- 新增:
+  1. `src/cli/structured-io.ts` — ndjsonSafeStringify, isControlMessage, readNdjsonStdin, emitEnvelope, emitFinalResult
+  2. `OutputFormat` 扩展 `'ndjson'`; `resolveRootShellOutputFormat` 接受 ndjson
+  3. `--input-format ndjson` + injectable `ndjsonReader` 依赖注入 (mode D 全双工)
+  4. `src/entrypoints/sdk.ts` — `run(opts): AsyncGenerator<SdkEvent, RunResult>`
+  5. 20 新测试 (structured-io 17, root-shell ndjson 3) — 全绿
+- 下一期: P27 — 40+ 工具完整补齐

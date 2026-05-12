@@ -97,7 +97,49 @@ describe('root shell helpers', () => {
         expect(canLaunchInteractiveTui()).toBe(true);
         expect(resolveRootShellOutputFormat('text', false)).toBe('text');
         expect(resolveRootShellOutputFormat('json', false)).toBe('json');
+        expect(resolveRootShellOutputFormat('ndjson', false)).toBe('ndjson');
+        expect(resolveRootShellOutputFormat('stream-json', false)).toBe('stream-json');
         expect(() => resolveRootShellOutputFormat('xml', false)).toThrow('invalid format option: xml');
+    });
+
+    it('handles ndjson input mode via injectable reader', async () => {
+        const prompts: string[] = [];
+
+        async function* fakeReader() {
+            yield { type: 'user' as const, text: 'first message' };
+            yield { type: 'user' as const, text: 'second message' };
+        }
+
+        const result = await runRootShellAction(
+            { inputFormat: 'ndjson', cwd: '/tmp', outputFormat: 'ndjson', quiet: true },
+            {
+                promptRunner: async (opts) => { prompts.push(opts.prompt); },
+                ndjsonReader: fakeReader,
+            },
+        );
+
+        expect(result).toBe('handled');
+        expect(prompts).toEqual(['first message', 'second message']);
+    });
+
+    it('stops ndjson input on control.interrupt', async () => {
+        const prompts: string[] = [];
+
+        async function* fakeReader() {
+            yield { type: 'user' as const, text: 'before interrupt' };
+            yield { type: 'control' as const, control: { type: 'control.interrupt' as const } };
+            yield { type: 'user' as const, text: 'after interrupt' };
+        }
+
+        await runRootShellAction(
+            { inputFormat: 'ndjson', cwd: '/tmp', quiet: true },
+            {
+                promptRunner: async (opts) => { prompts.push(opts.prompt); },
+                ndjsonReader: fakeReader,
+            },
+        );
+
+        expect(prompts).toEqual(['before interrupt']);
     });
 
     it('drives the TypeError demo through the root shell non-interactive CLI path', async () => {
