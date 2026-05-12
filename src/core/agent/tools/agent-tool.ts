@@ -23,6 +23,7 @@ import {
     type ForkableChildSession,
     type ForkChildRunner,
     type AgentMemoryUsage,
+    type AgentMemoryNote,
     type ParentForkContext,
 } from '../subagents/index.js';
 
@@ -49,6 +50,7 @@ class InMemoryChildSession implements ForkableChildSession {
     private _messages: LLMMessage[] = [];
     private _usage: AgentMemoryUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     private _readFiles: string[] = [];
+    private _writtenNotes: AgentMemoryNote[] = [];
 
     setSystemPrompt(systemPrompt: string): void {
         this._messages = [{ role: 'system', content: systemPrompt }];
@@ -65,6 +67,7 @@ class InMemoryChildSession implements ForkableChildSession {
     getMessages(): readonly LLMMessage[] { return this._messages; }
     getUsage(): AgentMemoryUsage { return this._usage; }
     getReadFiles(): readonly string[] { return this._readFiles; }
+    getWrittenNotes(): readonly AgentMemoryNote[] { return this._writtenNotes; }
 
     // Internal helpers used by the runner
     pushMessage(msg: LLMMessage): void { this._messages.push(msg); }
@@ -77,6 +80,9 @@ class InMemoryChildSession implements ForkableChildSession {
     }
     trackReadFile(filePath: string): void {
         if (!this._readFiles.includes(filePath)) this._readFiles.push(filePath);
+    }
+    addNote(key: string, body: string): void {
+        this._writtenNotes.push({ key, body });
     }
 }
 
