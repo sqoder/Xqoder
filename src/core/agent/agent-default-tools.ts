@@ -26,6 +26,12 @@ import {
     ScheduleCronTool,
 } from './tools/cron-tools.js';
 import { EnterWorktreeTool, ExitWorktreeTool } from './tools/worktree-tools.js';
+import {
+    ReadMailboxTool,
+    SendMessageTool,
+    TeamCreateTool,
+    TeamDeleteTool,
+} from './tools/coordinator-tools.js';
 import { DelegateTaskTool } from './tools/agent-tool.js';
 import type { ToolContext, ToolRegistry } from './tools/tool.js';
 
@@ -100,5 +106,9 @@ export function registerDefaultAgentTools(input: DefaultAgentToolRegistrationInp
     input.toolRegistry.register(new CronRemoveTool());
     input.toolRegistry.register(new EnterWorktreeTool());
     input.toolRegistry.register(new ExitWorktreeTool());
+    input.toolRegistry.register(new TeamCreateTool());
+    input.toolRegistry.register(new TeamDeleteTool());
+    input.toolRegistry.register(new SendMessageTool());
+    input.toolRegistry.register(new ReadMailboxTool());
     input.toolRegistry.register(new DelegateTaskTool(input.llmConfig, input.toolRegistry));
 }

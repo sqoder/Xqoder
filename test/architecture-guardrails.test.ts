@@ -161,4 +161,9 @@ describe('architecture guardrails', () => {
         const violations = collectViolations('core/worktree', ['infrastructure', 'domain']);
         expect(formatViolations(violations)).toBe('');
     });
+
+    it('keeps the core-coordinator layer isolated from infrastructure and domain layers', () => {
+        const violations = collectViolations('core/coordinator', ['infrastructure', 'domain']);
+        expect(formatViolations(violations)).toBe('');
+    });
 });

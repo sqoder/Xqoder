@@ -1294,3 +1294,21 @@
   5. 45 新测试 (worktree-types 11, worktree-session 5, worktree-tools 10, CLI 10, guardrail 1) — 全绿
   6. architecture-guardrail: core/worktree 不得 import infrastructure/domain
 - 下一期: P19d — Coordinator mode + remaining task types
+
+---
+
+## P19d (2026-05-12) — Coordinator mode + cron bootstrap wiring
+
+- release:check: ✅
+- golden task pass: 未重跑
+- /review 警告: 0 条
+- 本期 token 消耗: 约 6 万
+- ADR: docs/adr/0033-p19d-coordinator-mode.md
+- 新增:
+  1. cron scheduler 在 TuiAgentService 构造器里 feature('CRON_TASKS') 门控启动
+  2. `src/core/coordinator/` — coordinator-mode (mailbox + team registry), index barrel
+  3. `@xqoder/core-coordinator` tsconfig alias
+  4. `TeamCreateTool / TeamDeleteTool / SendMessageTool / ReadMailboxTool` — 注册进 agent-default-tools
+  5. 38 新测试 (coordinator-mode 20, coordinator-tools 18) — 全绿
+  6. architecture-guardrail: core/coordinator 不得 import infrastructure/domain
+- 下一期: P20 — Thinking effort + fast mode

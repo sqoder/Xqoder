@@ -39,6 +39,7 @@
       "@xqoder/core-tasks": ["./src/core/tasks"],
       "@xqoder/core-cron": ["./src/core/cron"],
       "@xqoder/core-worktree": ["./src/core/worktree"],
+      "@xqoder/core-coordinator": ["./src/core/coordinator"],
       "@xqoder/plugin-sdk": ["./src/infra/plugin-sdk"],
       "@xqoder/provider-openai": ["./src/infra/llm/openai/provider"],
       "@xqoder/provider-anthropic": ["./src/infra/llm/anthropic"],
