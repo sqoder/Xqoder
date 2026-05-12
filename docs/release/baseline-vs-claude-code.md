@@ -38,14 +38,14 @@ has nothing to compare against.
    `docs/release/latest-live-acceptance-metrics.json` and the matching report.
 3. The harness requires ≥ 70 % pass (7/10) to exit 0.
 
-## Blocker (resolved 2026-05-12): fixture tree + scoped reset
+## Blocker (resolved 2026-05-12): fixture tree + tmp workspace copy
 
 Historical note: until 2026-05-12 the manifest pointed every task's `cwd`
 at `../..` (the XQoder repo root) and said "in the prepared live-coding
 fixture", but no fixture directory existed. A live run would have sent
 the agent at the real `src/` tree with edit-intent prompts.
 
-Resolution landed in two pieces:
+Resolution landed in three pieces:
 
 1. **Fixture tree**: `docs/golden-tasks/fixtures/live-coding/01..10` —
    each subdir holds the minimum content to make its task prompt
@@ -54,17 +54,23 @@ Resolution landed in two pieces:
    `docs/golden-tasks/fixtures/live-coding/README.md` for the layout
    and the per-task scenarios.
 2. **Manifest rewrite**: each task's `cwd` now points at
-   `fixtures/live-coding/<task>` instead of `../..`. The agent cannot
-   touch `src/` via the golden harness anymore.
-3. **Scoped reset**: `scripts/run-golden-tasks.ts::resetFixtureCwd`
-   runs `git restore --source=HEAD -- <cwd>` + `git clean -fd -- <cwd>`
-   before every task. The function bails out unless `<cwd>` resolves
-   under `docs/golden-tasks/fixtures/`, so it can never reset
-   anything outside the fixture tree. This keeps the suite idempotent
-   even if the agent edits files during a task.
+   `fixtures/live-coding/<task>` instead of `../..`. `loadManifest`
+   resolves the path relative to the manifest file, so the agent
+   cannot touch `src/` via the golden harness anymore.
+3. **Tmp workspace copy**: `scripts/lib/prepare-live-fixture-workspace.ts`
+   copies the template into `tmp/golden-workspaces/<task-id>/` at the
+   start of each `--live` task and runs the agent there. The template
+   itself is never mutated. The workspace is wiped and repopulated
+   before every task, so state from any prior run cannot leak. Helper
+   refuses to operate when workspace equals template, or when template
+   is missing. Idempotency is covered by
+   `test/scripts/prepare-live-fixture-workspace.test.ts`. The
+   repo-evidence (non-`--live`) path keeps reading the template
+   directly — it never writes.
 
-Downstream consequence: every fixture file must be committed. Uncommitted
-fixture changes are reverted on the next run.
+`tmp/golden-workspaces/` is gitignored. Templates should be committed so
+the starting state is reproducible across machines, but the harness
+itself does not shell out to git — reset is purely a filesystem copy.
 
 The live gate is therefore unblocked on the blast-radius axis. What
 remains before Run 1 can execute:
