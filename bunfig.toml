@@ -1,0 +1,8 @@
+[test]
+# Exclude golden-task live-coding fixtures from test discovery.
+# These fixtures contain intentionally-broken source files (the "bug" the
+# agent is supposed to fix) and must not be run as part of the normal suite.
+# The release:check pipeline uses `bun test ./test ./src` which already
+# scopes correctly; this bunfig.toml prevents accidental discovery when
+# running `bun test` without explicit paths.
+exclude = ["docs/golden-tasks/fixtures/**"]
