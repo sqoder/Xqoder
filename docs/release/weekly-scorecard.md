@@ -1489,3 +1489,33 @@
   - `startTask` 仍只接 shell;agent/remote 的后台化留给 P25 daemon worker
 - 下一步建议: 独立会话建 live-coding fixture,让 `eval:golden:live` 真正能跑
 
+---
+
+## fixture-build (2026-05-12) — live-coding fixture 树 + manifest cwd 修正
+
+- release:check: ✅ (1864 pass / 0 fail; coverage PASS; size-guardrail PASS)
+- golden task pass: not run (repo-evidence fallback only — no agent exercise)
+- /review 警告: 0 条
+- 本期 token 消耗: 约 2 万
+- ADR: 无
+- 本期产出:
+  - `docs/golden-tasks/fixtures/live-coding/08-rules-memory/src/foo.ts` — 补建
+    notepad.md 引用但缺失的相对 import 违规文件(fixture 08 的触发条件)
+  - 删除 `05-denied-permission/` 和 `10-dangerous-bash/`(manifest 用
+    `05-denied-permission-alternative` 和 `10-dangerous-bash-denied`,旧目录是孤儿)
+  - 删除 `live-01-bug-fix` … `live-10-dangerous-bash` 十个旧命名目录(未跟踪)
+  - `docs/golden-tasks/xqoder-live-3task.json` cwd 从 `../..` 改为
+    `fixtures/live-coding/<task>`(与主 manifest 对齐)
+  - `fixtures/live-coding/README.md` 布局表 + Reset strategy 一节与实际代码对齐
+    (删除不存在的 `resetFixtureCwd` 引用,改为 `prepareLiveFixtureWorkspace` 描述)
+- 失败态验证(fixture 必须以"待修复"状态提交):
+  - 01: `sumPositive` 2/3 fail ✅
+  - 02: `displayName` 2/2 fail ✅
+  - 03: `tsc --noEmit` type error ✅
+  - 04: 3 existing tests pass,NaN 回归测试待 agent 写 ✅
+  - 06: `divide` 未实现,import 报错 ✅
+  - 05/07/08/09/10: 场景/只读 fixture,无可运行测试 ✅
+- manifest cwd 验证: `bun run acceptance:metrics` dry-run 10 条全部解析到
+  `docs/golden-tasks/fixtures/live-coding/<task>` ✅
+- 下一期: 提供 `XQODER_LLM_API_KEY` 后跑 `bun run eval:golden:live` 取 Run 1 基线
+
