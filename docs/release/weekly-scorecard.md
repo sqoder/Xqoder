@@ -1381,3 +1381,24 @@
   4. `registerDefaultAgentTools` 注册全部 P27 工具；flags 全开时 47 个工具
   5. 46 新测试 (utility 30, advanced 16) — 全绿
 - 下一期: P28 — Thinking effort + fast mode
+
+---
+
+## P22 (2026-05-12) — Ink 消息 / diff / 工具块 / 输入组件
+
+- release:check: ✅
+- golden task pass: 未重跑
+- /review 警告: 0 条
+- 本期 token 消耗: 约 7 万
+- ADR: docs/adr/0038-p22-ink-components.md
+- 新增:
+  1. `src/platform/terminal/ink/components/messages/` — MessageTimestamp, UserMessage, AssistantMessage, ThinkingBlock, MessageList
+  2. `src/platform/terminal/ink/components/markdown/` — Markdown, HighlightedCode
+  3. `src/platform/terminal/ink/components/chrome/` — Spinner, StatusBar
+  4. `src/platform/terminal/ink/components/diff/` — FileDiff, StructuredDiff, parseDiffLines
+  5. `src/platform/terminal/ink/components/tools/` — ToolBlock, ToolUseLoader
+  6. `src/platform/terminal/ink/components/input/` — TextInput, PromptInput
+  7. `src/platform/terminal/ink/hooks/` — useArrowKeyHistory, useVirtualScroll, usePasteHandler
+  8. `src/platform/terminal/ink/app.tsx` — InkApp 顶层组件
+  9. 18 新测试 (diff parsing 7, virtual scroll 5, history nav 6) — 全绿
+- 下一期: P23 — 键绑定 / Vim / 历史
