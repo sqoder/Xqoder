@@ -1364,3 +1364,20 @@
   4. `src/entrypoints/sdk.ts` — `run(opts): AsyncGenerator<SdkEvent, RunResult>`
   5. 20 新测试 (structured-io 17, root-shell ndjson 3) — 全绿
 - 下一期: P27 — 40+ 工具完整补齐
+
+---
+
+## P27 (2026-05-12) — 40+ 工具完整补齐
+
+- release:check: ✅
+- golden task pass: 未重跑
+- /review 警告: 0 条
+- 本期 token 消耗: 约 9 万
+- ADR: docs/adr/0037-p27-tools-complete-catalog.md
+- 新增:
+  1. `src/core/agent/tools/p27-utility-tools.ts` — SleepTool, ConfigTool, BriefTool, SyntheticOutputTool, EnterPlanModeTool, ExitPlanModeTool, VerifyPlanExecutionTool, NotebookEditTool, AskUserQuestionTool, SuggestBackgroundPRTool (10 个常驻工具)
+  2. `src/core/agent/tools/p27-advanced-tools.ts` — MonitorTool, ToolSearchTool, WorkflowTool, PowerShellTool, RemoteTriggerTool, REPLTool (6 个 feature-gated 工具)
+  3. feature flags: TOOL_SEARCH_LAZY, REPL_TOOL, POWERSHELL_TOOL, REMOTE_TRIGGER_TOOL
+  4. `registerDefaultAgentTools` 注册全部 P27 工具；flags 全开时 47 个工具
+  5. 46 新测试 (utility 30, advanced 16) — 全绿
+- 下一期: P28 — Thinking effort + fast mode

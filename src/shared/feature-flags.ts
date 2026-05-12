@@ -32,6 +32,10 @@ export const FEATURE_DEFAULTS = {
     MONITOR_TOOL: false,
     CHICAGO_MCP: false,
     TOKEN_BUDGET_ACTIVE: false,
+    TOOL_SEARCH_LAZY: false,
+    REPL_TOOL: false,
+    POWERSHELL_TOOL: false,
+    REMOTE_TRIGGER_TOOL: false,
 } as const satisfies Record<string, boolean>;
 
 export type KnownFeatureName = keyof typeof FEATURE_DEFAULTS;

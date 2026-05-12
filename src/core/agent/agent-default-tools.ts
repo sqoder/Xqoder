@@ -1,4 +1,5 @@
 import type { LLMProviderConfig, LSPServerConfig } from '@xqoder/shared';
+import { feature } from '../../shared/feature-flags.js';
 import type { ExternalLanguageServerManager } from './lsp-manager.js';
 import type { AgentRuntimeProfile } from './mvp/types.js';
 import { DiagnosticsTool } from './tools/diagnostics-tool.js';
@@ -33,7 +34,29 @@ import {
     TeamDeleteTool,
 } from './tools/coordinator-tools.js';
 import { DelegateTaskTool } from './tools/agent-tool.js';
-import type { ToolContext, ToolRegistry } from './tools/tool.js';
+import type { ToolContext, ToolRegistry, ITool } from './tools/tool.js';
+// P27 utility tools
+import {
+    SleepTool,
+    ConfigTool,
+    BriefTool,
+    SyntheticOutputTool,
+    EnterPlanModeTool,
+    ExitPlanModeTool,
+    VerifyPlanExecutionTool,
+    NotebookEditTool,
+    AskUserQuestionTool,
+    SuggestBackgroundPRTool,
+} from './tools/p27-utility-tools.js';
+// P27 feature-gated advanced tools
+import {
+    MonitorTool,
+    ToolSearchTool,
+    WorkflowTool,
+    PowerShellTool,
+    RemoteTriggerTool,
+    REPLTool,
+} from './tools/p27-advanced-tools.js';
 
 export interface DefaultAgentToolRegistrationInput {
     toolRegistry: ToolRegistry;
@@ -111,4 +134,40 @@ export function registerDefaultAgentTools(input: DefaultAgentToolRegistrationInp
     input.toolRegistry.register(new SendMessageTool());
     input.toolRegistry.register(new ReadMailboxTool());
     input.toolRegistry.register(new DelegateTaskTool(input.llmConfig, input.toolRegistry));
+
+    // P27 — utility tools (always registered)
+    input.toolRegistry.register(new SleepTool());
+    input.toolRegistry.register(new ConfigTool());
+    input.toolRegistry.register(new BriefTool());
+    input.toolRegistry.register(new SyntheticOutputTool());
+    input.toolRegistry.register(new EnterPlanModeTool());
+    input.toolRegistry.register(new ExitPlanModeTool());
+    input.toolRegistry.register(new VerifyPlanExecutionTool());
+    input.toolRegistry.register(new NotebookEditTool());
+    input.toolRegistry.register(new AskUserQuestionTool());
+    input.toolRegistry.register(new SuggestBackgroundPRTool());
+
+    // P27 — feature-gated advanced tools
+    if (feature('MONITOR_TOOL')) {
+        input.toolRegistry.register(new MonitorTool());
+    }
+    if (feature('WORKFLOW_SCRIPTS')) {
+        input.toolRegistry.register(new WorkflowTool());
+    }
+    if (feature('REPL_TOOL')) {
+        input.toolRegistry.register(new REPLTool());
+    }
+    if (feature('POWERSHELL_TOOL') && process.platform === 'win32') {
+        input.toolRegistry.register(new PowerShellTool());
+    }
+    if (feature('REMOTE_TRIGGER_TOOL')) {
+        input.toolRegistry.register(new RemoteTriggerTool());
+    }
+    if (feature('TOOL_SEARCH_LAZY')) {
+        const summaries = input.toolRegistry.getTools().map((t: ITool) => ({
+            name: t.definition.name,
+            description: t.definition.description ?? '',
+        }));
+        input.toolRegistry.register(new ToolSearchTool(summaries));
+    }
 }
