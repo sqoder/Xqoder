@@ -1402,3 +1402,19 @@
   8. `src/platform/terminal/ink/app.tsx` — InkApp 顶层组件
   9. 18 新测试 (diff parsing 7, virtual scroll 5, history nav 6) — 全绿
 - 下一期: P23 — 键绑定 / Vim / 历史
+
+---
+
+## P23 (2026-05-12) — 键绑定 / Vim / 历史搜索
+
+- release:check: ✅
+- golden task pass: 未重跑
+- /review 警告: 0 条
+- 本期 token 消耗: 约 6 万
+- ADR: docs/adr/0039-p23-keybindings-vim-history.md
+- 新增:
+  1. `src/platform/terminal/ink/keybindings/` — defaults (21条), match, load-user, context (KeybindingProvider)
+  2. `src/platform/terminal/ink/vim/` — state, motions (h/j/k/l/w/b/e/0/$/gg/G), operators (d/y/c/p/dd/yy/x), transitions (normal+insert state machine)
+  3. `src/platform/terminal/ink/components/HistorySearchDialog.tsx` — Levenshtein fuzzy search + React dialog
+  4. 53 新测试 (matchKeys 12, motions 10, operators 8, transitions 9, fuzzy 9, defaults 4, load-user 1) — 全绿
+- 下一期: S6 剩余 phases (P24 已完成 ADR 0034)
