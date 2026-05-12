@@ -1,25 +1,28 @@
-// P06 — Full InkApp wired to AgentConversationPort via useConversationStream.
-import React, { useCallback } from 'react';
+// P06 follow-up — InkApp with keybindings, history persistence, vim input.
+import React, { useCallback, useState } from 'react';
 import { Box, useApp } from 'ink';
 import type { AgentConversationPort, TuiAgentSettings } from '../../../application/agent/ports.js';
 import { MessageList } from './components/messages/index.js';
 import { StatusBar, Spinner } from './components/chrome/index.js';
-import { PromptInput } from './components/input/index.js';
+import { VimPromptInput } from './components/input/index.js';
 import { ApprovalDialog } from './components/ApprovalDialog.js';
 import { HistorySearchDialog } from './components/HistorySearchDialog.js';
 import { useConversationStream } from './hooks/useConversationStream.js';
-import { useVirtualScroll } from './hooks/index.js';
+import { useVirtualScroll, useHistoryPersistence } from './hooks/index.js';
+import { useArrowKeyHistory } from './hooks/index.js';
+import { KeybindingProvider } from './keybindings/index.js';
 
 export interface InkAppProps {
     agentService: AgentConversationPort;
     settings: TuiAgentSettings;
     initialSessionId?: string;
-    /** Pre-populated history from restored session. */
-    initialHistory?: string[];
 }
 
-export function InkApp({ agentService, settings, initialSessionId, initialHistory = [] }: InkAppProps): React.ReactElement {
+function InkAppInner({ agentService, settings, initialSessionId }: InkAppProps): React.ReactElement {
     const { exit } = useApp();
+    const [showHistorySearch, setShowHistorySearch] = useState(false);
+
+    const { history, addEntry } = useHistoryPersistence();
 
     const {
         messages,
@@ -45,6 +48,8 @@ export function InkApp({ agentService, settings, initialSessionId, initialHistor
 
     const visibleMessages = messages.slice(visibleRange.start, visibleRange.end);
 
+    const { navigateUp, navigateDown } = useArrowKeyHistory(history);
+
     const handleSubmit = useCallback((text: string) => {
         const trimmed = text.trim();
         if (trimmed === '/exit' || trimmed === '/quit') {
@@ -55,8 +60,12 @@ export function InkApp({ agentService, settings, initialSessionId, initialHistor
             cancel();
             return;
         }
+        addEntry(trimmed);
         submit(trimmed);
-    }, [submit, cancel, exit]);
+    }, [submit, cancel, exit, addEntry]);
+
+    const handleHistoryUp = useCallback((current: string) => navigateUp(current), [navigateUp]);
+    const handleHistoryDown = useCallback(() => navigateDown(), [navigateDown]);
 
     const handleQuestionSelect = useCallback((selected: string) => {
         if (!pendingQuestion) return;
@@ -68,6 +77,13 @@ export function InkApp({ agentService, settings, initialSessionId, initialHistor
         resolveQuestion({ requestId: pendingQuestion.request.requestId, selected: [] });
     }, [pendingQuestion, resolveQuestion]);
 
+    const handleHistorySearchSelect = useCallback((text: string) => {
+        setShowHistorySearch(false);
+        handleSubmit(text);
+    }, [handleSubmit]);
+
+    const isDialogOpen = !!pendingApproval || !!pendingQuestion || showHistorySearch;
+
     return (
         <Box flexDirection="column" height="100%">
             {/* Message area */}
@@ -78,12 +94,12 @@ export function InkApp({ agentService, settings, initialSessionId, initialHistor
                         <Spinner label={`Error: ${error}`} />
                     </Box>
                 )}
-                {thinking && !pendingApproval && !pendingQuestion && (
+                {thinking && !isDialogOpen && (
                     <Spinner label="Thinking…" />
                 )}
             </Box>
 
-            {/* Approval dialog (blocks input) */}
+            {/* Approval dialog */}
             {pendingApproval && (
                 <ApprovalDialog
                     request={pendingApproval.request}
@@ -91,12 +107,21 @@ export function InkApp({ agentService, settings, initialSessionId, initialHistor
                 />
             )}
 
-            {/* Question dialog (blocks input) */}
+            {/* Question dialog */}
             {pendingQuestion && (
                 <HistorySearchDialog
                     items={pendingQuestion.request.options.map((o) => o.label)}
                     onSelect={handleQuestionSelect}
                     onCancel={handleQuestionCancel}
+                />
+            )}
+
+            {/* Ctrl+R history search */}
+            {showHistorySearch && (
+                <HistorySearchDialog
+                    items={history}
+                    onSelect={handleHistorySearchSelect}
+                    onCancel={() => setShowHistorySearch(false)}
                 />
             )}
 
@@ -110,16 +135,26 @@ export function InkApp({ agentService, settings, initialSessionId, initialHistor
                 sessionId={sessionId}
             />
 
-            {/* Prompt input (disabled while dialog open) */}
-            {!pendingApproval && !pendingQuestion && (
-                <PromptInput
+            {/* Prompt input */}
+            {!isDialogOpen && (
+                <VimPromptInput
                     onSubmit={handleSubmit}
-                    history={initialHistory}
+                    onHistoryUp={handleHistoryUp}
+                    onHistoryDown={handleHistoryDown}
+                    onCtrlR={() => setShowHistorySearch(true)}
                     focus={!isBusy}
-                    placeholder={isBusy ? 'Waiting… (type /cancel to abort)' : 'Type a message…'}
+                    placeholder={isBusy ? 'Waiting… (/cancel to abort)' : 'Type a message…'}
                 />
             )}
         </Box>
+    );
+}
+
+export function InkApp(props: InkAppProps): React.ReactElement {
+    return (
+        <KeybindingProvider>
+            <InkAppInner {...props} />
+        </KeybindingProvider>
     );
 }
 
