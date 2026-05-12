@@ -1,0 +1,26 @@
+{
+    "serverName": "docs-reader",
+    "readOnly": true,
+    "capabilities": {
+        "resources": [
+            {
+                "uri": "doc://runbooks/incident-001",
+                "mimeType": "text/markdown",
+                "description": "Root-cause write-up for incident-001"
+            }
+        ],
+        "prompts": [
+            {
+                "name": "summarize-doc",
+                "description": "Turns a runbook into a 3-line summary"
+            }
+        ],
+        "tools": [
+            {
+                "name": "fetch_doc_text",
+                "description": "Returns the text of an allowlisted doc. Read-only.",
+                "sideEffects": "none"
+            }
+        ]
+    }
+}

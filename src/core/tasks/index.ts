@@ -29,6 +29,21 @@ export type {
 } from './local-shell-task.js';
 export { runLocalShellTask, startLocalShellTask } from './local-shell-task.js';
 
+export type {
+    LocalAgentTaskInput,
+    LocalAgentTaskResult,
+} from './local-agent-task.js';
+export { runLocalAgentTask } from './local-agent-task.js';
+
+export type {
+    RemoteAgentTaskInput,
+    RemoteAgentTaskResult,
+    RemoteFetcher,
+    RemoteFetcherRequest,
+    RemoteFetcherResponse,
+} from './remote-agent-task.js';
+export { runRemoteAgentTask } from './remote-agent-task.js';
+
 export type { TaskHandle, TaskRunResult, TaskRunnerDeps } from './task-runner.js';
 export { runTask, startTask } from './task-runner.js';
 

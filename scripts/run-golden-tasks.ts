@@ -8,6 +8,9 @@ import {
     type GoldenTaskDefinition,
     type GoldenTaskMetrics,
 } from '../src/features/eval/golden-task-runner.js';
+import { prepareLiveFixtureWorkspace } from './lib/prepare-live-fixture-workspace.js';
+
+const LIVE_WORKSPACE_ROOT = path.resolve('tmp/golden-workspaces');
 
 interface CliOptions {
     manifestPath: string;
@@ -92,6 +95,13 @@ async function main(): Promise<void> {
     try {
         const result = await runGoldenTaskBatch(tasks, {
             run: async (task) => {
+                const runtimeCwd = options.live
+                    ? prepareLiveFixtureWorkspace({
+                        templateDir: task.cwd,
+                        workspaceDir: path.join(LIVE_WORKSPACE_ROOT, task.id),
+                    }).workspaceDir
+                    : task.cwd;
+
                 const deterministicBaseline = buildGoldenFallbackResponse(task);
                 if (!options.live && !options.model && !options.agent && deterministicBaseline && evaluateGoldenTaskResponse(task, deterministicBaseline).ok) {
                     return {
@@ -107,7 +117,7 @@ async function main(): Promise<void> {
                 for (let attempt = 0; attempt < 2; attempt += 1) {
                     attemptsUsed = attempt + 1;
                     const response = await runChatHeadless(buildGoldenTaskPrompt(task, attempt), {
-                        dir: task.cwd,
+                        dir: runtimeCwd,
                         newSession: true,
                         title: `golden:${task.id}:attempt:${attempt + 1}`,
                         ...(options.model ? { model: options.model } : {}),

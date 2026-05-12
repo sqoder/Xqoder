@@ -1452,3 +1452,40 @@
   4. `src/platform/terminal/ink/index.tsx` — renderInkApp 入口
   5. `src/platform/terminal/app/run-terminal-app.ts` — 默认走 Ink REPL；XQODER_TUI=classic 回退 readline
 - 下一期: 路线图全部 27 期已完成主链；可按需补充 follow-up
+
+---
+
+## Audit (2026-05-12) — Baseline honesty correction
+
+- release:check: 未跑(仅审计,无代码改动)
+- golden task pass: **校正历史口径** — 从 P01 起每期 "未重跑" 字样都暗含 "基础设施就绪,只欠跑一次",但代码核对后实情是:
+  1. `bun run eval:golden` (repo-evidence 模式) 会命中 `scripts/run-golden-tasks.ts:95-101` 的 deterministic fallback 短路,只要 fallback 字符串含 expected literals 就直接返回,**agent loop 没跑过**。今天试跑 10/10 pass,10/10 via fallback。
+  2. `bun run eval:golden:live` 从未跑过。`docs/release/latest-live-acceptance-metrics.json` 中 `dryRun:true`。
+  3. `docs/golden-tasks/xqoder-live-coding.json` 10 条任务全部 `cwd:"../.."` 指向仓库根,提示里说的 "prepared live-coding fixture" **根本不存在**。现在直接 `--live` 会让 agent 去改 XQoder 自己的 `src/`。
+- 新文件: `docs/release/baseline-vs-claude-code.md` — 记录上述三点 + 下一步两条路径(建 fixture / 改为 explanation-only)
+- 本期 token 消耗: 约 2 万(纯审计)
+- ADR: 暂不写。建 fixture 的决策要另开会话讨论
+- 下一期建议: 开新会话决定 fixture 路径,这是一期独立的施工,不适合塞在主线
+
+---
+
+## P19 follow-up (2026-05-12) — LocalAgentTask + RemoteAgentTask runners
+
+- release:check: ✅
+- golden task pass: 未重跑(live fixture 仍未建,见 baseline-vs-claude-code.md)
+- /review 警告: 0 条
+- 本期 token 消耗: 约 5 万
+- ADR: `docs/adr/0042-p19-local-and-remote-agent-runners.md`
+- 背景: `task-runner.ts:37` 六种 task type 里有五种 throw,coordinator mode 虽然 P19d 已接线,但 `task_create --type agent` 走到 runner 层就炸。本期补完 2 种,剩下 `monitor-mcp / dream / main` 仍显式 defer(monitor-mcp 依赖 P25 daemon,main 本就不是 runner 范畴,dream 是后续 roadmap)。
+- 新增:
+  1. `src/core/tasks/local-agent-task.ts` — `runLocalAgentTask` 基于 `forkSubagent` + `InMemoryChildSession`,默认单轮 provider.complete,注入点三个:`providerFactory / llmConfig / runnerOverride`
+  2. `src/core/tasks/remote-agent-task.ts` — `runRemoteAgentTask` HTTP POST 桥接,读取 `metadata.remote.endpoint/jwt`,`fetcher` 可注入,默认用 Bun 内置 `fetch` + `AbortController`(10 分钟默认 timeout)
+  3. `task-runner.ts` dispatch 新增 `agent` / `remote-agent` 两臂;`TaskRunResult` 变为带 `kind` 的 discriminated union;`TaskRunnerDeps` 加三个可选字段 (`llmConfig / localAgentRunnerOverride / remoteFetcher`)
+  4. `src/core/tasks/index.ts` 导出两个新 runner 的类型与函数
+  5. 测试: `local-agent-task.test.ts`(4 条) + `remote-agent-task.test.ts`(5 条) + 更新 `task-runner.test.ts`(4 条新 + 2 条改写) — 共 15 新测试,全绿
+- 不做:
+  - LocalAgentTask 默认不开工具(避免 ToolContext 重复造轮子),需要工具流仍走 `DelegateTaskTool`
+  - Remote 请求 body 不回写到 log(metadata 可能带任意 caller payload,日志面扩大不划算)
+  - `startTask` 仍只接 shell;agent/remote 的后台化留给 P25 daemon worker
+- 下一步建议: 独立会话建 live-coding fixture,让 `eval:golden:live` 真正能跑
+

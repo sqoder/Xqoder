@@ -1,0 +1,7 @@
+[
+    { "sku": "SKU-001", "name": "Pencil", "price": 3, "stockUnits": 120 },
+    { "sku": "SKU-002", "name": "Notebook", "price": 12, "stockUnits": 45 },
+    { "sku": "SKU-003", "name": "Desk lamp", "price": 42, "stockUnits": 2 },
+    { "sku": "SKU-004", "name": "Monitor", "price": 320, "stockUnits": 9 },
+    { "sku": "SKU-005", "name": "Standing desk", "price": 540, "stockUnits": 4 }
+]

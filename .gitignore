@@ -17,6 +17,11 @@ coverage/
 # artifacts; committing them causes dirty-worktree noise locally.
 docs/release/latest-*
 
+# Golden-task live-run workspaces — each run wipes and repopulates from
+# docs/golden-tasks/fixtures/live-coding/ templates, so the tmp copies
+# must never be committed.
+tmp/golden-workspaces/
+
 # Reference-only clone of OpenClaude used as a behavior spec.
 # Never commit this directory — it contains third-party code derived from
 # Anthropic's proprietary Claude Code CLI. See
